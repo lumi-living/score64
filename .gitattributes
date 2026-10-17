@@ -1,0 +1,9 @@
+# Golden snapshots compare text exactly; keep LF on every platform.
+*.snap text eol=lf
+# Binary fixtures: never touch line endings.
+*.sng binary
+*.ins binary
+*.sid binary
+*.prg binary
+*.wav binary
+*.mid binary

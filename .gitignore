@@ -1,0 +1,31 @@
+# Rust
+/target
+**/target
+Cargo.lock.bak
+
+# Score64 working data (content-addressed cache and rebuildable index)
+.score64/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# Maintainer-local agent notes (private tooling, never needed by the project)
+.claude/*.local.md
+.claude/settings.local.json
+.claude/worktrees/
+
+# Local scratch (never commit renders you did not mean to)
+/scratch
+/fixtures/_local
+
+# Python sidecar environment (ADR-009)
+sidecar/.venv/
+__pycache__/
+
+# Example build output
+examples/*/build/

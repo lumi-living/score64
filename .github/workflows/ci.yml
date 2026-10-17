@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Keep the job name and matrix key fixed once branch protection requires
+  # the contexts "rust (ubuntu-latest)", "rust (macos-latest)" and
+  # "rust (windows-latest)". Renaming them breaks merging.
+  rust:
+    name: rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # Installs exactly what rust-toolchain.toml pins (channel, components, targets).
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2.9.2
+      - name: cargo fmt
+        run: cargo fmt --all --check
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+
+  # The GPL helper must stay a leaf: no other member may depend on it (ADR-002).
+  licence-boundary:
+    name: licence-boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install pinned toolchain
+        run: rustup toolchain install
+      - name: score64-emu has no dependents
+        run: |
+          for c in score64-core score64-formats score64-project score64-analysis score64-adapters score64-cli score64-mcp score64-app xtask; do
+            if cargo tree -p "$c" -e normal,build | grep -q 'score64-emu'; then
+              echo "$c depends on score64-emu (GPL); see ADR-002" >&2
+              exit 1
+            fi
+          done

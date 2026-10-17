@@ -1,0 +1,17 @@
+[package]
+name = "score64-app"
+description = "Score64 Studio: the egui/eframe desktop app for reviewing, comparing and approving audio assets"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "score64-app"
+path = "src/main.rs"
+
+[lints]
+workspace = true

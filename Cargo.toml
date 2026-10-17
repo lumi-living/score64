@@ -1,0 +1,42 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/score64-core",
+    "crates/score64-formats",
+    "crates/score64-project",
+    "crates/score64-analysis",
+    "crates/score64-adapters",
+    "crates/score64-cli",
+    "crates/score64-mcp",
+    "crates/score64-app",
+    "crates/score64-emu",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+repository = "https://github.com/lumi-living/score64"
+authors = ["Lumi Living <https://github.com/lumi-living>"]
+publish = false
+
+# Every external crate is pinned here and referenced from the member crates
+# with `{ workspace = true }` (docs/TAD.md §5 lists the allowed set).
+# crates/score64-emu is GPL-3.0-or-later and must never be a dependency of
+# another member (ADR-002).
+[workspace.dependencies]
+score64-core = { path = "crates/score64-core" }
+score64-formats = { path = "crates/score64-formats" }
+score64-project = { path = "crates/score64-project" }
+score64-analysis = { path = "crates/score64-analysis" }
+score64-adapters = { path = "crates/score64-adapters" }
+clap = { version = "4.6.7", features = ["derive"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

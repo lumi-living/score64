@@ -1,0 +1,20 @@
+[package]
+name = "score64-cli"
+description = "The `score64` command-line tool: run the pipeline, render, pack and report"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "score64"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+
+[lints]
+workspace = true
