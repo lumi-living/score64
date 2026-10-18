@@ -73,6 +73,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - Budget gate: packed size, zero page, jump table [#51](https://github.com/lumi-living/score64/issues/51)
   - Timing marks on every bar (alternating values) [#52](https://github.com/lumi-living/score64/issues/52)
 - **E8 Render & score** ([#53](https://github.com/lumi-living/score64/issues/53)) — Render packed players on both chip models through the helper and score fidelity.
+  - Default SID engine: reSIDfp (libresidfp) via FFI behind a SidEngine trait (ADR-011) [#116](https://github.com/lumi-living/score64/issues/116)
   - Helper renders packed players to PCM on 6581 and 8580 [#54](https://github.com/lumi-living/score64/issues/54)
   - Register log output [#55](https://github.com/lumi-living/score64/issues/55)
   - Features: mel, chroma, onsets with differential tests [#56](https://github.com/lumi-living/score64/issues/56)

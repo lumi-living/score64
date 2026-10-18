@@ -14,3 +14,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [008](ADR-008-llm-decisions-are-advisory.md) | LLM decisions are advisory, structured and overridable | Accepted |
 | [009](ADR-009-optional-python-sidecar.md) | An optional Python sidecar for PyTorch-only models and test oracles | Accepted |
 | [010](ADR-010-6502-core.md) | `emulator_6502` as the 6502 core of score64-emu, behind a CPU trait | Accepted |
+| [011](ADR-011-residfp-sid-engine.md) | reSIDfp (libresidfp) via FFI as the default SID engine | Accepted |
