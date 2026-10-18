@@ -26,6 +26,15 @@ cargo run -p score64-cli -- --version
 
 External tools (gt2reloc, VICE, sidplayfp, the optional sidecar) are only needed for the stages that use them; setup notes arrive with the epics that introduce them.
 
+### Packing and reference players (E3)
+
+Versions used by the #20 spike ([report](research/2026-10-18-packed-player-spike.md)); macOS with Homebrew shown.
+
+- **gt2reloc**: build it from the GoatTracker 2.77 source (SourceForge `goattracker2`). It links SDL 1.2: `brew install sdl12-compat`, then in `src/` run `CFLAGS="-I$(brew --prefix)/include" make ../linux/gt2reloc ../linux/ins2snd2` and copy both binaries onto your `PATH`.
+- **sidplayfp** 3.2.2: Homebrew has only libsidplayfp, and its bottle has no reSIDfp. Build [libresidfp](https://github.com/libsidplayfp/libresidfp) 1.2.3, then [libsidplayfp](https://github.com/libsidplayfp/libsidplayfp) 3.1.1, then [sidplayfp](https://github.com/libsidplayfp/sidplayfp) 3.2.2, each with `./configure --prefix=$HOME/.local && make install` and `PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig` (`brew install pkgconf fmt` first).
+- **VICE** 3.10: `brew install vice` (gives `x64sc` and `vsid`).
+- **uv**, for the spike's analysis script (numpy and scipy are pulled per run).
+
 ## Reference material
 
 Everything the code must agree with is in [`docs/reference/`](reference/README.md). Do not rely on memory for register layouts, player addresses, file formats or budgets — read the file.

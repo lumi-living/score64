@@ -8,6 +8,10 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Pinned exactly in score64-emu; changing either changes rendered audio and needs the oracle tests (ADR-010).
+      - dependency-name: "emulator_6502"
+      - dependency-name: "resid-rs"
     labels: ["enhancement"]
 
   - package-ecosystem: github-actions
