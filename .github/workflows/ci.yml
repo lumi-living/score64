@@ -40,7 +40,7 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
 
-  # The GPL helper must stay a leaf: no other member may depend on it (ADR-002).
+  # The GPL crates must stay leaves: no MIT member may depend on any GPL package, directly or not (ADR-002, ADR-011).
   licence-boundary:
     name: licence-boundary
     runs-on: ubuntu-latest
@@ -48,11 +48,25 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: Install pinned toolchain
         run: rustup toolchain install
-      - name: score64-emu has no dependents
+      - name: No MIT crate depends on GPL code
+        # Every workspace member that is not itself GPL must have no GPL package anywhere in its normal or build
+        # dependency tree: score64-emu, residfp-sys and any GPL crate from crates.io (resid-rs, zinc64, ...).
         run: |
-          for c in score64-core score64-formats score64-project score64-analysis score64-adapters score64-cli score64-mcp score64-app xtask; do
-            if cargo tree -p "$c" -e normal,build | grep -q 'score64-emu'; then
-              echo "$c depends on score64-emu (GPL); see ADR-002" >&2
-              exit 1
-            fi
+          meta=$(cargo metadata --format-version 1 --locked)
+          # GPL = every alternative of the licence expression is (L)GPL; "MIT OR LGPL-2.1" is not.
+          gpl=$(printf '%s\n' "$meta" | jq -r 'def gplonly: (. // "") | [splits(" OR |/")] | length > 0 and all(test("GPL"));
+            .packages[] | select(.license | gplonly) | .name' | sort -u)
+          mit=$(printf '%s\n' "$meta" | jq -r 'def gplonly: (. // "") | [splits(" OR |/")] | length > 0 and all(test("GPL"));
+            .workspace_members[] as $id | .packages[] | select(.id == $id) | select(.license | gplonly | not) | .name')
+          echo "GPL packages: $(echo $gpl)"
+          status=0
+          for c in $mit; do
+            deps=$(cargo tree -p "$c" -e normal,build --prefix none --locked | awk '{print $1}' | sort -u)
+            for g in $gpl; do
+              if printf '%s\n' "$deps" | grep -qx "$g"; then
+                echo "$c depends on GPL package $g; see ADR-002" >&2
+                status=1
+              fi
+            done
           done
+          exit $status

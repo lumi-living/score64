@@ -8,7 +8,7 @@
 | UI | egui via eframe (`cargo run -p score64-app`) |
 | MCP | `rmcp` (official Rust MCP SDK), stdio transport |
 | Packing | `gt2reloc` from GoatTracker 2 (external program, pinned version documented in `docs/reference/player.md`) |
-| Emulation | `score64-emu` helper (GPL), plus VICE `x64sc` and sidplayfp for verification |
+| Emulation | `score64-emu` helper (GPL) with reSIDfp vendored in `residfp-sys`, which needs a C++17 compiler (Xcode command-line tools, GCC/Clang, or MSVC; `cc` finds it). VICE `x64sc` and sidplayfp for verification |
 | Local ML (optional) | ONNX Runtime via `ort` (pinned `=2.0.0-rc.13`; the first build downloads a static ONNX Runtime 1.28, or set `ORT_LIB_LOCATION` for offline builds) for Basic Pitch and ONNX separation models; optional Python sidecar via `uv` for PyTorch-only models and test oracles (ADR-009) |
 | CI | `ci.yml`: jobs `rust` (fmt, clippy, test on ubuntu/macos/windows) and `licence-boundary` |
 | Snapshots | `insta` (`cargo insta review`) |

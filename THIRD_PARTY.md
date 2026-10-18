@@ -76,6 +76,12 @@ https://zenodo.org/record/5578807#.YnRm5vPMKDU
 - **Source:** R. Bittner, K. Pasalo, J. J. Bosch et al., *vocadito: A dataset of solo vocals with f0, note, and lyric annotations*, <https://zenodo.org/record/5578807>
 - **Licence:** CC BY 4.0 (<https://creativecommons.org/licenses/by/4.0/>)
 
+## libresidfp (vendored)
+
+- **What:** `crates/residfp-sys/vendor/libresidfp/`: reSIDfp, the SID emulation of libsidplayfp, as its standalone library, version **1.2.3** (tag `v1.2.3`, commit `32c8525418a643eaed8dfafa3d7039e250050cfa`, release tarball SHA-256 `e9b53a984ca708c3e8d9139eb6aad6141f73ffc22d70a020f7966803f4e2f76d`). It is the default SID engine of `score64-emu` (ADR-011). Only the library sources are kept, plus one patch: a platform-independent dither table in `src/FilterModelConfig.h`, described in `crates/residfp-sys/vendor/SCORE64-PATCHES.md`. The headers in `crates/residfp-sys/generated/` are derived from its `.in` templates.
+- **Source:** <https://github.com/libsidplayfp/libresidfp>
+- **Licence:** GPL-2.0-or-later; full text in `crates/residfp-sys/vendor/libresidfp/COPYING`. Copyright (c) 2000–2011 Dag Lem, (c) 2007–2010 Antti Lankila, (c) 2010–2026 Leandro Nini. `residfp-sys` carries the same licence, and only the GPL-3.0-or-later `score64-emu` may depend on it (ADR-002; CI job `licence-boundary`).
+
 No other third-party source code or data is vendored yet. Crate dependencies (for example `emulator_6502` and `resid-rs` in `score64-emu`, `ort` in `score64-adapters`) are pulled by Cargo, not copied.
 
 When it is, each entry here names the project, the commit or version, the files ported or included, and the licence text. Planned items and their licences, for reference:
@@ -83,7 +89,6 @@ When it is, each entry here names the project, the commit or version, the files 
 | Item | Use | Licence | Where it may live |
 |---|---|---|---|
 | reSID-family SID emulation (e.g. `resid-rs`) | Rendering and live audition | GPL | `crates/score64-emu` only (ADR-002) |
-| libresidfp 1.2.3 (reSIDfp) | Default SID engine, vendored source with one documented patch (ADR-011) | GPL-2.0-or-later | `crates/residfp-sys`, used only by `crates/score64-emu` |
 | `emulator_6502` 1.1.0 | 6502 core of the emulator helper (ADR-010) | MIT | `crates/score64-emu` only |
 | GoatTracker 2 file formats | `.sng` / `.ins` / sound-effect writers, written from the format documentation | Format documentation | `crates/score64-formats` |
 | pygoattracker | Differential-test oracle for the `.sng` writer (test-only, via the sidecar) | Apache-2.0 | `sidecar/` (not linked) |
