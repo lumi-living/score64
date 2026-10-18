@@ -105,10 +105,10 @@ fixtures/            rights-clear audio and MIDI with expected outputs
 sidecar/             optional Python scripts (uv), files in → files out (ADR-009)
 ```
 
-Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by the epics that need them): `clap`, `serde`, `toml`, `serde_json`, `blake3`, `rusqlite`, `midly`, `symphonia`, `cpal`, `rustfft`, `ort`, `reqwest`, `schemars`, `cmaes`, `rmcp`, `eframe`/`egui`, `egui_plot`, `egui-snarl`, `egui_material_icons`, `rfd`, `insta`, `proptest`. `resid-rs` (GPL) and any 6502 core are dependencies of `score64-emu` only.
+Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by the epics that need them): `clap`, `serde`, `toml`, `serde_json`, `blake3`, `rusqlite`, `midly`, `symphonia`, `cpal`, `rustfft`, `ort`, `reqwest`, `schemars`, `cmaes`, `rmcp`, `eframe`/`egui`, `egui_plot`, `egui-snarl`, `egui_material_icons`, `rfd`, `insta`, `proptest`. `resid-rs` (GPL) and the 6502 core (`emulator_6502`, MIT, ADR-010) are dependencies of `score64-emu` only.
 
 ### 5.1 The emulator helper
-`score64-emu` reads a packed player plus commands on stdin (load, init subtune, poke mailbox, render N frames, set chip model) and writes PCM frames and register logs on stdout. The app keeps one helper process for live audition; the CLI starts one per render. The protocol is versioned and covered by tests in both directions.
+`score64-emu` reads a packed player plus commands on stdin (load, init subtune, poke mailbox, render N frames, set chip model) and writes PCM frames and register logs on stdout. The app keeps one helper process for live audition; the CLI starts one per render. The protocol is versioned and covered by tests in both directions. The CPU sits behind a `Cpu` trait (ADR-010): the helper steps one instruction at a time, timestamps each SID write on the cycle it lands, and checks the core against a subset of the SingleStepTests 6502 vectors.
 
 ## 6. Testing
 
