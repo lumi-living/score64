@@ -13,4 +13,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [007](ADR-007-goattracker-first.md) | GoatTracker 2 as the first output target | Accepted |
 | [008](ADR-008-llm-decisions-are-advisory.md) | LLM decisions are advisory, structured and overridable | Accepted |
 | [009](ADR-009-optional-python-sidecar.md) | An optional Python sidecar for PyTorch-only models and test oracles | Accepted |
-| [010](ADR-010-6502-core.md) | `emulator_6502` as the 6502 core of score64-emu, behind a CPU trait | Proposed |
+| [010](ADR-010-6502-core.md) | `emulator_6502` as the 6502 core of score64-emu, behind a CPU trait | Accepted |
