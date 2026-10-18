@@ -33,9 +33,9 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
   - Hard-restart lead-time check [#16](https://github.com/lumi-living/score64/issues/16)
 - **E3 Fixtures & de-risking spike** ([#17](https://github.com/lumi-living/score64/issues/17)) — Rights-clear fixtures, golden-test harness, sidecar bootstrap, and a time-boxed spike on the two Rust-specific risks: running packed players in a 6502 core with SID emulation, and Basic Pitch through ONNX.
   - Rights-clear audio and MIDI fixtures [#18](https://github.com/lumi-living/score64/issues/18)
-  - Spike: choose a 6502 core for score64-emu [#19](https://github.com/lumi-living/score64/issues/19)
-  - Spike: run a gt2reloc-packed tune in 6502 core + resid-rs and compare with sidplayfp [#20](https://github.com/lumi-living/score64/issues/20)
-  - Spike: Basic Pitch ONNX via ort vs the Python package [#21](https://github.com/lumi-living/score64/issues/21)
+  - ✓ Spike: choose a 6502 core for score64-emu [#19](https://github.com/lumi-living/score64/issues/19)
+  - ✓ Spike: run a gt2reloc-packed tune in 6502 core + resid-rs and compare with sidplayfp [#20](https://github.com/lumi-living/score64/issues/20)
+  - ✓ Spike: Basic Pitch ONNX via ort vs the Python package [#21](https://github.com/lumi-living/score64/issues/21)
   - Golden-test harness for .sng and effect bytes (insta) [#22](https://github.com/lumi-living/score64/issues/22)
   - Python sidecar bootstrap (uv) with the manifest contract [#23](https://github.com/lumi-living/score64/issues/23)
 
@@ -72,6 +72,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - gt2reloc adapter: -D1 -H1 -W -Z -A, pinned version [#50](https://github.com/lumi-living/score64/issues/50)
   - Budget gate: packed size, zero page, jump table [#51](https://github.com/lumi-living/score64/issues/51)
   - Timing marks on every bar (alternating values) [#52](https://github.com/lumi-living/score64/issues/52)
+  - docs: player.md - after a sound effect the voice stays silent until the music's next note [#119](https://github.com/lumi-living/score64/issues/119)
 - **E8 Render & score** ([#53](https://github.com/lumi-living/score64/issues/53)) — Render packed players on both chip models through the helper and score fidelity.
   - Default SID engine: reSIDfp (libresidfp) via FFI behind a SidEngine trait (ADR-011) [#116](https://github.com/lumi-living/score64/issues/116)
   - Helper renders packed players to PCM on 6581 and 8580 [#54](https://github.com/lumi-living/score64/issues/54)
