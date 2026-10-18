@@ -1,5 +1,7 @@
 # Epics and milestones
 
+Tracking board: **[Score64 project](https://github.com/orgs/lumi-living/projects/4)** (GitHub Projects, board by Status: Backlog → Ready → In progress → In review → Done; `Work type` field: Epic / Task / Bug / Docs).
+
 Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues of the epic and say "Part of #N" in their body. Labels: `epic`, `core`, `formats`, `project`, `analysis`, `adapters`, `emu`, `cli`, `mcp`, `app`, `sfx`, `docs`, `fixtures`, `ci`, `release`, `spike`, `licence`, `needs-vice-check` (packed output verified in VICE or sidplayfp on 6581 and 8580 before merge), `needs-hardware-check`, `bug`, `enhancement`, `good first issue`.
 
 | # | Milestone | Epics |
