@@ -61,7 +61,7 @@ This doesn't affect go or no-go, but it matters for E5 and E6. Against the synth
 ## Risks and notes for #34
 
 - **`ort` is a release candidate** (2.0.0-rc.13; rc.14 is six days old). It's pinned exactly; a bump is caught by the ignored end-to-end test, so run it on bumps.
-- **Build-time download:** `ort-sys` fetches the ONNX Runtime static library (about 86 MB cache) during the first build. Offline or locked-down builds need `ORT_LIB_LOCATION` or the `load-dynamic` feature. CI on all three operating systems exercises the default path (this PR).
+- **Build-time download:** `ort-sys` fetches the ONNX Runtime static library (about 86 MB cache) during the first build. Offline or locked-down builds need `ORT_LIB_LOCATION` or the `load-dynamic` feature. The default path builds, links and passes the tests on Ubuntu, macOS and Windows (CI for #118).
 - **Size:** ONNX Runtime adds about 25 MB to binaries that link `score64-adapters` (macOS release, static, CoreML framework linked from the system). That's relevant for cargo-dist bundles (#109).
 - **Model delivery:** `nmp.onnx` is 230 KB, Apache-2.0. Download on first use with the SHA-256 above (#34), or ship it in the bundle, since it is small.
 - **Resampling:** the comparison used librosa's resampled input. #32 needs its own differential test, because resampler differences reach the activations directly.
