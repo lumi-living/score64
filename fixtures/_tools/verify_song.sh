@@ -61,4 +61,13 @@ if [ -n "${KICKASS:-}" ]; then
       -autostartprgmode 1 -autostart "$t.prg" >/dev/null 2>&1 || true
     compare "$t.helper_writes.tsv" "$t.x64sc.dmp"
   done
+  # A PSID that fires the same effects itself, so any SID player (sidplayfp, reSIDfp) can play music + effects.
+  java -jar "$KICKASS" "$spike/sfx-psid.asm" -binfile -o "$work/sixteen_fx.bin" -odir "$work" \
+    ":tune=$work/sixteen_d1h1.sid" ":fx1=$fix/sfx-footstep.bin" ":fx2=$fix/sfx-gunshot.bin" ":fx3=$fix/sfx-clink.bin" >/dev/null
+  python3 -I "$spike/make_sfx_psid.py" "$work/sixteen_fx.bin" "$work/sixteen_fx.sid" "Sixteen Steps + effects" 2
+  for chip in 6581:o 8580:n; do
+    sidplayfp -t$seconds -m${chip#*:}f --delay=0 -o2 -w"$work/sixteen_fx_st2.sidplayfp_${chip%:*}.wav" \
+      "$work/sixteen_fx.sid" >/dev/null 2>&1
+  done
+  echo "## sixteen_fx.sid: subtune 2 with effects rendered in sidplayfp (6581, 8580)"
 fi

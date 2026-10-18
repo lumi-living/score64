@@ -218,9 +218,14 @@ def main():
     d.mkdir(parents=True, exist_ok=True)
     m = int(0.4 * SR)
     tt = np.arange(m) / SR
-    thump = np.sin(2 * np.pi * (60 + 60 * np.exp(-tt * 40)) * tt) * np.exp(-tt * 25)
-    crunch = rng.standard_normal(m) * np.exp(-tt * 30) * (rng.uniform(size=m) > 0.7)
-    write_wav(d / "source.wav", thump + 0.35 * crunch)
+    # Heel then toe: a soft low thump and a grittier second contact 70 ms later, both with gravel crunch.
+    thump = np.sin(2 * np.pi * (70 + 40 * np.exp(-tt * 40)) * tt) * np.exp(-tt * 35)
+    crunch = rng.standard_normal(m) * (rng.uniform(size=m) > 0.6)
+    heel = 0.35 * thump + 0.5 * crunch * np.exp(-tt * 28)
+    toe = np.zeros(m)
+    lag = int(0.07 * SR)
+    toe[lag:] = 0.45 * crunch[: m - lag] * np.exp(-tt[: m - lag] * 22) + 0.15 * thump[: m - lag]
+    write_wav(d / "source.wav", heel + toe)
 
     d = root / "sfx-gunshot"
     d.mkdir(parents=True, exist_ok=True)
@@ -233,12 +238,19 @@ def main():
 
     d = root / "sfx-clink"
     d.mkdir(parents=True, exist_ok=True)
-    m = int(0.7 * SR)
+    m = int(0.35 * SR)
     tt = np.arange(m) / SR
-    base = 2300.0
-    y = sum(a * np.sin(2 * np.pi * base * r * tt) * np.exp(-tt * k)
-            for r, a, k in ((1.0, 1.0, 9), (2.76, 0.6, 12), (5.40, 0.35, 16), (8.93, 0.2, 22)))
-    y += 0.3 * rng.standard_normal(m) * np.exp(-tt * 300)  # strike
+    # Two small metal objects knocking: a hard broadband strike, then many inharmonic partials that die within
+    # about 100 ms (a bell rings for seconds on a few partials; a clink does not).
+    partials = [(1.0, 1.0), (1.47, 0.8), (2.09, 0.7), (2.56, 0.6), (3.39, 0.55), (4.17, 0.45), (5.03, 0.4),
+                (6.11, 0.3), (7.29, 0.25), (8.84, 0.2)]
+    base = 1650.0
+    y = sum(a * np.sin(2 * np.pi * base * r * tt + rng.uniform(0, 2 * np.pi)) * np.exp(-tt * (28 + 9 * r))
+            for r, a in partials)
+    strike = rng.standard_normal(m)
+    strike -= np.concatenate([[0.0], strike[:-1]])  # bright
+    y += 1.2 * strike * np.exp(-tt * 220)
+    y[int(0.045 * SR):] += 0.5 * y[: m - int(0.045 * SR)] * np.exp(-tt[: m - int(0.045 * SR)] * 10)  # small rebound
     write_wav(d / "source.wav", y)
     print("wrote", ", ".join(p.name for p in sorted(root.iterdir()) if (p / "source.wav").exists()))
 

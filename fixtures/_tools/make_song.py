@@ -1,6 +1,6 @@
 """Write the original GoatTracker 2 fixture song and its three sound-effect instruments (#18).
 
-    python3 fixtures/_tools/make_song.py fixtures/gt2-original
+    python3 fixtures/_tools/make_song.py fixtures/gt2-original [--variant gunshot=b] [--variant clink=b]
 
 Writes sixteen-steps.sng and sfx-footstep.ins, sfx-gunshot.ins, sfx-clink.ins. Everything here is Lumi Living's
 own work under MIT. What the song exercises is listed in fixtures/gt2-original/README.md.
@@ -44,7 +44,38 @@ class Tables:
         return start
 
 
-def build():
+# Sound effects: instruments only (absolute notes, waveforms <= $81, no PWM or filter; see goattracker-sfx.md).
+# One wavetable row is one frame, and the effect ends (voice silenced) after the last row, so the row count is the
+# effect's length. Variant "a" is the committed default; "b" exists for listening comparisons.
+SFX = {
+    # A bright two-frame noise scuff (where the ear is most sensitive) and a square-wave thud; the 50 % pulse
+    # carries the most energy a voice can give.
+    "footstep": {"a": ("SFX footstep", 0x05, 0x00,
+                       [(0x81, 76), (0x81, 68), (0x41, 38), (0x41, 35), (0x80, 32)], 0x88)},
+    "gunshot": {
+        # A bang: bright crack, then straight down to a low noise body with a one-frame pulse thump, decaying.
+        "a": ("SFX gunshot", 0x0A, 0x00,
+              [(0x81, 98), (0x81, 74), (0x41, 34), (0x81, 55), (0x81, 52), (0x81, 50)] + [(0x81, 48)] * 8
+              + [(0x81, 46)] * 4 + [(0x80, 44)] * 2, 0x88),
+        # Heavier: two thumps and a darker body.
+        "b": ("SFX gunshot", 0x0A, 0x00,
+              [(0x81, 96), (0x41, 31), (0x81, 60), (0x41, 29), (0x81, 47)] + [(0x81, 45)] * 9
+              + [(0x81, 43)] * 4 + [(0x80, 41)] * 2, 0x88),
+    },
+    "clink": {
+        # Metal: a noise strike, then inharmonic pitches changing every frame on a thin pulse, fast decay.
+        "a": ("SFX clink", 0x05, 0x00,
+              [(0x81, 103), (0x41, 94), (0x41, 101), (0x11, 95), (0x41, 102), (0x11, 96), (0x41, 100), (0x11, 94),
+               (0x41, 101), (0x40, 95)], 0x86),
+        # Brighter and shorter, two alternating partials a tritone plus an octave apart.
+        "b": ("SFX clink", 0x03, 0x00,
+              [(0x81, 105), (0x41, 98), (0x41, 104), (0x41, 98), (0x41, 104), (0x41, 98), (0x40, 104)], 0x86),
+    },
+}
+
+
+def build(variants=None):
+    variants = variants or {}
     t = Tables()
     ins = []
 
@@ -59,6 +90,10 @@ def build():
     # Lead: pulse with a looping pulse-width sweep (PWM) and delayed vibrato.
     lead = instrument("Lead PWM", 0x09, 0x8A, [(0x41, 0x00)],
                       pulse=([(0x84, 0x00), (0x20, 0x30), (0x20, 0xD0)], 1), vib=(0x03, 0x18), vib_delay=0x18)
+    # The combat lead decays faster to a lower sustain (5 instead of 8) and sweeps a thinner pulse ($280 +/- $18
+    # per tick), which carries less energy, so sound effects on voice 3 stand out.
+    lead_combat = instrument("Lead combat", 0x06, 0x5A, [(0x41, 0x00)],
+                             pulse=([(0x82, 0x80), (0x10, 0x18), (0x10, 0xE8)], 1), vib=(0x03, 0x18), vib_delay=0x18)
     # Chords as wavetable arpeggios (sawtooth), looping over the chord tones.
     arp = {
         kind: instrument(f"Arp {name}", 0x06, 0x8B,
@@ -76,19 +111,15 @@ def build():
                        [(0x81, absnote(88)), (0x41, absnote(54)), (0x41, absnote(48)), (0x80, absnote(88)),
                         (0x80, absnote(85))], pulse=[(0x88, 0x00)])
     hat = instrument("Hat", 0x00, 0x84, [(0x81, absnote(100)), (0x80, absnote(100))])
-    # Filter program for the combat drums on voice 3, started by pattern command A.
-    drum_filter = t.program(t.filter, [(0x90, 0x64), (0x00, 0x70)])
+    # Combat filter program, started by pattern command A on the bass: low-pass on voices 1 and 2 only. It tames the
+    # music so effects on the dry voice 3 stand out; there is no per-voice volume on the SID. Voice 3 itself stays
+    # unfiltered in combat, because an effect does not touch the filter and would be muffled with it (TAD 1.3 rule 4).
+    bass_filter = t.program(t.filter, [(0x90, 0x23), (0x00, 0x38)])
 
-    # Sound effects (instruments only: absolute notes, waveforms <= $81, no PWM or filter; see goattracker-sfx.md).
-    sfx_defs = {
-        "footstep": ("SFX footstep", 0x04, 0x00, [(0x81, absnote(42)), (0x41, absnote(30)), (0x80, absnote(26))],
-                     [(0x84, 0x00)]),
-        "gunshot": ("SFX gunshot", 0x09, 0x00,
-                    [(0x81, absnote(n)) for n in (104, 94, 84, 76, 68, 60, 52)], [(0x88, 0x00)]),
-        "clink": ("SFX clink", 0x03, 0x00,
-                  [(w, absnote(n)) for w, n in ((0x41, 97), (0x11, 105), (0x41, 101), (0x11, 97), (0x41, 105))],
-                  [(0x82, 0x00)]),
-    }
+    sfx_defs = {}
+    for key, options in SFX.items():
+        name, ad, sr, wave, pulse_hi = options[variants.get(key, "a")]
+        sfx_defs[key] = (name, ad, sr, [(w, absnote(n)) for w, n in wave], [(pulse_hi, 0x00)])
     sfx = {}
     for key, (name, ad, sr, wave, pulse) in sfx_defs.items():
         sfx[key] = instrument(name, ad, sr, wave, pulse=pulse)
@@ -119,20 +150,22 @@ def build():
     lead_ids = [pattern(p) for p in lead_pats]
     arp_ids = [pattern(bar_pattern([(0, c.ROWS_PER_BAR, root)], arp[kind])) for root, kind in c.CHORDS]
     bass_ids = [pattern(bar_pattern(ev, bass_filtered)) for ev in per_bar(c.BASS)]
-    pluck_ids = [pattern(bar_pattern(ev, bass_pluck)) for ev in per_bar(c.COMBAT_BASS)]
+    combat_lead_ids = [pattern(bar_pattern(ev, lead_combat, (0x0F, TEMPO) if bar == 0 else None))
+                       for bar, ev in enumerate(per_bar(c.MELODY))]
+    pluck_ids = [pattern(bar_pattern(ev, bass_pluck, (0x0A, bass_filter) if bar == 0 else None))
+                 for bar, ev in enumerate(per_bar(c.COMBAT_BASS))]
     drum_ins = {"kick": kick, "snare": snare, "hat": hat}
     drum_rows = [[REST, 0, 0, 0] for _ in range(c.ROWS_PER_BAR)]
     for row, d in c.DRUMS:
         drum_rows[row] = [note(60), drum_ins[d], 0, 0]
-    drum_rows[0][2], drum_rows[0][3] = 0x0A, drum_filter  # AXY: start the drum filter program
     drum_id = pattern([tuple(r) for r in drum_rows])
 
     orderlists = [
         # Subtune 1, "main": lead, arpeggio chords, filtered bass on voice 3.
         [(lead_ids, 0), (arp_ids, 0), (bass_ids, 0)],
-        # Subtune 2, "combat": lead, plucked bass, filtered drums on voice 3 (short notes only: after a sound effect
-        # GoatTracker returns the voice to the music at its next note, docs/reference/player.md).
-        [(lead_ids, 0), (pluck_ids, 0), ([drum_id] * c.BARS, 0)],
+        # Subtune 2, "combat": a quieter lead, filtered plucked bass on voice 2, unfiltered drums on voice 3 with short
+        # notes only (after a sound effect GoatTracker returns the voice to the music at its next note, #119).
+        [(combat_lead_ids, 0), (pluck_ids, 0), ([drum_id] * c.BARS, 0)],
     ]
     song = Song("Sixteen Steps", "Lumi Living", "2026 Lumi Living, MIT", orderlists, ins,
                 [t.wave, t.pulse, t.filter, t.speed], patterns)
@@ -154,7 +187,9 @@ def build():
 def main():
     out = pathlib.Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
-    song, ins_files = build()
+    args = sys.argv[2:]
+    variants = dict(args[i + 1].split("=") for i in range(0, len(args), 2) if args[i] == "--variant")
+    song, ins_files = build(variants)
     (out / "sixteen-steps.sng").write_bytes(song.to_bytes())
     for key, data in ins_files.items():
         (out / f"sfx-{key}.ins").write_bytes(data)
