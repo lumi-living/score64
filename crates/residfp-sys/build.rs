@@ -30,7 +30,9 @@ fn main() {
             .flag("-ffast-math")
             .flag("-fno-unsafe-math-optimizations");
     } else {
-        build.flag("/EHsc");
+        // C++ exceptions; and report the real C++ standard in __cplusplus (MSVC says 199711L without it, and
+        // siddefs-fp.h refuses anything below C++11).
+        build.flag("/EHsc").flag("/Zc:__cplusplus");
     }
     build.compile("residfp");
 
