@@ -111,6 +111,13 @@ Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by th
 ### 5.1 The emulator helper
 `score64-emu` reads a packed player plus commands on stdin (load, init subtune, poke mailbox, render N frames, set chip model) and writes PCM frames and register logs on stdout. The app keeps one helper process for live audition; the CLI starts one per render. The protocol is versioned and covered by tests in both directions. The CPU sits behind a `Cpu` trait (ADR-010): the helper steps one instruction at a time, timestamps each SID write on the cycle it lands, and checks the core against a subset of the SingleStepTests 6502 vectors.
 
+The machine the helper emulates is deliberately minimal (measured against VICE in [the #20 spike](research/2026-10-18-packed-player-spike.md)):
+
+- **Memory:** 64 KB of flat RAM with no ROMs and no bank switching. The SID is at `$D400`, mirrored every 32 bytes up to `$D7FF`; registers `$1D`–`$1F` of each mirror are ignored. The rest of `$D000`–`$DFFF` is plain RAM. `$00`/`$01` are plain RAM, not the 6510 port: with no ROMs there is nothing to switch. The helper counts writes to them, so a player that relies on banking gets noticed.
+- **Interrupts: none.** The harness calls init once, then play once per PAL frame (19,656 cycles) from its own loop, as a game's raster interrupt would, and calls the sound-effect entry (start+6) the same way. The IRQ/NMI vectors at `$FFFA`–`$FFFF` are not used and no CIA or VIC is emulated, so there is no interrupt latency and no bad-line cycle stealing. PSID files whose play address is 0, and RSID files, are rejected. On a real machine interrupt latency moves the play call by a few cycles from frame to frame; the helper's is exact.
+- **Write log:** every SID write is recorded in order with its cycle inside the frame. Oracle tests diff these per frame (register, value and cycle) as well as the audio. Gate-off and hard-restart timing, where the ADSR bug shows up, depends on this order and timing.
+- Until the stdin protocol arrives (#8), the helper has two command-line modes: `render` (PSID → WAV, write log, opcode histogram, optional sound-effect triggers) and `replay` (a VICE `-sounddev dump` log through the same SID).
+
 ## 6. Testing
 
 | Layer | What |
