@@ -1,0 +1,882 @@
+---
+source: crates/score64-formats/tests/golden.rs
+expression: "annotate::sng(&fixture(\"sixteen-steps.sng\")).unwrap()"
+---
+0000  47 54 53 35                 GTS5
+0004  53 69 78 74 65 65 6E 20 ..  song name "Sixteen Steps"
+0024  4C 75 6D 69 20 4C 69 76 ..  author "Lumi Living"
+0044  32 30 32 36 20 4C 75 6D ..  copyright "2026 Lumi Living, MIT"
+0064  02                          2 subtunes
+-- orderlists
+0065  09 00 01 02 03 04 05 06 ..  subtune 1 voice 1: 00 01 02 03 04 05 06 07 RST 00
+0070  09 08 09 0A 0B 0C 0D 0E ..  subtune 1 voice 2: 08 09 0A 0B 0C 0D 0E 0F RST 00
+007B  09 10 11 12 13 14 15 16 ..  subtune 1 voice 3: 10 11 12 13 14 15 16 17 RST 00
+0086  09 18 19 1A 1B 1C 1D 1E ..  subtune 2 voice 1: 18 19 1A 1B 1C 1D 1E 1F RST 00
+0091  09 20 21 22 23 24 25 26 ..  subtune 2 voice 2: 20 21 22 23 24 25 26 27 RST 00
+009C  09 28 28 28 28 28 28 28 ..  subtune 2 voice 3: 28 28 28 28 28 28 28 28 RST 00
+00A7  0C                          12 instruments
+-- instruments
+00A8  09 8A 01 01 00 01 18 02 ..  01 "Lead PWM" AD 09 SR 8A wave 01 pulse 01 filter 00 vib 01/18 gate 02 1st 09
+00C1  06 5A 03 05 00 02 18 02 ..  02 "Lead combat" AD 06 SR 5A wave 03 pulse 05 filter 00 vib 02/18 gate 02 1st 09
+00DA  06 8B 05 00 00 00 00 02 ..  03 "Arp minor" AD 06 SR 8B wave 05 pulse 00 filter 00 vib 00/00 gate 02 1st 09
+00F3  06 8B 0B 00 00 00 00 02 ..  04 "Arp major" AD 06 SR 8B wave 0B pulse 00 filter 00 vib 00/00 gate 02 1st 09
+010C  05 C9 11 09 01 00 00 02 ..  05 "Bass filtered" AD 05 SR C9 wave 11 pulse 09 filter 01 vib 00/00 gate 02 1st 09
+0125  0A 00 13 0B 00 00 00 02 ..  06 "Bass pluck" AD 0A SR 00 wave 13 pulse 0B filter 00 vib 00/00 gate 02 1st 09
+013E  00 F8 15 0D 00 00 00 02 ..  07 "Kick" AD 00 SR F8 wave 15 pulse 0D filter 00 vib 00/00 gate 02 1st 09
+0157  00 F8 1B 0F 00 00 00 02 ..  08 "Snare" AD 00 SR F8 wave 1B pulse 0F filter 00 vib 00/00 gate 02 1st 09
+0170  00 84 21 00 00 00 00 02 ..  09 "Hat" AD 00 SR 84 wave 21 pulse 00 filter 00 vib 00/00 gate 02 1st 09
+0189  05 00 24 11 00 00 00 02 ..  0A "SFX footstep" AD 05 SR 00 wave 24 pulse 11 filter 00 vib 00/00 gate 02 1st 09
+01A2  0A 00 2A 13 00 00 00 02 ..  0B "SFX gunshot" AD 0A SR 00 wave 2A pulse 13 filter 00 vib 00/00 gate 02 1st 09
+01BB  05 00 3F 15 00 00 00 02 ..  0C "SFX clink" AD 05 SR 00 wave 3F pulse 15 filter 00 vib 00/00 gate 02 1st 09
+01D4  49                          wavetable: 73 rows
+-- wavetable (left $01D5, right $021E)
+      01: 41 00        wave $41 pulse+gate, note +0
+      02: FF 00        jump: stop
+      03: 41 00        wave $41 pulse+gate, note +0
+      04: FF 00        jump: stop
+      05: 21 00        wave $21 saw+gate, note +0
+      06: 00 03        no wave change, note +3
+      07: 00 07        no wave change, note +7
+      08: 00 0C        no wave change, note +12
+      09: 00 00        no wave change, note +0
+      0A: FF 06        jump to 06
+      0B: 21 00        wave $21 saw+gate, note +0
+      0C: 00 04        no wave change, note +4
+      0D: 00 07        no wave change, note +7
+      0E: 00 0C        no wave change, note +12
+      0F: 00 00        no wave change, note +0
+      10: FF 0C        jump to 0C
+      11: 41 00        wave $41 pulse+gate, note +0
+      12: FF 00        jump: stop
+      13: 41 00        wave $41 pulse+gate, note +0
+      14: FF 00        jump: stop
+      15: 81 C0        wave $81 noise+gate, note E-5 (absolute)
+      16: 41 A8        wave $41 pulse+gate, note E-3 (absolute)
+      17: 41 A4        wave $41 pulse+gate, note C-3 (absolute)
+      18: 41 A0        wave $41 pulse+gate, note G#2 (absolute)
+      19: 40 9C        wave $40 pulse, note E-2 (absolute)
+      1A: FF 00        jump: stop
+      1B: 81 CC        wave $81 noise+gate, note E-6 (absolute)
+      1C: 41 AA        wave $41 pulse+gate, note F#3 (absolute)
+      1D: 41 A4        wave $41 pulse+gate, note C-3 (absolute)
+      1E: 80 CC        wave $80 noise, note E-6 (absolute)
+      1F: 80 C9        wave $80 noise, note C#6 (absolute)
+      20: FF 00        jump: stop
+      21: 81 D8        wave $81 noise+gate, note E-7 (absolute)
+      22: 80 D8        wave $80 noise, note E-7 (absolute)
+      23: FF 00        jump: stop
+      24: 81 C0        wave $81 noise+gate, note E-5 (absolute)
+      25: 81 B8        wave $81 noise+gate, note G#4 (absolute)
+      26: 41 9A        wave $41 pulse+gate, note D-2 (absolute)
+      27: 41 97        wave $41 pulse+gate, note B-1 (absolute)
+      28: 80 94        wave $80 noise, note G#1 (absolute)
+      29: FF 00        jump: stop
+      2A: 81 D6        wave $81 noise+gate, note D-7 (absolute)
+      2B: 81 BE        wave $81 noise+gate, note D-5 (absolute)
+      2C: 41 96        wave $41 pulse+gate, note A#1 (absolute)
+      2D: 81 AB        wave $81 noise+gate, note G-3 (absolute)
+      2E: 81 A8        wave $81 noise+gate, note E-3 (absolute)
+      2F: 81 A6        wave $81 noise+gate, note D-3 (absolute)
+      30: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      31: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      32: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      33: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      34: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      35: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      36: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      37: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      38: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      39: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      3A: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      3B: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      3C: 80 A0        wave $80 noise, note G#2 (absolute)
+      3D: 80 A0        wave $80 noise, note G#2 (absolute)
+      3E: FF 00        jump: stop
+      3F: 81 DB        wave $81 noise+gate, note G-7 (absolute)
+      40: 41 D2        wave $41 pulse+gate, note A#6 (absolute)
+      41: 41 D9        wave $41 pulse+gate, note F-7 (absolute)
+      42: 11 D3        wave $11 tri+gate, note B-6 (absolute)
+      43: 41 DA        wave $41 pulse+gate, note F#7 (absolute)
+      44: 11 D4        wave $11 tri+gate, note C-7 (absolute)
+      45: 41 D8        wave $41 pulse+gate, note E-7 (absolute)
+      46: 11 D2        wave $11 tri+gate, note A#6 (absolute)
+      47: 41 D9        wave $41 pulse+gate, note F-7 (absolute)
+      48: 40 D3        wave $40 pulse, note B-6 (absolute)
+      49: FF 00        jump: stop
+0267  16                          pulsetable: 22 rows
+-- pulsetable (left $0268, right $027E)
+      01: 84 00        set pulse width $400
+      02: 20 30        for 32 ticks, pulse speed +48
+      03: 20 D0        for 32 ticks, pulse speed -48
+      04: FF 02        jump to 02
+      05: 82 80        set pulse width $280
+      06: 10 18        for 16 ticks, pulse speed +24
+      07: 10 E8        for 16 ticks, pulse speed -24
+      08: FF 06        jump to 06
+      09: 86 00        set pulse width $600
+      0A: FF 00        jump: stop
+      0B: 83 00        set pulse width $300
+      0C: FF 00        jump: stop
+      0D: 88 00        set pulse width $800
+      0E: FF 00        jump: stop
+      0F: 88 00        set pulse width $800
+      10: FF 00        jump: stop
+      11: 88 00        set pulse width $800
+      12: FF 00        jump: stop
+      13: 88 00        set pulse width $800
+      14: FF 00        jump: stop
+      15: 86 00        set pulse width $600
+      16: FF 00        jump: stop
+0294  08                          filtertable: 8 rows
+-- filtertable (left $0295, right $029D)
+      01: 90 84        filter low-pass, resonance 8, voices 3
+      02: 00 28        set cutoff $28
+      03: 30 01        for 48 ticks, cutoff speed +1
+      04: 30 FF        for 48 ticks, cutoff speed -1
+      05: FF 03        jump to 03
+      06: 90 23        filter low-pass, resonance 2, voices 1,2
+      07: 00 38        set cutoff $38
+      08: FF 00        jump: stop
+02A5  02                          speedtable: 2 rows
+-- speedtable (left $02A6, right $02A8)
+      01: 03 18        03 18 (vibrato speed/depth, porta speed $0318 or funktempo 3/24)
+      02: 03 18        03 18 (vibrato speed/depth, porta speed $0318 or funktempo 3/24)
+02AA  29                          41 patterns
+02AB  11                          pattern 00: 17 rows including the end mark
+02AC  99 01 0F 06                   00.00  A-4 01  F06 tempo 6
+02B0  BD 00 00 00                   00.01  ... --
+02B4  BD 00 00 00                   00.02  ... --
+02B8  BD 00 00 00                   00.03  ... --
+02BC  9C 01 00 00                   00.04  C-5 01
+02C0  BD 00 00 00                   00.05  ... --
+02C4  A0 01 00 00                   00.06  E-5 01
+02C8  BD 00 00 00                   00.07  ... --
+02CC  BD 00 00 00                   00.08  ... --
+02D0  BD 00 00 00                   00.09  ... --
+02D4  BD 00 00 00                   00.0A  ... --
+02D8  BD 00 00 00                   00.0B  ... --
+02DC  9E 01 00 00                   00.0C  D-5 01
+02E0  BD 00 00 00                   00.0D  ... --
+02E4  BD 00 00 00                   00.0E  ... --
+02E8  BD 00 00 00                   00.0F  ... --
+02EC  FF 00 00 00                   00.10  end --
+02F0  11                          pattern 01: 17 rows including the end mark
+02F1  9C 01 00 00                   01.00  C-5 01
+02F5  BD 00 00 00                   01.01  ... --
+02F9  BD 00 00 00                   01.02  ... --
+02FD  BD 00 00 00                   01.03  ... --
+0301  99 01 00 00                   01.04  A-4 01
+0305  BD 00 00 00                   01.05  ... --
+0309  BD 00 00 00                   01.06  ... --
+030D  BD 00 00 00                   01.07  ... --
+0311  95 01 00 00                   01.08  F-4 01
+0315  BD 00 00 00                   01.09  ... --
+0319  BD 00 00 00                   01.0A  ... --
+031D  BD 00 00 00                   01.0B  ... --
+0321  99 01 00 00                   01.0C  A-4 01
+0325  BD 00 00 00                   01.0D  ... --
+0329  BD 00 00 00                   01.0E  ... --
+032D  BD 00 00 00                   01.0F  ... --
+0331  FF 00 00 00                   01.10  end --
+0335  11                          pattern 02: 17 rows including the end mark
+0336  97 01 00 00                   02.00  G-4 01
+033A  BD 00 00 00                   02.01  ... --
+033E  BD 00 00 00                   02.02  ... --
+0342  BD 00 00 00                   02.03  ... --
+0346  9C 01 00 00                   02.04  C-5 01
+034A  BD 00 00 00                   02.05  ... --
+034E  A0 01 00 00                   02.06  E-5 01
+0352  BD 00 00 00                   02.07  ... --
+0356  BD 00 00 00                   02.08  ... --
+035A  BD 00 00 00                   02.09  ... --
+035E  BD 00 00 00                   02.0A  ... --
+0362  BD 00 00 00                   02.0B  ... --
+0366  A3 01 00 00                   02.0C  G-5 01
+036A  BD 00 00 00                   02.0D  ... --
+036E  BD 00 00 00                   02.0E  ... --
+0372  BD 00 00 00                   02.0F  ... --
+0376  FF 00 00 00                   02.10  end --
+037A  11                          pattern 03: 17 rows including the end mark
+037B  A1 01 00 00                   03.00  F-5 01
+037F  BD 00 00 00                   03.01  ... --
+0383  BD 00 00 00                   03.02  ... --
+0387  BD 00 00 00                   03.03  ... --
+038B  A0 01 00 00                   03.04  E-5 01
+038F  BD 00 00 00                   03.05  ... --
+0393  9E 01 00 00                   03.06  D-5 01
+0397  BD 00 00 00                   03.07  ... --
+039B  9B 01 00 00                   03.08  B-4 01
+039F  BD 00 00 00                   03.09  ... --
+03A3  BD 00 00 00                   03.0A  ... --
+03A7  BD 00 00 00                   03.0B  ... --
+03AB  BD 00 00 00                   03.0C  ... --
+03AF  BD 00 00 00                   03.0D  ... --
+03B3  BD 00 00 00                   03.0E  ... --
+03B7  BD 00 00 00                   03.0F  ... --
+03BB  FF 00 00 00                   03.10  end --
+03BF  11                          pattern 04: 17 rows including the end mark
+03C0  99 01 00 00                   04.00  A-4 01
+03C4  BD 00 00 00                   04.01  ... --
+03C8  BD 00 00 00                   04.02  ... --
+03CC  BD 00 00 00                   04.03  ... --
+03D0  9C 01 00 00                   04.04  C-5 01
+03D4  BD 00 00 00                   04.05  ... --
+03D8  A0 01 00 00                   04.06  E-5 01
+03DC  BD 00 00 00                   04.07  ... --
+03E0  BD 00 00 00                   04.08  ... --
+03E4  BD 00 00 00                   04.09  ... --
+03E8  BD 00 00 00                   04.0A  ... --
+03EC  BD 00 00 00                   04.0B  ... --
+03F0  A5 01 00 00                   04.0C  A-5 01
+03F4  BD 00 00 00                   04.0D  ... --
+03F8  BD 00 00 00                   04.0E  ... --
+03FC  BD 00 00 00                   04.0F  ... --
+0400  FF 00 00 00                   04.10  end --
+0404  11                          pattern 05: 17 rows including the end mark
+0405  A3 01 00 00                   05.00  G-5 01
+0409  BD 00 00 00                   05.01  ... --
+040D  BD 00 00 00                   05.02  ... --
+0411  BD 00 00 00                   05.03  ... --
+0415  A1 01 00 00                   05.04  F-5 01
+0419  BD 00 00 00                   05.05  ... --
+041D  BD 00 00 00                   05.06  ... --
+0421  BD 00 00 00                   05.07  ... --
+0425  A0 01 00 00                   05.08  E-5 01
+0429  BD 00 00 00                   05.09  ... --
+042D  BD 00 00 00                   05.0A  ... --
+0431  BD 00 00 00                   05.0B  ... --
+0435  9C 01 00 00                   05.0C  C-5 01
+0439  BD 00 00 00                   05.0D  ... --
+043D  BD 00 00 00                   05.0E  ... --
+0441  BD 00 00 00                   05.0F  ... --
+0445  FF 00 00 00                   05.10  end --
+0449  11                          pattern 06: 17 rows including the end mark
+044A  9B 01 00 00                   06.00  B-4 01
+044E  BD 00 00 00                   06.01  ... --
+0452  BD 00 00 00                   06.02  ... --
+0456  BD 00 00 00                   06.03  ... --
+045A  BD 00 00 00                   06.04  ... --
+045E  BD 00 00 00                   06.05  ... --
+0462  BD 00 00 00                   06.06  ... --
+0466  BD 00 00 00                   06.07  ... --
+046A  98 01 00 00                   06.08  G#4 01
+046E  BD 00 00 00                   06.09  ... --
+0472  BD 00 00 00                   06.0A  ... --
+0476  BD 00 00 00                   06.0B  ... --
+047A  9B 01 00 00                   06.0C  B-4 01
+047E  BD 00 00 00                   06.0D  ... --
+0482  BD 00 00 00                   06.0E  ... --
+0486  BD 00 00 00                   06.0F  ... --
+048A  FF 00 00 00                   06.10  end --
+048E  11                          pattern 07: 17 rows including the end mark
+048F  A0 01 00 00                   07.00  E-5 01
+0493  BD 00 00 00                   07.01  ... --
+0497  BD 00 00 00                   07.02  ... --
+049B  BD 00 00 00                   07.03  ... --
+049F  BD 00 00 00                   07.04  ... --
+04A3  BD 00 00 00                   07.05  ... --
+04A7  BD 00 00 00                   07.06  ... --
+04AB  BD 00 00 00                   07.07  ... --
+04AF  BD 00 00 00                   07.08  ... --
+04B3  BD 00 00 00                   07.09  ... --
+04B7  BD 00 00 00                   07.0A  ... --
+04BB  BD 00 00 00                   07.0B  ... --
+04BF  BE 00 00 00                   07.0C  --- --
+04C3  BD 00 00 00                   07.0D  ... --
+04C7  BD 00 00 00                   07.0E  ... --
+04CB  BD 00 00 00                   07.0F  ... --
+04CF  FF 00 00 00                   07.10  end --
+04D3  11                          pattern 08: 17 rows including the end mark
+04D4  8D 03 00 00                   08.00  A-3 03
+04D8  BD 00 00 00                   08.01  ... --
+04DC  BD 00 00 00                   08.02  ... --
+04E0  BD 00 00 00                   08.03  ... --
+04E4  BD 00 00 00                   08.04  ... --
+04E8  BD 00 00 00                   08.05  ... --
+04EC  BD 00 00 00                   08.06  ... --
+04F0  BD 00 00 00                   08.07  ... --
+04F4  BD 00 00 00                   08.08  ... --
+04F8  BD 00 00 00                   08.09  ... --
+04FC  BD 00 00 00                   08.0A  ... --
+0500  BD 00 00 00                   08.0B  ... --
+0504  BD 00 00 00                   08.0C  ... --
+0508  BD 00 00 00                   08.0D  ... --
+050C  BD 00 00 00                   08.0E  ... --
+0510  BD 00 00 00                   08.0F  ... --
+0514  FF 00 00 00                   08.10  end --
+0518  11                          pattern 09: 17 rows including the end mark
+0519  89 04 00 00                   09.00  F-3 04
+051D  BD 00 00 00                   09.01  ... --
+0521  BD 00 00 00                   09.02  ... --
+0525  BD 00 00 00                   09.03  ... --
+0529  BD 00 00 00                   09.04  ... --
+052D  BD 00 00 00                   09.05  ... --
+0531  BD 00 00 00                   09.06  ... --
+0535  BD 00 00 00                   09.07  ... --
+0539  BD 00 00 00                   09.08  ... --
+053D  BD 00 00 00                   09.09  ... --
+0541  BD 00 00 00                   09.0A  ... --
+0545  BD 00 00 00                   09.0B  ... --
+0549  BD 00 00 00                   09.0C  ... --
+054D  BD 00 00 00                   09.0D  ... --
+0551  BD 00 00 00                   09.0E  ... --
+0555  BD 00 00 00                   09.0F  ... --
+0559  FF 00 00 00                   09.10  end --
+055D  11                          pattern 0A: 17 rows including the end mark
+055E  90 04 00 00                   0A.00  C-4 04
+0562  BD 00 00 00                   0A.01  ... --
+0566  BD 00 00 00                   0A.02  ... --
+056A  BD 00 00 00                   0A.03  ... --
+056E  BD 00 00 00                   0A.04  ... --
+0572  BD 00 00 00                   0A.05  ... --
+0576  BD 00 00 00                   0A.06  ... --
+057A  BD 00 00 00                   0A.07  ... --
+057E  BD 00 00 00                   0A.08  ... --
+0582  BD 00 00 00                   0A.09  ... --
+0586  BD 00 00 00                   0A.0A  ... --
+058A  BD 00 00 00                   0A.0B  ... --
+058E  BD 00 00 00                   0A.0C  ... --
+0592  BD 00 00 00                   0A.0D  ... --
+0596  BD 00 00 00                   0A.0E  ... --
+059A  BD 00 00 00                   0A.0F  ... --
+059E  FF 00 00 00                   0A.10  end --
+05A2  11                          pattern 0B: 17 rows including the end mark
+05A3  8B 04 00 00                   0B.00  G-3 04
+05A7  BD 00 00 00                   0B.01  ... --
+05AB  BD 00 00 00                   0B.02  ... --
+05AF  BD 00 00 00                   0B.03  ... --
+05B3  BD 00 00 00                   0B.04  ... --
+05B7  BD 00 00 00                   0B.05  ... --
+05BB  BD 00 00 00                   0B.06  ... --
+05BF  BD 00 00 00                   0B.07  ... --
+05C3  BD 00 00 00                   0B.08  ... --
+05C7  BD 00 00 00                   0B.09  ... --
+05CB  BD 00 00 00                   0B.0A  ... --
+05CF  BD 00 00 00                   0B.0B  ... --
+05D3  BD 00 00 00                   0B.0C  ... --
+05D7  BD 00 00 00                   0B.0D  ... --
+05DB  BD 00 00 00                   0B.0E  ... --
+05DF  BD 00 00 00                   0B.0F  ... --
+05E3  FF 00 00 00                   0B.10  end --
+05E7  11                          pattern 0C: 17 rows including the end mark
+05E8  8D 03 00 00                   0C.00  A-3 03
+05EC  BD 00 00 00                   0C.01  ... --
+05F0  BD 00 00 00                   0C.02  ... --
+05F4  BD 00 00 00                   0C.03  ... --
+05F8  BD 00 00 00                   0C.04  ... --
+05FC  BD 00 00 00                   0C.05  ... --
+0600  BD 00 00 00                   0C.06  ... --
+0604  BD 00 00 00                   0C.07  ... --
+0608  BD 00 00 00                   0C.08  ... --
+060C  BD 00 00 00                   0C.09  ... --
+0610  BD 00 00 00                   0C.0A  ... --
+0614  BD 00 00 00                   0C.0B  ... --
+0618  BD 00 00 00                   0C.0C  ... --
+061C  BD 00 00 00                   0C.0D  ... --
+0620  BD 00 00 00                   0C.0E  ... --
+0624  BD 00 00 00                   0C.0F  ... --
+0628  FF 00 00 00                   0C.10  end --
+062C  11                          pattern 0D: 17 rows including the end mark
+062D  89 04 00 00                   0D.00  F-3 04
+0631  BD 00 00 00                   0D.01  ... --
+0635  BD 00 00 00                   0D.02  ... --
+0639  BD 00 00 00                   0D.03  ... --
+063D  BD 00 00 00                   0D.04  ... --
+0641  BD 00 00 00                   0D.05  ... --
+0645  BD 00 00 00                   0D.06  ... --
+0649  BD 00 00 00                   0D.07  ... --
+064D  BD 00 00 00                   0D.08  ... --
+0651  BD 00 00 00                   0D.09  ... --
+0655  BD 00 00 00                   0D.0A  ... --
+0659  BD 00 00 00                   0D.0B  ... --
+065D  BD 00 00 00                   0D.0C  ... --
+0661  BD 00 00 00                   0D.0D  ... --
+0665  BD 00 00 00                   0D.0E  ... --
+0669  BD 00 00 00                   0D.0F  ... --
+066D  FF 00 00 00                   0D.10  end --
+0671  11                          pattern 0E: 17 rows including the end mark
+0672  88 04 00 00                   0E.00  E-3 04
+0676  BD 00 00 00                   0E.01  ... --
+067A  BD 00 00 00                   0E.02  ... --
+067E  BD 00 00 00                   0E.03  ... --
+0682  BD 00 00 00                   0E.04  ... --
+0686  BD 00 00 00                   0E.05  ... --
+068A  BD 00 00 00                   0E.06  ... --
+068E  BD 00 00 00                   0E.07  ... --
+0692  BD 00 00 00                   0E.08  ... --
+0696  BD 00 00 00                   0E.09  ... --
+069A  BD 00 00 00                   0E.0A  ... --
+069E  BD 00 00 00                   0E.0B  ... --
+06A2  BD 00 00 00                   0E.0C  ... --
+06A6  BD 00 00 00                   0E.0D  ... --
+06AA  BD 00 00 00                   0E.0E  ... --
+06AE  BD 00 00 00                   0E.0F  ... --
+06B2  FF 00 00 00                   0E.10  end --
+06B6  11                          pattern 0F: 17 rows including the end mark
+06B7  88 04 00 00                   0F.00  E-3 04
+06BB  BD 00 00 00                   0F.01  ... --
+06BF  BD 00 00 00                   0F.02  ... --
+06C3  BD 00 00 00                   0F.03  ... --
+06C7  BD 00 00 00                   0F.04  ... --
+06CB  BD 00 00 00                   0F.05  ... --
+06CF  BD 00 00 00                   0F.06  ... --
+06D3  BD 00 00 00                   0F.07  ... --
+06D7  BD 00 00 00                   0F.08  ... --
+06DB  BD 00 00 00                   0F.09  ... --
+06DF  BD 00 00 00                   0F.0A  ... --
+06E3  BD 00 00 00                   0F.0B  ... --
+06E7  BD 00 00 00                   0F.0C  ... --
+06EB  BD 00 00 00                   0F.0D  ... --
+06EF  BD 00 00 00                   0F.0E  ... --
+06F3  BD 00 00 00                   0F.0F  ... --
+06F7  FF 00 00 00                   0F.10  end --
+06FB  11                          pattern 10: 17 rows including the end mark
+06FC  81 05 00 00                   10.00  A-2 05
+0700  BD 00 00 00                   10.01  ... --
+0704  BD 00 00 00                   10.02  ... --
+0708  BD 00 00 00                   10.03  ... --
+070C  BD 00 00 00                   10.04  ... --
+0710  BD 00 00 00                   10.05  ... --
+0714  BD 00 00 00                   10.06  ... --
+0718  BD 00 00 00                   10.07  ... --
+071C  81 05 00 00                   10.08  A-2 05
+0720  BD 00 00 00                   10.09  ... --
+0724  BD 00 00 00                   10.0A  ... --
+0728  BD 00 00 00                   10.0B  ... --
+072C  BD 00 00 00                   10.0C  ... --
+0730  BD 00 00 00                   10.0D  ... --
+0734  BD 00 00 00                   10.0E  ... --
+0738  BD 00 00 00                   10.0F  ... --
+073C  FF 00 00 00                   10.10  end --
+0740  11                          pattern 11: 17 rows including the end mark
+0741  7D 05 00 00                   11.00  F-2 05
+0745  BD 00 00 00                   11.01  ... --
+0749  BD 00 00 00                   11.02  ... --
+074D  BD 00 00 00                   11.03  ... --
+0751  BD 00 00 00                   11.04  ... --
+0755  BD 00 00 00                   11.05  ... --
+0759  BD 00 00 00                   11.06  ... --
+075D  BD 00 00 00                   11.07  ... --
+0761  7D 05 00 00                   11.08  F-2 05
+0765  BD 00 00 00                   11.09  ... --
+0769  BD 00 00 00                   11.0A  ... --
+076D  BD 00 00 00                   11.0B  ... --
+0771  BD 00 00 00                   11.0C  ... --
+0775  BD 00 00 00                   11.0D  ... --
+0779  BD 00 00 00                   11.0E  ... --
+077D  BD 00 00 00                   11.0F  ... --
+0781  FF 00 00 00                   11.10  end --
+0785  11                          pattern 12: 17 rows including the end mark
+0786  84 05 00 00                   12.00  C-3 05
+078A  BD 00 00 00                   12.01  ... --
+078E  BD 00 00 00                   12.02  ... --
+0792  BD 00 00 00                   12.03  ... --
+0796  BD 00 00 00                   12.04  ... --
+079A  BD 00 00 00                   12.05  ... --
+079E  BD 00 00 00                   12.06  ... --
+07A2  BD 00 00 00                   12.07  ... --
+07A6  84 05 00 00                   12.08  C-3 05
+07AA  BD 00 00 00                   12.09  ... --
+07AE  BD 00 00 00                   12.0A  ... --
+07B2  BD 00 00 00                   12.0B  ... --
+07B6  BD 00 00 00                   12.0C  ... --
+07BA  BD 00 00 00                   12.0D  ... --
+07BE  BD 00 00 00                   12.0E  ... --
+07C2  BD 00 00 00                   12.0F  ... --
+07C6  FF 00 00 00                   12.10  end --
+07CA  11                          pattern 13: 17 rows including the end mark
+07CB  7F 05 00 00                   13.00  G-2 05
+07CF  BD 00 00 00                   13.01  ... --
+07D3  BD 00 00 00                   13.02  ... --
+07D7  BD 00 00 00                   13.03  ... --
+07DB  BD 00 00 00                   13.04  ... --
+07DF  BD 00 00 00                   13.05  ... --
+07E3  BD 00 00 00                   13.06  ... --
+07E7  BD 00 00 00                   13.07  ... --
+07EB  7F 05 00 00                   13.08  G-2 05
+07EF  BD 00 00 00                   13.09  ... --
+07F3  BD 00 00 00                   13.0A  ... --
+07F7  BD 00 00 00                   13.0B  ... --
+07FB  BD 00 00 00                   13.0C  ... --
+07FF  BD 00 00 00                   13.0D  ... --
+0803  BD 00 00 00                   13.0E  ... --
+0807  BD 00 00 00                   13.0F  ... --
+080B  FF 00 00 00                   13.10  end --
+080F  11                          pattern 14: 17 rows including the end mark
+0810  81 05 00 00                   14.00  A-2 05
+0814  BD 00 00 00                   14.01  ... --
+0818  BD 00 00 00                   14.02  ... --
+081C  BD 00 00 00                   14.03  ... --
+0820  BD 00 00 00                   14.04  ... --
+0824  BD 00 00 00                   14.05  ... --
+0828  BD 00 00 00                   14.06  ... --
+082C  BD 00 00 00                   14.07  ... --
+0830  81 05 00 00                   14.08  A-2 05
+0834  BD 00 00 00                   14.09  ... --
+0838  BD 00 00 00                   14.0A  ... --
+083C  BD 00 00 00                   14.0B  ... --
+0840  BD 00 00 00                   14.0C  ... --
+0844  BD 00 00 00                   14.0D  ... --
+0848  BD 00 00 00                   14.0E  ... --
+084C  BD 00 00 00                   14.0F  ... --
+0850  FF 00 00 00                   14.10  end --
+0854  11                          pattern 15: 17 rows including the end mark
+0855  7D 05 00 00                   15.00  F-2 05
+0859  BD 00 00 00                   15.01  ... --
+085D  BD 00 00 00                   15.02  ... --
+0861  BD 00 00 00                   15.03  ... --
+0865  BD 00 00 00                   15.04  ... --
+0869  BD 00 00 00                   15.05  ... --
+086D  BD 00 00 00                   15.06  ... --
+0871  BD 00 00 00                   15.07  ... --
+0875  7D 05 00 00                   15.08  F-2 05
+0879  BD 00 00 00                   15.09  ... --
+087D  BD 00 00 00                   15.0A  ... --
+0881  BD 00 00 00                   15.0B  ... --
+0885  BD 00 00 00                   15.0C  ... --
+0889  BD 00 00 00                   15.0D  ... --
+088D  BD 00 00 00                   15.0E  ... --
+0891  BD 00 00 00                   15.0F  ... --
+0895  FF 00 00 00                   15.10  end --
+0899  11                          pattern 16: 17 rows including the end mark
+089A  7C 05 00 00                   16.00  E-2 05
+089E  BD 00 00 00                   16.01  ... --
+08A2  BD 00 00 00                   16.02  ... --
+08A6  BD 00 00 00                   16.03  ... --
+08AA  BD 00 00 00                   16.04  ... --
+08AE  BD 00 00 00                   16.05  ... --
+08B2  BD 00 00 00                   16.06  ... --
+08B6  BD 00 00 00                   16.07  ... --
+08BA  7C 05 00 00                   16.08  E-2 05
+08BE  BD 00 00 00                   16.09  ... --
+08C2  BD 00 00 00                   16.0A  ... --
+08C6  BD 00 00 00                   16.0B  ... --
+08CA  BD 00 00 00                   16.0C  ... --
+08CE  BD 00 00 00                   16.0D  ... --
+08D2  BD 00 00 00                   16.0E  ... --
+08D6  BD 00 00 00                   16.0F  ... --
+08DA  FF 00 00 00                   16.10  end --
+08DE  11                          pattern 17: 17 rows including the end mark
+08DF  7C 05 00 00                   17.00  E-2 05
+08E3  BD 00 00 00                   17.01  ... --
+08E7  BD 00 00 00                   17.02  ... --
+08EB  BD 00 00 00                   17.03  ... --
+08EF  BD 00 00 00                   17.04  ... --
+08F3  BD 00 00 00                   17.05  ... --
+08F7  BD 00 00 00                   17.06  ... --
+08FB  BD 00 00 00                   17.07  ... --
+08FF  80 05 00 00                   17.08  G#2 05
+0903  BD 00 00 00                   17.09  ... --
+0907  BD 00 00 00                   17.0A  ... --
+090B  BD 00 00 00                   17.0B  ... --
+090F  BD 00 00 00                   17.0C  ... --
+0913  BD 00 00 00                   17.0D  ... --
+0917  BD 00 00 00                   17.0E  ... --
+091B  BD 00 00 00                   17.0F  ... --
+091F  FF 00 00 00                   17.10  end --
+0923  11                          pattern 18: 17 rows including the end mark
+0924  99 02 0F 06                   18.00  A-4 02  F06 tempo 6
+0928  BD 00 00 00                   18.01  ... --
+092C  BD 00 00 00                   18.02  ... --
+0930  BD 00 00 00                   18.03  ... --
+0934  9C 02 00 00                   18.04  C-5 02
+0938  BD 00 00 00                   18.05  ... --
+093C  A0 02 00 00                   18.06  E-5 02
+0940  BD 00 00 00                   18.07  ... --
+0944  BD 00 00 00                   18.08  ... --
+0948  BD 00 00 00                   18.09  ... --
+094C  BD 00 00 00                   18.0A  ... --
+0950  BD 00 00 00                   18.0B  ... --
+0954  9E 02 00 00                   18.0C  D-5 02
+0958  BD 00 00 00                   18.0D  ... --
+095C  BD 00 00 00                   18.0E  ... --
+0960  BD 00 00 00                   18.0F  ... --
+0964  FF 00 00 00                   18.10  end --
+0968  11                          pattern 19: 17 rows including the end mark
+0969  9C 02 00 00                   19.00  C-5 02
+096D  BD 00 00 00                   19.01  ... --
+0971  BD 00 00 00                   19.02  ... --
+0975  BD 00 00 00                   19.03  ... --
+0979  99 02 00 00                   19.04  A-4 02
+097D  BD 00 00 00                   19.05  ... --
+0981  BD 00 00 00                   19.06  ... --
+0985  BD 00 00 00                   19.07  ... --
+0989  95 02 00 00                   19.08  F-4 02
+098D  BD 00 00 00                   19.09  ... --
+0991  BD 00 00 00                   19.0A  ... --
+0995  BD 00 00 00                   19.0B  ... --
+0999  99 02 00 00                   19.0C  A-4 02
+099D  BD 00 00 00                   19.0D  ... --
+09A1  BD 00 00 00                   19.0E  ... --
+09A5  BD 00 00 00                   19.0F  ... --
+09A9  FF 00 00 00                   19.10  end --
+09AD  11                          pattern 1A: 17 rows including the end mark
+09AE  97 02 00 00                   1A.00  G-4 02
+09B2  BD 00 00 00                   1A.01  ... --
+09B6  BD 00 00 00                   1A.02  ... --
+09BA  BD 00 00 00                   1A.03  ... --
+09BE  9C 02 00 00                   1A.04  C-5 02
+09C2  BD 00 00 00                   1A.05  ... --
+09C6  A0 02 00 00                   1A.06  E-5 02
+09CA  BD 00 00 00                   1A.07  ... --
+09CE  BD 00 00 00                   1A.08  ... --
+09D2  BD 00 00 00                   1A.09  ... --
+09D6  BD 00 00 00                   1A.0A  ... --
+09DA  BD 00 00 00                   1A.0B  ... --
+09DE  A3 02 00 00                   1A.0C  G-5 02
+09E2  BD 00 00 00                   1A.0D  ... --
+09E6  BD 00 00 00                   1A.0E  ... --
+09EA  BD 00 00 00                   1A.0F  ... --
+09EE  FF 00 00 00                   1A.10  end --
+09F2  11                          pattern 1B: 17 rows including the end mark
+09F3  A1 02 00 00                   1B.00  F-5 02
+09F7  BD 00 00 00                   1B.01  ... --
+09FB  BD 00 00 00                   1B.02  ... --
+09FF  BD 00 00 00                   1B.03  ... --
+0A03  A0 02 00 00                   1B.04  E-5 02
+0A07  BD 00 00 00                   1B.05  ... --
+0A0B  9E 02 00 00                   1B.06  D-5 02
+0A0F  BD 00 00 00                   1B.07  ... --
+0A13  9B 02 00 00                   1B.08  B-4 02
+0A17  BD 00 00 00                   1B.09  ... --
+0A1B  BD 00 00 00                   1B.0A  ... --
+0A1F  BD 00 00 00                   1B.0B  ... --
+0A23  BD 00 00 00                   1B.0C  ... --
+0A27  BD 00 00 00                   1B.0D  ... --
+0A2B  BD 00 00 00                   1B.0E  ... --
+0A2F  BD 00 00 00                   1B.0F  ... --
+0A33  FF 00 00 00                   1B.10  end --
+0A37  11                          pattern 1C: 17 rows including the end mark
+0A38  99 02 00 00                   1C.00  A-4 02
+0A3C  BD 00 00 00                   1C.01  ... --
+0A40  BD 00 00 00                   1C.02  ... --
+0A44  BD 00 00 00                   1C.03  ... --
+0A48  9C 02 00 00                   1C.04  C-5 02
+0A4C  BD 00 00 00                   1C.05  ... --
+0A50  A0 02 00 00                   1C.06  E-5 02
+0A54  BD 00 00 00                   1C.07  ... --
+0A58  BD 00 00 00                   1C.08  ... --
+0A5C  BD 00 00 00                   1C.09  ... --
+0A60  BD 00 00 00                   1C.0A  ... --
+0A64  BD 00 00 00                   1C.0B  ... --
+0A68  A5 02 00 00                   1C.0C  A-5 02
+0A6C  BD 00 00 00                   1C.0D  ... --
+0A70  BD 00 00 00                   1C.0E  ... --
+0A74  BD 00 00 00                   1C.0F  ... --
+0A78  FF 00 00 00                   1C.10  end --
+0A7C  11                          pattern 1D: 17 rows including the end mark
+0A7D  A3 02 00 00                   1D.00  G-5 02
+0A81  BD 00 00 00                   1D.01  ... --
+0A85  BD 00 00 00                   1D.02  ... --
+0A89  BD 00 00 00                   1D.03  ... --
+0A8D  A1 02 00 00                   1D.04  F-5 02
+0A91  BD 00 00 00                   1D.05  ... --
+0A95  BD 00 00 00                   1D.06  ... --
+0A99  BD 00 00 00                   1D.07  ... --
+0A9D  A0 02 00 00                   1D.08  E-5 02
+0AA1  BD 00 00 00                   1D.09  ... --
+0AA5  BD 00 00 00                   1D.0A  ... --
+0AA9  BD 00 00 00                   1D.0B  ... --
+0AAD  9C 02 00 00                   1D.0C  C-5 02
+0AB1  BD 00 00 00                   1D.0D  ... --
+0AB5  BD 00 00 00                   1D.0E  ... --
+0AB9  BD 00 00 00                   1D.0F  ... --
+0ABD  FF 00 00 00                   1D.10  end --
+0AC1  11                          pattern 1E: 17 rows including the end mark
+0AC2  9B 02 00 00                   1E.00  B-4 02
+0AC6  BD 00 00 00                   1E.01  ... --
+0ACA  BD 00 00 00                   1E.02  ... --
+0ACE  BD 00 00 00                   1E.03  ... --
+0AD2  BD 00 00 00                   1E.04  ... --
+0AD6  BD 00 00 00                   1E.05  ... --
+0ADA  BD 00 00 00                   1E.06  ... --
+0ADE  BD 00 00 00                   1E.07  ... --
+0AE2  98 02 00 00                   1E.08  G#4 02
+0AE6  BD 00 00 00                   1E.09  ... --
+0AEA  BD 00 00 00                   1E.0A  ... --
+0AEE  BD 00 00 00                   1E.0B  ... --
+0AF2  9B 02 00 00                   1E.0C  B-4 02
+0AF6  BD 00 00 00                   1E.0D  ... --
+0AFA  BD 00 00 00                   1E.0E  ... --
+0AFE  BD 00 00 00                   1E.0F  ... --
+0B02  FF 00 00 00                   1E.10  end --
+0B06  11                          pattern 1F: 17 rows including the end mark
+0B07  A0 02 00 00                   1F.00  E-5 02
+0B0B  BD 00 00 00                   1F.01  ... --
+0B0F  BD 00 00 00                   1F.02  ... --
+0B13  BD 00 00 00                   1F.03  ... --
+0B17  BD 00 00 00                   1F.04  ... --
+0B1B  BD 00 00 00                   1F.05  ... --
+0B1F  BD 00 00 00                   1F.06  ... --
+0B23  BD 00 00 00                   1F.07  ... --
+0B27  BD 00 00 00                   1F.08  ... --
+0B2B  BD 00 00 00                   1F.09  ... --
+0B2F  BD 00 00 00                   1F.0A  ... --
+0B33  BD 00 00 00                   1F.0B  ... --
+0B37  BE 00 00 00                   1F.0C  --- --
+0B3B  BD 00 00 00                   1F.0D  ... --
+0B3F  BD 00 00 00                   1F.0E  ... --
+0B43  BD 00 00 00                   1F.0F  ... --
+0B47  FF 00 00 00                   1F.10  end --
+0B4B  11                          pattern 20: 17 rows including the end mark
+0B4C  81 06 0A 06                   20.00  A-2 06  A06 filter ptr
+0B50  BD 00 00 00                   20.01  ... --
+0B54  BE 00 00 00                   20.02  --- --
+0B58  BD 00 00 00                   20.03  ... --
+0B5C  8D 06 00 00                   20.04  A-3 06
+0B60  BD 00 00 00                   20.05  ... --
+0B64  BE 00 00 00                   20.06  --- --
+0B68  BD 00 00 00                   20.07  ... --
+0B6C  81 06 00 00                   20.08  A-2 06
+0B70  BD 00 00 00                   20.09  ... --
+0B74  BE 00 00 00                   20.0A  --- --
+0B78  BD 00 00 00                   20.0B  ... --
+0B7C  88 06 00 00                   20.0C  E-3 06
+0B80  BD 00 00 00                   20.0D  ... --
+0B84  BE 00 00 00                   20.0E  --- --
+0B88  BD 00 00 00                   20.0F  ... --
+0B8C  FF 00 00 00                   20.10  end --
+0B90  11                          pattern 21: 17 rows including the end mark
+0B91  7D 06 00 00                   21.00  F-2 06
+0B95  BD 00 00 00                   21.01  ... --
+0B99  BE 00 00 00                   21.02  --- --
+0B9D  BD 00 00 00                   21.03  ... --
+0BA1  89 06 00 00                   21.04  F-3 06
+0BA5  BD 00 00 00                   21.05  ... --
+0BA9  BE 00 00 00                   21.06  --- --
+0BAD  BD 00 00 00                   21.07  ... --
+0BB1  7D 06 00 00                   21.08  F-2 06
+0BB5  BD 00 00 00                   21.09  ... --
+0BB9  BE 00 00 00                   21.0A  --- --
+0BBD  BD 00 00 00                   21.0B  ... --
+0BC1  84 06 00 00                   21.0C  C-3 06
+0BC5  BD 00 00 00                   21.0D  ... --
+0BC9  BE 00 00 00                   21.0E  --- --
+0BCD  BD 00 00 00                   21.0F  ... --
+0BD1  FF 00 00 00                   21.10  end --
+0BD5  11                          pattern 22: 17 rows including the end mark
+0BD6  84 06 00 00                   22.00  C-3 06
+0BDA  BD 00 00 00                   22.01  ... --
+0BDE  BE 00 00 00                   22.02  --- --
+0BE2  BD 00 00 00                   22.03  ... --
+0BE6  90 06 00 00                   22.04  C-4 06
+0BEA  BD 00 00 00                   22.05  ... --
+0BEE  BE 00 00 00                   22.06  --- --
+0BF2  BD 00 00 00                   22.07  ... --
+0BF6  84 06 00 00                   22.08  C-3 06
+0BFA  BD 00 00 00                   22.09  ... --
+0BFE  BE 00 00 00                   22.0A  --- --
+0C02  BD 00 00 00                   22.0B  ... --
+0C06  8B 06 00 00                   22.0C  G-3 06
+0C0A  BD 00 00 00                   22.0D  ... --
+0C0E  BE 00 00 00                   22.0E  --- --
+0C12  BD 00 00 00                   22.0F  ... --
+0C16  FF 00 00 00                   22.10  end --
+0C1A  11                          pattern 23: 17 rows including the end mark
+0C1B  7F 06 00 00                   23.00  G-2 06
+0C1F  BD 00 00 00                   23.01  ... --
+0C23  BE 00 00 00                   23.02  --- --
+0C27  BD 00 00 00                   23.03  ... --
+0C2B  8B 06 00 00                   23.04  G-3 06
+0C2F  BD 00 00 00                   23.05  ... --
+0C33  BE 00 00 00                   23.06  --- --
+0C37  BD 00 00 00                   23.07  ... --
+0C3B  7F 06 00 00                   23.08  G-2 06
+0C3F  BD 00 00 00                   23.09  ... --
+0C43  BE 00 00 00                   23.0A  --- --
+0C47  BD 00 00 00                   23.0B  ... --
+0C4B  86 06 00 00                   23.0C  D-3 06
+0C4F  BD 00 00 00                   23.0D  ... --
+0C53  BE 00 00 00                   23.0E  --- --
+0C57  BD 00 00 00                   23.0F  ... --
+0C5B  FF 00 00 00                   23.10  end --
+0C5F  11                          pattern 24: 17 rows including the end mark
+0C60  81 06 00 00                   24.00  A-2 06
+0C64  BD 00 00 00                   24.01  ... --
+0C68  BE 00 00 00                   24.02  --- --
+0C6C  BD 00 00 00                   24.03  ... --
+0C70  8D 06 00 00                   24.04  A-3 06
+0C74  BD 00 00 00                   24.05  ... --
+0C78  BE 00 00 00                   24.06  --- --
+0C7C  BD 00 00 00                   24.07  ... --
+0C80  81 06 00 00                   24.08  A-2 06
+0C84  BD 00 00 00                   24.09  ... --
+0C88  BE 00 00 00                   24.0A  --- --
+0C8C  BD 00 00 00                   24.0B  ... --
+0C90  88 06 00 00                   24.0C  E-3 06
+0C94  BD 00 00 00                   24.0D  ... --
+0C98  BE 00 00 00                   24.0E  --- --
+0C9C  BD 00 00 00                   24.0F  ... --
+0CA0  FF 00 00 00                   24.10  end --
+0CA4  11                          pattern 25: 17 rows including the end mark
+0CA5  7D 06 00 00                   25.00  F-2 06
+0CA9  BD 00 00 00                   25.01  ... --
+0CAD  BE 00 00 00                   25.02  --- --
+0CB1  BD 00 00 00                   25.03  ... --
+0CB5  89 06 00 00                   25.04  F-3 06
+0CB9  BD 00 00 00                   25.05  ... --
+0CBD  BE 00 00 00                   25.06  --- --
+0CC1  BD 00 00 00                   25.07  ... --
+0CC5  7D 06 00 00                   25.08  F-2 06
+0CC9  BD 00 00 00                   25.09  ... --
+0CCD  BE 00 00 00                   25.0A  --- --
+0CD1  BD 00 00 00                   25.0B  ... --
+0CD5  84 06 00 00                   25.0C  C-3 06
+0CD9  BD 00 00 00                   25.0D  ... --
+0CDD  BE 00 00 00                   25.0E  --- --
+0CE1  BD 00 00 00                   25.0F  ... --
+0CE5  FF 00 00 00                   25.10  end --
+0CE9  11                          pattern 26: 17 rows including the end mark
+0CEA  7C 06 00 00                   26.00  E-2 06
+0CEE  BD 00 00 00                   26.01  ... --
+0CF2  BE 00 00 00                   26.02  --- --
+0CF6  BD 00 00 00                   26.03  ... --
+0CFA  88 06 00 00                   26.04  E-3 06
+0CFE  BD 00 00 00                   26.05  ... --
+0D02  BE 00 00 00                   26.06  --- --
+0D06  BD 00 00 00                   26.07  ... --
+0D0A  7C 06 00 00                   26.08  E-2 06
+0D0E  BD 00 00 00                   26.09  ... --
+0D12  BE 00 00 00                   26.0A  --- --
+0D16  BD 00 00 00                   26.0B  ... --
+0D1A  83 06 00 00                   26.0C  B-2 06
+0D1E  BD 00 00 00                   26.0D  ... --
+0D22  BE 00 00 00                   26.0E  --- --
+0D26  BD 00 00 00                   26.0F  ... --
+0D2A  FF 00 00 00                   26.10  end --
+0D2E  11                          pattern 27: 17 rows including the end mark
+0D2F  7C 06 00 00                   27.00  E-2 06
+0D33  BD 00 00 00                   27.01  ... --
+0D37  BE 00 00 00                   27.02  --- --
+0D3B  BD 00 00 00                   27.03  ... --
+0D3F  88 06 00 00                   27.04  E-3 06
+0D43  BD 00 00 00                   27.05  ... --
+0D47  BE 00 00 00                   27.06  --- --
+0D4B  BD 00 00 00                   27.07  ... --
+0D4F  7C 06 00 00                   27.08  E-2 06
+0D53  BD 00 00 00                   27.09  ... --
+0D57  BE 00 00 00                   27.0A  --- --
+0D5B  BD 00 00 00                   27.0B  ... --
+0D5F  83 06 00 00                   27.0C  B-2 06
+0D63  BD 00 00 00                   27.0D  ... --
+0D67  BE 00 00 00                   27.0E  --- --
+0D6B  BD 00 00 00                   27.0F  ... --
+0D6F  FF 00 00 00                   27.10  end --
+0D73  11                          pattern 28: 17 rows including the end mark
+0D74  90 07 00 00                   28.00  C-4 07
+0D78  BD 00 00 00                   28.01  ... --
+0D7C  90 09 00 00                   28.02  C-4 09
+0D80  BD 00 00 00                   28.03  ... --
+0D84  90 08 00 00                   28.04  C-4 08
+0D88  BD 00 00 00                   28.05  ... --
+0D8C  90 09 00 00                   28.06  C-4 09
+0D90  BD 00 00 00                   28.07  ... --
+0D94  90 07 00 00                   28.08  C-4 07
+0D98  BD 00 00 00                   28.09  ... --
+0D9C  90 07 00 00                   28.0A  C-4 07
+0DA0  BD 00 00 00                   28.0B  ... --
+0DA4  90 08 00 00                   28.0C  C-4 08
+0DA8  BD 00 00 00                   28.0D  ... --
+0DAC  90 09 00 00                   28.0E  C-4 09
+0DB0  BD 00 00 00                   28.0F  ... --
+0DB4  FF 00 00 00                   28.10  end --

@@ -125,7 +125,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 |---|---|
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
 | Property (`proptest`) | Validator invariants hold for any reduced song; encoders round-trip |
-| Snapshot (`insta`) | Fixture MIDI → `.sng` bytes as annotated dumps |
+| Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
 | Differential | Ports against originals: `.sng` writer vs pygoattracker; Basic Pitch post-processing vs the Python package; features vs librosa (test-only sidecar) |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |
 | Audio regression (slow) | Reference tracks: melody similarity, onset F1, voice-3 dropout, both chips |

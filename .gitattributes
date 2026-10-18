@@ -7,3 +7,5 @@
 *.prg binary
 *.wav binary
 *.mid binary
+*.bin binary
+*.f16 binary

@@ -1,0 +1,28 @@
+---
+source: crates/score64-formats/tests/golden.rs
+expression: "annotate::sfx(&fixture(&file)).unwrap()"
+---
+0000  0A                          attack/decay 0A
+0001  00                          sustain/release 00
+0002  08                          pulse width $800 (nybbles reversed)
+0003  D6 81                       frame  1: note D-7, wave $81 noise+gate
+0005  BE                          frame  2: note D-5
+0006  96 41                       frame  3: note A#1, wave $41 pulse+gate
+0008  AB 81                       frame  4: note G-3, wave $81 noise+gate
+000A  A8                          frame  5: note E-3
+000B  A6                          frame  6: note D-3
+000C  A4                          frame  7: note C-3
+000D  A4                          frame  8: note C-3
+000E  A4                          frame  9: note C-3
+000F  A4                          frame 10: note C-3
+0010  A4                          frame 11: note C-3
+0011  A4                          frame 12: note C-3
+0012  A4                          frame 13: note C-3
+0013  A4                          frame 14: note C-3
+0014  A2                          frame 15: note A#2
+0015  A2                          frame 16: note A#2
+0016  A2                          frame 17: note A#2
+0017  A2                          frame 18: note A#2
+0018  A0 80                       frame 19: note G#2, wave $80 noise
+001A  A0                          frame 20: note G#2
+001B  00                          end after 20 frames
