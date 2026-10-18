@@ -3,6 +3,9 @@
 #
 #   run.sh <song.sng> <workdir> [effect.bin]
 #
+# With an effect and KICKASS=/path/to/KickAss.jar, also assembles sfx-driver.asm, runs it in x64sc and diffs its SID
+# writes against the helper's for the same effect schedule.
+#
 # Needs on PATH: gt2reloc (GoatTracker 2.77), sidplayfp (3.2.2 on libsidplayfp 3.1.1 with libresidfp), vsid (VICE 3.10),
 # uv. Outputs land in <workdir>, which should be git-ignored (for example scratch/). See
 # docs/research/2026-10-18-packed-player-spike.md.
@@ -17,6 +20,7 @@ seconds=60
 cycles=$(( (seconds + 1) * 985248 ))
 
 mkdir -p "$work"
+work=$(cd "$work" && pwd)
 name=$(basename "$song" .sng)
 tune="${name}_d1h1"
 
@@ -49,3 +53,18 @@ for chip in 6581 8580; do
 done
 
 uv run -q --no-project --with numpy --with scipy python "$here/compare.py" "$work" "$tune"
+
+if [ -n "$effect" ] && [ -n "${KICKASS:-}" ]; then
+  "$emu" render "$work/$tune.sid" --seconds $seconds --wav /dev/null --writes "$work/${tune}_sfx_helper_writes.tsv" \
+    --effect "$effect" --effect-every 37 --effect-voice 3 >/dev/null
+  java -jar "$KICKASS" "$here/sfx-driver.asm" -o "$work/sfx-driver.prg" -odir "$work" \
+    ":tune=$work/$tune.sid" ":fx=$(cd "$(dirname "$effect")" && pwd)/$(basename "$effect")" >/dev/null
+  # KERNAL boot takes about 3 s of emulated time before the driver starts.
+  x64sc -default -silent -warp -limitcycles $(( (seconds + 15) * 985248 )) -sounddev dump \
+    -soundarg "$work/${tune}_sfx_x64sc.dmp" -autostartprgmode 1 -autostart "$work/sfx-driver.prg" >/dev/null 2>&1 || true
+  echo "#### With effects: helper vs x64sc + sfx-driver.prg"
+  uv run -q --no-project --with numpy --with scipy python -c "
+import sys; sys.path.insert(0, '$here')
+import compare as c
+c.compare_writes(c.helper_frames('$work/${tune}_sfx_helper_writes.tsv'), c.vice_bursts('$work/${tune}_sfx_x64sc.dmp'))"
+fi

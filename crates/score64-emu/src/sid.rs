@@ -31,6 +31,8 @@ pub struct SidClock {
     now: u64,
     /// Mono 16-bit samples produced so far.
     pub samples: Vec<i16>,
+    /// Voices (bit 0 = voice 1) kept silent, for listening to or measuring one voice at a time.
+    pub muted: u8,
 }
 
 impl SidClock {
@@ -46,6 +48,7 @@ impl SidClock {
             sid,
             now: 0,
             samples: Vec::new(),
+            muted: 0,
         }
     }
 
@@ -67,6 +70,12 @@ impl SidClock {
     /// Write a register at `cycle` (which must not be in the past).
     pub fn write_at(&mut self, cycle: u64, register: u8, value: u8) {
         self.advance_to(cycle);
+        // A muted voice keeps its oscillator (it may still sync or ring-modulate another voice) but never gates and
+        // has no waveform selected.
+        let value = match register {
+            0x04 | 0x0B | 0x12 if self.muted & (1 << (register / 7)) != 0 => value & 0x06,
+            _ => value,
+        };
         self.sid.write(register, value);
     }
 

@@ -72,8 +72,12 @@ def compare_writes(helper, vice):
                     adsr_deltas.append(d)
         elif first_diff is None:
             first_diff = k
-    starts = np.array([b[0][0] for b in vice[offset:]])
-    period = np.diff(starts)
+    # Call-time jitter: how much VICE's frame-to-frame spacing of each frame's first write differs from the
+    # helper's (whose play calls are exactly FRAME apart). The player's own work before its first write cancels out.
+    n = len(pairs)
+    helper_first = np.array([h[0][0] for h in helper[:n]]) + FRAME * np.arange(n)
+    vice_first = np.array([v[0][0] for v in vice[offset : offset + n]])
+    jitter = np.diff(vice_first) - np.diff(helper_first)
     print("### SID register writes: helper vs VICE x64sc/vsid (reSID, cycle-exact 6510)\n")
     print("| Measure | Value |\n|---|---|")
     print(f"| Frames compared | {len(pairs)} (VICE frames skipped at start: {offset}, the PSID driver's own writes) |")
@@ -85,8 +89,8 @@ def compare_writes(helper, vice):
         top = ", ".join(f"{k:+d}: {v}" for k, v in sorted(hist.items(), key=lambda kv: -kv[1])[:5])
         print(f"| Intra-frame timing, {name} (helper − VICE, cycles) | mean {d.mean():+.2f}, "
               f"|max| {np.abs(d).max()}, {100 * np.mean(d == 0):.1f} % exact; most common: {top} |")
-    print(f"| VICE play-call period (cycles) | min {period.min()}, max {period.max()}, "
-          f"mean {period.mean():.2f} (helper: exactly {FRAME}) |")
+    print(f"| Play-call jitter, VICE vs helper (cycles) | min {jitter.min():+d}, max {jitter.max():+d}, "
+          f"mean |Δ| {np.abs(jitter).mean():.2f} (helper calls play exactly every {FRAME}) |")
     print()
 
 

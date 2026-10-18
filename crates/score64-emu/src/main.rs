@@ -48,6 +48,9 @@ enum Command {
         /// SID model: 6581 or 8580.
         #[arg(long, default_value = "6581")]
         chip: Chip,
+        /// Voices to silence, for example `--mute 2,3` to hear voice 1 alone.
+        #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=3))]
+        mute: Vec<u8>,
         /// Output sample rate.
         #[arg(long, default_value_t = 48_000)]
         rate: u32,
@@ -82,6 +85,9 @@ enum Command {
         /// SID model: 6581 or 8580.
         #[arg(long, default_value = "6581")]
         chip: Chip,
+        /// Voices to silence, for example `--mute 2,3` to hear voice 1 alone.
+        #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=3))]
+        mute: Vec<u8>,
         /// Output sample rate.
         #[arg(long, default_value_t = 48_000)]
         rate: u32,
@@ -109,6 +115,7 @@ fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
             subtune,
             seconds,
             chip,
+            mute,
             rate,
             wav,
             writes,
@@ -126,28 +133,45 @@ fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 None => None,
             };
             render(
-                &sid, subtune, seconds, chip, rate, &wav, writes, opcodes, effect,
+                &sid,
+                subtune,
+                seconds,
+                chip,
+                mute_mask(&mute),
+                rate,
+                &wav,
+                writes,
+                opcodes,
+                effect,
             )
         }
         Command::Replay {
             dump,
             seconds,
             chip,
+            mute,
             rate,
             wav,
-        } => replay(&dump, seconds, chip, rate, &wav),
+        } => replay(&dump, seconds, chip, mute_mask(&mute), rate, &wav),
     }
+}
+
+/// Voice numbers (1–3) as a bit mask (bit 0 = voice 1).
+fn mute_mask(voices: &[u8]) -> u8 {
+    voices.iter().fold(0, |m, v| m | 1 << (v - 1))
 }
 
 fn replay(
     dump: &Path,
     seconds: f64,
     chip: Chip,
+    muted: u8,
     rate: u32,
     wav: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let end = (seconds * f64::from(PAL_CLOCK_HZ)) as u64;
     let mut sid = SidClock::new(chip, PAL_CLOCK_HZ, rate);
+    sid.muted = muted;
     let mut cycle = 0u64;
     let mut count = 0usize;
     for (n, line) in std::fs::read_to_string(dump)?.lines().enumerate() {
@@ -188,6 +212,7 @@ fn render(
     subtune: Option<u16>,
     seconds: f64,
     chip: Chip,
+    muted: u8,
     rate: u32,
     wav: &Path,
     writes: Option<PathBuf>,
@@ -200,7 +225,9 @@ fn render(
         return Err(format!("subtune {song} out of range 1..={}", tune.songs).into());
     }
 
-    let mut memory = Memory::new(SidClock::new(chip, PAL_CLOCK_HZ, rate));
+    let mut sid_clock = SidClock::new(chip, PAL_CLOCK_HZ, rate);
+    sid_clock.muted = muted;
+    let mut memory = Memory::new(sid_clock);
     memory.load(tune.load_address, &tune.data);
     if let Some(e) = &effect {
         let tune_end = usize::from(tune.load_address) + tune.data.len();
