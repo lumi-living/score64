@@ -64,10 +64,11 @@ enum Command {
         #[arg(long)]
         opcodes: Option<PathBuf>,
         /// Sound-effect data (GoatTracker format, for example from `ins2snd2 -b`) to trigger through the player's
-        /// sound-effect entry (start+6; only for tunes packed with `-D1`). Loaded at `$C000`.
+        /// sound-effect entry (start+6; only for tunes packed with `-D1`). Repeat to rotate several effects; the n-th
+        /// is loaded at `$C000 + n * $80`.
         #[arg(long)]
-        effect: Option<PathBuf>,
-        /// Trigger the effect every this many frames.
+        effect: Vec<PathBuf>,
+        /// Trigger an effect every this many frames.
         #[arg(long, default_value_t = 50)]
         effect_every: u64,
         /// Voice the effect plays on (1–3).
@@ -124,13 +125,14 @@ fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
             effect_every,
             effect_voice,
         } => {
-            let effect = match effect {
-                Some(path) => Some(Effect {
-                    data: std::fs::read(path)?,
+            let effect = if effect.is_empty() {
+                None
+            } else {
+                Some(Effect {
+                    data: effect.iter().map(std::fs::read).collect::<Result<_, _>>()?,
                     every: effect_every.max(1),
                     voice: effect_voice,
-                }),
-                None => None,
+                })
             };
             render(
                 &sid,
@@ -196,15 +198,16 @@ fn replay(
     Ok(())
 }
 
-/// A sound effect to trigger during a render.
+/// Sound effects to trigger during a render, in rotation.
 struct Effect {
-    data: Vec<u8>,
+    data: Vec<Vec<u8>>,
     every: u64,
     voice: u8,
 }
 
-/// Where `--effect` data is loaded.
+/// Where the first `--effect` is loaded; each further one follows 128 bytes later (the format's maximum size).
 const EFFECT_ADDRESS: u16 = 0xC000;
+const EFFECT_STRIDE: u16 = 0x80;
 
 #[allow(clippy::too_many_arguments)]
 fn render(
@@ -237,7 +240,14 @@ fn render(
             )
             .into());
         }
-        memory.load(EFFECT_ADDRESS, &e.data);
+        for (n, data) in e.data.iter().enumerate() {
+            if data.len() > usize::from(EFFECT_STRIDE) {
+                return Err(
+                    format!("effect {} is {} bytes; the limit is 128", n + 1, data.len()).into(),
+                );
+            }
+            memory.load(EFFECT_ADDRESS + n as u16 * EFFECT_STRIDE, data);
+        }
     }
     let cpu = Emulator6502::new(Registers::default());
     let mut m = Machine::new(cpu, memory);
@@ -262,7 +272,8 @@ fn render(
             && k % e.every == 0
         {
             // LDA #<effect, LDY #>effect, LDX #channel (0, 7 or 14), JSR start+6, in the same frame before play.
-            let [lo, hi] = EFFECT_ADDRESS.to_le_bytes();
+            let which = (k / e.every - 1) as usize % e.data.len();
+            let [lo, hi] = (EFFECT_ADDRESS + which as u16 * EFFECT_STRIDE).to_le_bytes();
             cycles += m.call(
                 tune.init_address + 6,
                 lo,
