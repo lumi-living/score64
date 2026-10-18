@@ -41,7 +41,7 @@ Stages and ports:
 | grid | `BeatTracker` | Beat This! (ONNX) |
 | reduce | `Decider` | `RulesDecider` (default), `LlmDecider` (structured output), `ManualDecider` (`decisions.toml`) |
 | instruments | — | preset library (`presets/*.toml` + `.ins`) |
-| render | `Renderer` | `score64-emu` helper over a pipe (GPL, separate process) |
+| render | `Renderer` | `score64-emu` helper over a pipe (GPL, separate process; reSIDfp engine, ADR-011) |
 | score | — | `score64-analysis` |
 | pack | `Packer` | gt2reloc (external program) |
 | report | — | static HTML |
@@ -98,6 +98,7 @@ crates/
   score64-mcp        `score64-mcp`
   score64-app        Score64 Studio (egui/eframe)
   score64-emu        GPL helper binary (6502 + SID), separate process
+  residfp-sys        GPL, vendored libresidfp (reSIDfp) + C shim; only score64-emu may depend on it (ADR-011)
 xtask/               maintenance tasks
 docs/                PDD, TAD, UX, ADRs, reference, epics
 presets/             instrument presets
@@ -105,7 +106,7 @@ fixtures/            rights-clear audio and MIDI with expected outputs
 sidecar/             optional Python scripts (uv), files in → files out (ADR-009)
 ```
 
-Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by the epics that need them): `clap`, `serde`, `toml`, `serde_json`, `blake3`, `rusqlite`, `midly`, `symphonia`, `cpal`, `rustfft`, `ort`, `reqwest`, `schemars`, `cmaes`, `rmcp`, `eframe`/`egui`, `egui_plot`, `egui-snarl`, `egui_material_icons`, `rfd`, `insta`, `proptest`. `resid-rs` (GPL) and the 6502 core (`emulator_6502`, MIT, ADR-010) are dependencies of `score64-emu` only.
+Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by the epics that need them): `clap`, `serde`, `toml`, `serde_json`, `blake3`, `rusqlite`, `midly`, `symphonia`, `cpal`, `rustfft`, `ort`, `reqwest`, `schemars`, `cmaes`, `rmcp`, `eframe`/`egui`, `egui_plot`, `egui-snarl`, `egui_material_icons`, `rfd`, `insta`, `proptest`. The SID engine (reSIDfp from libresidfp, GPL, vendored in `residfp-sys`, ADR-011; `resid-rs` kept for comparison until #59) and the 6502 core (`emulator_6502`, MIT, ADR-010) are dependencies of `score64-emu` only.
 
 ### 5.1 The emulator helper
 `score64-emu` reads a packed player plus commands on stdin (load, init subtune, poke mailbox, render N frames, set chip model) and writes PCM frames and register logs on stdout. The app keeps one helper process for live audition; the CLI starts one per render. The protocol is versioned and covered by tests in both directions. The CPU sits behind a `Cpu` trait (ADR-010): the helper steps one instruction at a time, timestamps each SID write on the cycle it lands, and checks the core against a subset of the SingleStepTests 6502 vectors.

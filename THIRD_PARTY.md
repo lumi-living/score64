@@ -83,6 +83,7 @@ When it is, each entry here names the project, the commit or version, the files 
 | Item | Use | Licence | Where it may live |
 |---|---|---|---|
 | reSID-family SID emulation (e.g. `resid-rs`) | Rendering and live audition | GPL | `crates/score64-emu` only (ADR-002) |
+| libresidfp 1.2.3 (reSIDfp) | Default SID engine, vendored source with one documented patch (ADR-011) | GPL-2.0-or-later | `crates/residfp-sys`, used only by `crates/score64-emu` |
 | `emulator_6502` 1.1.0 | 6502 core of the emulator helper (ADR-010) | MIT | `crates/score64-emu` only |
 | GoatTracker 2 file formats | `.sng` / `.ins` / sound-effect writers, written from the format documentation | Format documentation | `crates/score64-formats` |
 | pygoattracker | Differential-test oracle for the `.sng` writer (test-only, via the sidecar) | Apache-2.0 | `sidecar/` (not linked) |
