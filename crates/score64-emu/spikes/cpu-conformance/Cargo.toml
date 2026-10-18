@@ -1,0 +1,26 @@
+# One-off measurement tool for ADR-010: scores candidate 6502 cores against the
+# SingleStepTests/65x02 vectors. Not a workspace member and not shipped. It links
+# zinc64 (GPL), so it lives under the GPL crate and shares its licence (ADR-002).
+[package]
+name = "cpu-conformance"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[dependencies]
+mos6502 = "=0.10.1"
+emulator_6502 = { version = "=1.1.0", features = ["illegal_opcodes", "binary_coded_decimal", "implementation_transparency"] }
+mos6502_model = "=0.2.1"
+zinc64-emu = "=0.8.0"
+zinc64-core = "=0.8.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Standalone: keeps this package out of the Score64 workspace.
+[workspace]
+
+[profile.release]
+# zinc64 0.8 overflows a u16 at $FFFF; measure behaviour, not debug panics.
+debug-assertions = false
+overflow-checks = false
