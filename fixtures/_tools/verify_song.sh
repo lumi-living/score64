@@ -27,7 +27,7 @@ emu="$root/target/release/score64-emu"
 fx="--effect $fix/sfx-footstep.bin --effect $fix/sfx-gunshot.bin --effect $fix/sfx-clink.bin --effect-every 37 --effect-voice 3"
 
 compare() {  # helper writes, VICE dump
-  uv run -q --no-project --with numpy --with scipy python -c "
+  uv run -q --frozen --project "$root/sidecar" python -c "
 import sys; sys.path.insert(0, '$spike')
 import compare as c
 c.compare_writes(c.helper_frames('$1'), c.vice_bursts('$2'))" | grep -E "identical|all writes|jitter"

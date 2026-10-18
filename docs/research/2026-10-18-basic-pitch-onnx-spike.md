@@ -69,8 +69,8 @@ This doesn't affect go or no-go, but it matters for E5 and E6. Against the synth
 ## Reproduce
 
 ```sh
-uv run sidecar/make_test_stem.py scratch/synth_poly.wav scratch/synth_poly_truth.json
-uv run sidecar/basic_pitch_reference.py scratch/synth_poly.wav scratch/ref_synth_poly
+uv run --frozen --project sidecar python sidecar/make_test_stem.py scratch/synth_poly.wav scratch/synth_poly_truth.json
+uv run --frozen --project sidecar python sidecar/basic_pitch_reference.py scratch/synth_poly.wav scratch/ref_synth_poly
 BASIC_PITCH_MODEL=<site-packages>/basic_pitch/saved_models/icassp_2022/nmp.onnx \
 BASIC_PITCH_REFERENCE=$PWD/scratch/ref_synth_poly \
   cargo test --release -p score64-adapters --test basic_pitch_onnx -- --ignored --nocapture

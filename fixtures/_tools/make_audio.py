@@ -1,11 +1,7 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["numpy==2.4.6"]
-# ///
 """Render Score64's rights-clear audio and MIDI fixtures (#18). Everything is synthesised here from
 composition.py and fixed random seeds; no samples or third-party recordings are involved (MIT).
 
-    uv run fixtures/_tools/make_audio.py fixtures
+    uv run --frozen --project sidecar python fixtures/_tools/make_audio.py fixtures
 
 Writes source.wav (44.1 kHz, 16-bit mono) and, where the material has notes, source.mid into:
     sparse-melody-bass/   lead + bass, 8 bars
