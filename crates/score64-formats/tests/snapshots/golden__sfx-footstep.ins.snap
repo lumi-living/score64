@@ -1,0 +1,22 @@
+---
+source: crates/score64-formats/tests/golden.rs
+expression: "annotate::ins(&fixture(&file)).unwrap()"
+---
+0000  47 54 49 35                 GTI5
+0004  05 00 01 01 00 00 00 02 ..  instrument "SFX footstep" AD 05 SR 00 wave 01 pulse 01 filter 00 vib 00/00 gate 02 1st 09
+001D  06                          wavetable: 6 rows
+-- wavetable (left $001E, right $0024)
+      01: 81 C0        wave $81 noise+gate, note E-5 (absolute)
+      02: 81 B8        wave $81 noise+gate, note G#4 (absolute)
+      03: 41 9A        wave $41 pulse+gate, note D-2 (absolute)
+      04: 41 97        wave $41 pulse+gate, note B-1 (absolute)
+      05: 80 94        wave $80 noise, note G#1 (absolute)
+      06: FF 00        jump: stop
+002A  02                          pulsetable: 2 rows
+-- pulsetable (left $002B, right $002D)
+      01: 88 00        set pulse width $800
+      02: FF 00        jump: stop
+002F  00                          filtertable: 0 rows
+-- filtertable (left $0030, right $0030)
+0030  00                          speedtable: 0 rows
+-- speedtable (left $0031, right $0031)

@@ -1,0 +1,27 @@
+---
+source: crates/score64-formats/tests/golden.rs
+expression: "annotate::ins(&fixture(&file)).unwrap()"
+---
+0000  47 54 49 35                 GTI5
+0004  05 00 01 01 00 00 00 02 ..  instrument "SFX clink" AD 05 SR 00 wave 01 pulse 01 filter 00 vib 00/00 gate 02 1st 09
+001D  0B                          wavetable: 11 rows
+-- wavetable (left $001E, right $0029)
+      01: 81 DB        wave $81 noise+gate, note G-7 (absolute)
+      02: 41 D2        wave $41 pulse+gate, note A#6 (absolute)
+      03: 41 D9        wave $41 pulse+gate, note F-7 (absolute)
+      04: 11 D3        wave $11 tri+gate, note B-6 (absolute)
+      05: 41 DA        wave $41 pulse+gate, note F#7 (absolute)
+      06: 11 D4        wave $11 tri+gate, note C-7 (absolute)
+      07: 41 D8        wave $41 pulse+gate, note E-7 (absolute)
+      08: 11 D2        wave $11 tri+gate, note A#6 (absolute)
+      09: 41 D9        wave $41 pulse+gate, note F-7 (absolute)
+      0A: 40 D3        wave $40 pulse, note B-6 (absolute)
+      0B: FF 00        jump: stop
+0034  02                          pulsetable: 2 rows
+-- pulsetable (left $0035, right $0037)
+      01: 86 00        set pulse width $600
+      02: FF 00        jump: stop
+0039  00                          filtertable: 0 rows
+-- filtertable (left $003A, right $003A)
+003A  00                          speedtable: 0 rows
+-- speedtable (left $003B, right $003B)

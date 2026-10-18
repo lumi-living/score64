@@ -1,0 +1,37 @@
+---
+source: crates/score64-formats/tests/golden.rs
+expression: "annotate::ins(&fixture(&file)).unwrap()"
+---
+0000  47 54 49 35                 GTI5
+0004  0A 00 01 01 00 00 00 02 ..  instrument "SFX gunshot" AD 0A SR 00 wave 01 pulse 01 filter 00 vib 00/00 gate 02 1st 09
+001D  15                          wavetable: 21 rows
+-- wavetable (left $001E, right $0033)
+      01: 81 D6        wave $81 noise+gate, note D-7 (absolute)
+      02: 81 BE        wave $81 noise+gate, note D-5 (absolute)
+      03: 41 96        wave $41 pulse+gate, note A#1 (absolute)
+      04: 81 AB        wave $81 noise+gate, note G-3 (absolute)
+      05: 81 A8        wave $81 noise+gate, note E-3 (absolute)
+      06: 81 A6        wave $81 noise+gate, note D-3 (absolute)
+      07: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      08: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      09: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      0A: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      0B: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      0C: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      0D: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      0E: 81 A4        wave $81 noise+gate, note C-3 (absolute)
+      0F: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      10: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      11: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      12: 81 A2        wave $81 noise+gate, note A#2 (absolute)
+      13: 80 A0        wave $80 noise, note G#2 (absolute)
+      14: 80 A0        wave $80 noise, note G#2 (absolute)
+      15: FF 00        jump: stop
+0048  02                          pulsetable: 2 rows
+-- pulsetable (left $0049, right $004B)
+      01: 88 00        set pulse width $800
+      02: FF 00        jump: stop
+004D  00                          filtertable: 0 rows
+-- filtertable (left $004E, right $004E)
+004E  00                          speedtable: 0 rows
+-- speedtable (left $004F, right $004F)

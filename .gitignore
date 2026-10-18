@@ -29,3 +29,7 @@ __pycache__/
 
 # Example build output
 examples/*/build/
+
+# insta: pending snapshots from a failed run
+*.snap.new
+*.pending-snap
