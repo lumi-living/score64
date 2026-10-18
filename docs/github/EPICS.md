@@ -19,7 +19,7 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
   - ✓ Workspace skeleton: crates, lints, toolchain pin [#2](https://github.com/lumi-living/score64/issues/2)
   - ✓ CI: fmt, clippy, test matrix and licence-boundary job [#3](https://github.com/lumi-living/score64/issues/3)
   - ✓ Community files, issue templates, Dependabot [#4](https://github.com/lumi-living/score64/issues/4)
-  - Branch protection on main with the CI contexts [#5](https://github.com/lumi-living/score64/issues/5)
+  - ✓ Branch protection on main with the CI contexts [#5](https://github.com/lumi-living/score64/issues/5)
   - score64-app boots an empty eframe window (light/dark, Material Symbols) [#6](https://github.com/lumi-living/score64/issues/6)
   - Command engine skeleton shared by CLI, MCP and app (ADR-005) [#7](https://github.com/lumi-living/score64/issues/7)
   - score64-emu helper skeleton and versioned stdin/stdout protocol [#8](https://github.com/lumi-living/score64/issues/8)
