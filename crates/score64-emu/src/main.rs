@@ -2,8 +2,9 @@
 //! to PCM and drives live audition. It is a separate binary so the rest of Score64 stays MIT (ADR-002); other
 //! crates must never depend on it as a library.
 //!
-//! For now it has one command-line mode, `render`, used by the E3 spike (#20). The versioned stdin/stdout protocol of
-//! TAD §5.1 arrives with #8 and will drive the same machine.
+//! For now it has two command-line modes, `render` and `replay`, used by the E3 spikes and fixtures. The versioned
+//! stdin/stdout protocol of TAD §5.1 arrives with #8 and will drive the same machine. The SID engine is reSIDfp by
+//! default (ADR-011).
 
 mod cpu;
 mod machine;
@@ -20,7 +21,7 @@ use clap::{Parser, Subcommand};
 use cpu::{Emulator6502, Registers};
 use machine::{Machine, Memory, PAL_CLOCK_HZ, PAL_CYCLES_PER_FRAME};
 use psid::Psid;
-use sid::{Chip, SidClock};
+use sid::{Chip, Engine, SidClock};
 
 #[derive(Parser)]
 #[command(
@@ -48,6 +49,9 @@ enum Command {
         /// SID model: 6581 or 8580.
         #[arg(long, default_value = "6581")]
         chip: Chip,
+        /// SID emulation: residfp (reSIDfp, sidplayfp's settings) or resid-rs.
+        #[arg(long, default_value = "residfp")]
+        engine: Engine,
         /// Voices to silence, for example `--mute 2,3` to hear voice 1 alone.
         #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=3))]
         mute: Vec<u8>,
@@ -86,6 +90,9 @@ enum Command {
         /// SID model: 6581 or 8580.
         #[arg(long, default_value = "6581")]
         chip: Chip,
+        /// SID emulation: residfp (reSIDfp, sidplayfp's settings) or resid-rs.
+        #[arg(long, default_value = "residfp")]
+        engine: Engine,
         /// Voices to silence, for example `--mute 2,3` to hear voice 1 alone.
         #[arg(long, value_delimiter = ',', value_parser = clap::value_parser!(u8).range(1..=3))]
         mute: Vec<u8>,
@@ -116,6 +123,7 @@ fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
             subtune,
             seconds,
             chip,
+            engine,
             mute,
             rate,
             wav,
@@ -139,6 +147,7 @@ fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
                 subtune,
                 seconds,
                 chip,
+                engine,
                 mute_mask(&mute),
                 rate,
                 &wav,
@@ -151,10 +160,11 @@ fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
             dump,
             seconds,
             chip,
+            engine,
             mute,
             rate,
             wav,
-        } => replay(&dump, seconds, chip, mute_mask(&mute), rate, &wav),
+        } => replay(&dump, seconds, chip, engine, mute_mask(&mute), rate, &wav),
     }
 }
 
@@ -167,12 +177,13 @@ fn replay(
     dump: &Path,
     seconds: f64,
     chip: Chip,
+    engine: Engine,
     muted: u8,
     rate: u32,
     wav: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let end = (seconds * f64::from(PAL_CLOCK_HZ)) as u64;
-    let mut sid = SidClock::new(chip, PAL_CLOCK_HZ, rate);
+    let mut sid = SidClock::new(engine, chip, PAL_CLOCK_HZ, rate)?;
     sid.muted = muted;
     let mut cycle = 0u64;
     let mut count = 0usize;
@@ -215,6 +226,7 @@ fn render(
     subtune: Option<u16>,
     seconds: f64,
     chip: Chip,
+    engine: Engine,
     muted: u8,
     rate: u32,
     wav: &Path,
@@ -228,7 +240,7 @@ fn render(
         return Err(format!("subtune {song} out of range 1..={}", tune.songs).into());
     }
 
-    let mut sid_clock = SidClock::new(chip, PAL_CLOCK_HZ, rate);
+    let mut sid_clock = SidClock::new(engine, chip, PAL_CLOCK_HZ, rate)?;
     sid_clock.muted = muted;
     let mut memory = Memory::new(sid_clock);
     memory.load(tune.load_address, &tune.data);
