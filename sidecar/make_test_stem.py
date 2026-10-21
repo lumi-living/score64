@@ -1,10 +1,6 @@
-# /// script
-# requires-python = ">=3.11"
-# dependencies = ["numpy==2.4.6"]
-# ///
 """A synthetic, rights-clear polyphonic test stem with known notes (#21).
 
-    uv run sidecar/make_test_stem.py <out.wav> <out_notes.json>
+    uv run --frozen --project sidecar python sidecar/make_test_stem.py <out.wav> <out_notes.json>
 
 12 s at 44.1 kHz mono: a bass line, three-note chords and a melody, played with a plucked additive tone
 (harmonics with exponential decay). The notes are the ground truth, in seconds and MIDI pitch.

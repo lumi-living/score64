@@ -1,0 +1,31 @@
+[project]
+name = "score64-sidecar"
+version = "0.1.0"
+description = "Score64's optional Python sidecar: reference outputs for differential tests and fixture generation (ADR-009)"
+license = "MIT"
+requires-python = ">=3.11,<3.12"
+# Direct dependencies pinned exactly; uv.lock pins everything else. Run every script with
+#   uv run --frozen --project sidecar python <script> ...
+dependencies = [
+    "basic-pitch[onnx]==0.4.0",
+    "onnxruntime==1.31.0",
+    "numpy==2.4.6",
+    "librosa==0.11.0",
+    "scipy==1.17.1",
+    "blake3==1.0.11",
+    # resampy (a basic-pitch dependency) still imports pkg_resources, removed in setuptools 81.
+    "setuptools==80.10.2",
+]
+
+[tool.uv]
+# Scripts, not an installable package.
+package = false
+# basic-pitch pulls in TensorFlow (Linux, Windows), tensorflow-macos, TFLite or CoreML depending on the platform. The
+# sidecar only ever runs the ONNX model, so drop them everywhere: the environment is the same on every OS and about
+# 500 MB smaller on Linux.
+override-dependencies = [
+    "tensorflow; sys_platform == 'never'",
+    "tensorflow-macos; sys_platform == 'never'",
+    "tflite-runtime; sys_platform == 'never'",
+    "coremltools; sys_platform == 'never'",
+]

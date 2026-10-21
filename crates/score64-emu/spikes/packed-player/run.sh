@@ -52,7 +52,7 @@ for chip in 6581 8580; do
   "$emu" replay "$work/${tune}_vice.dmp" --seconds $seconds --chip $chip --wav "$work/${tune}_vicetiming_$chip.wav"
 done
 
-uv run -q --no-project --with numpy --with scipy python "$here/compare.py" "$work" "$tune"
+uv run -q --frozen --project "$root/sidecar" python "$here/compare.py" "$work" "$tune"
 
 if [ -n "$effect" ] && [ -n "${KICKASS:-}" ]; then
   "$emu" render "$work/$tune.sid" --seconds $seconds --wav /dev/null --writes "$work/${tune}_sfx_helper_writes.tsv" \
@@ -63,7 +63,7 @@ if [ -n "$effect" ] && [ -n "${KICKASS:-}" ]; then
   x64sc -default -silent -warp -limitcycles $(( (seconds + 15) * 985248 )) -sounddev dump \
     -soundarg "$work/${tune}_sfx_x64sc.dmp" -autostartprgmode 1 -autostart "$work/sfx-driver.prg" >/dev/null 2>&1 || true
   echo "#### With effects: helper vs x64sc + sfx-driver.prg"
-  uv run -q --no-project --with numpy --with scipy python -c "
+  uv run -q --frozen --project "$root/sidecar" python -c "
 import sys; sys.path.insert(0, '$here')
 import compare as c
 c.compare_writes(c.helper_frames('$work/${tune}_sfx_helper_writes.tsv'), c.vice_bursts('$work/${tune}_sfx_x64sc.dmp'))"

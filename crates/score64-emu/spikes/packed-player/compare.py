@@ -2,7 +2,7 @@
 
 Usage (numpy and scipy via uv, nothing installed globally):
 
-    uv run --with numpy --with scipy python compare.py <workdir> <tune>
+    uv run --frozen --project sidecar python crates/score64-emu/spikes/packed-player/compare.py <workdir> <tune>
 
 <workdir> holds, for <tune> (for example "sanction_d1h1"):
     <tune>_helper_writes.tsv        score64-emu render --writes

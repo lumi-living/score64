@@ -34,7 +34,7 @@ Versions used by the #20 spike ([report](research/2026-10-18-packed-player-spike
 - **sidplayfp** 3.2.2: Homebrew has only libsidplayfp, and its bottle has no reSIDfp. Build [libresidfp](https://github.com/libsidplayfp/libresidfp) 1.2.3, then [libsidplayfp](https://github.com/libsidplayfp/libsidplayfp) 3.1.1, then [sidplayfp](https://github.com/libsidplayfp/sidplayfp) 3.2.2, each with `./configure --prefix=$HOME/.local && make install` and `PKG_CONFIG_PATH=$HOME/.local/lib/pkgconfig` (`brew install pkgconf fmt` first).
 - **VICE** 3.10: `brew install vice` (gives `x64sc` and `vsid`). `-sounddev dump` logs SID writes in any mode. `-sounddev wav` only writes audio in real time (not `-warp`) and only on a clean exit, for example `quit` through `-remotemonitor`.
 - **KickAssembler** 5.25 (Java) for test drivers such as `crates/score64-emu/spikes/packed-player/sfx-driver.asm`: download from <http://theweb.dk/KickAssembler/> and run `java -jar KickAss.jar`.
-- **uv**, for the spike's analysis script (numpy and scipy are pulled per run).
+- **uv** 0.12 runs the Python sidecar (`sidecar/`): one locked project used for differential tests, fixture generation and the spike analysis scripts. Run scripts with `uv run --frozen --project sidecar python ...`; see `sidecar/README.md`.
 
 ## Reference material
 
