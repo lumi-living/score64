@@ -7,6 +7,7 @@
 
 use std::path::Path;
 
+use ort::environment::Environment;
 use ort::session::Session;
 use ort::value::Tensor;
 
@@ -41,10 +42,11 @@ pub struct BasicPitch {
 }
 
 impl BasicPitch {
-    /// Load `nmp.onnx`.
-    pub fn load(model: &Path) -> ort::Result<Self> {
+    /// Load `nmp.onnx` into a session of `env`. ONNX Runtime allows one environment per process, so the caller
+    /// builds it (`ort::init().build()`) and shares it between sessions.
+    pub fn load(env: &Environment, model: &Path) -> ort::Result<Self> {
         Ok(Self {
-            session: Session::builder()?.commit_from_file(model)?,
+            session: Session::builder(env)?.commit_from_file(model)?,
         })
     }
 

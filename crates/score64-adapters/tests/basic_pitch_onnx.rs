@@ -37,14 +37,14 @@ fn max_diff(name: &str, got: &[f32], want: &[f32]) -> f32 {
     max
 }
 
-fn check(manifest: &Manifest) {
+fn check(env: &ort::environment::Environment, manifest: &Manifest) {
     let out = |name: &str| {
         manifest
             .output(name)
             .unwrap_or_else(|| panic!("manifest lists no {name}"))
     };
     let audio = read_f32(&out("input_22050.f32"));
-    let mut bp = BasicPitch::load(&out("nmp.onnx")).expect("load model");
+    let mut bp = BasicPitch::load(env, &out("nmp.onnx")).expect("load model");
     let act = bp.infer(&audio).expect("inference");
     assert_eq!(act.contour.len(), act.frames * N_CONTOURS);
     assert_eq!(act.note.len(), act.frames * N_NOTES);
@@ -82,6 +82,7 @@ fn onnx_matches_python_package() {
     let Some(sidecar) = common::sidecar("onnx_matches_python_package") else {
         return;
     };
+    let env = ort::init().build().expect("ONNX Runtime environment");
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
     for stem in ["sparse-melody-bass", "dense-mix"] {
         let out_dir = common::scratch(&format!("basic-pitch-{stem}"));
@@ -103,7 +104,7 @@ fn onnx_matches_python_package() {
                 .map_or("?", |(_, v)| v.as_str()),
             manifest.python
         );
-        check(&manifest);
+        check(&env, &manifest);
         let _ = std::fs::remove_dir_all(&out_dir);
     }
 }
