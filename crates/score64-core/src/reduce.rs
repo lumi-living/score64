@@ -15,7 +15,9 @@ use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, 
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
 mod lead;
-pub use lead::{CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, choose_lead};
+pub use lead::{
+    Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
+};
 
 /// The rule name and version [`monophonise`] records in its decisions.
 pub const MONOPHONISE: &str = "monophonise@1";
