@@ -10,10 +10,12 @@ use std::fmt;
 /// The magic at the start of an instrument file.
 pub const INS_MAGIC: &[u8; 4] = b"GTI5";
 
-/// Gate-timer bit: no hard restart before this instrument's notes.
-pub const NO_HARD_RESTART: u8 = 0x80;
+/// Gate-timer bit: skip the hard-restart ADSR write before this instrument's notes; the gate still goes off
+/// (`docs/reference/sid.md`).
+pub const NO_HARD_RESTART_ADSR: u8 = 0x80;
 
-/// Gate-timer bit: no gate-off at the end of this instrument's notes (legato instruments).
+/// Gate-timer bit: no gate-off before a new note played with this instrument, which makes it a legato instrument. The
+/// new note's instrument decides this; the timing comes from the instrument before it (`docs/reference/sid.md`).
 pub const NO_GATE_OFF: u8 = 0x40;
 
 /// An instrument's 25 bytes, in file order.
@@ -33,8 +35,8 @@ pub struct Instrument {
     pub vibrato: u8,
     /// Vibrato delay, in frames.
     pub vibrato_delay: u8,
-    /// Gate timer: frames of gate-off (hard restart) before a note, in the low 6 bits, with the
-    /// [`NO_HARD_RESTART`] and [`NO_GATE_OFF`] flags above.
+    /// Gate timer: how many frames before the next row the player fetches it (gate-off for a new note), in the low
+    /// 6 bits, with the [`NO_HARD_RESTART_ADSR`] and [`NO_GATE_OFF`] flags above.
     pub gate_timer: u8,
     /// The waveform register's value on a note's first frame.
     pub first_wave: u8,
@@ -43,20 +45,64 @@ pub struct Instrument {
 }
 
 impl Instrument {
-    /// The name as text: up to the first zero byte, with any non-ASCII byte shown as `?`.
+    /// The record as stored, in a `.ins` file after the magic and in a `.sng` file's instrument list.
+    pub fn from_bytes(b: &[u8; 25]) -> Self {
+        Instrument {
+            ad: b[0],
+            sr: b[1],
+            wave: b[2],
+            pulse: b[3],
+            filter: b[4],
+            vibrato: b[5],
+            vibrato_delay: b[6],
+            gate_timer: b[7],
+            first_wave: b[8],
+            name: b[9..25].try_into().expect("16 bytes"),
+        }
+    }
+
+    /// The 25 bytes of the record.
+    pub fn to_bytes(&self) -> [u8; 25] {
+        let mut b = [0; 25];
+        b[..9].copy_from_slice(&[
+            self.ad,
+            self.sr,
+            self.wave,
+            self.pulse,
+            self.filter,
+            self.vibrato,
+            self.vibrato_delay,
+            self.gate_timer,
+            self.first_wave,
+        ]);
+        b[9..].copy_from_slice(&self.name);
+        b
+    }
+
+    /// The name as text: up to the first zero byte, with anything but printable ASCII shown as `?`.
     pub fn name_text(&self) -> String {
         self.name
             .iter()
             .take_while(|&&b| b != 0)
-            .map(|&b| if b.is_ascii() { char::from(b) } else { '?' })
+            .map(|&b| {
+                if (0x20..0x7F).contains(&b) {
+                    char::from(b)
+                } else {
+                    '?'
+                }
+            })
             .collect()
     }
 
-    /// Set the name from text: its first 16 bytes, zero-padded.
+    /// Set the name from text: its first 16 characters, zero-padded, with anything but printable ASCII stored as `?`.
     pub fn set_name(&mut self, name: &str) {
         self.name = [0; 16];
-        for (slot, b) in self.name.iter_mut().zip(name.bytes()) {
-            *slot = b;
+        for (slot, c) in self.name.iter_mut().zip(name.chars()) {
+            *slot = if (' '..='~').contains(&c) {
+                c as u8
+            } else {
+                b'?'
+            };
         }
     }
 }
@@ -66,6 +112,30 @@ impl Instrument {
 pub struct Table {
     /// The rows, in order.
     pub rows: Vec<(u8, u8)>,
+}
+
+impl Table {
+    /// Read a table as stored (a length *n*, *n* left bytes, *n* right bytes) from `data` at `*at`, moving `*at` on.
+    pub fn read(data: &[u8], at: &mut usize, name: &'static str) -> Result<Self, InsError> {
+        let n = usize::from(*data.get(*at).ok_or(InsError::Truncated(name))?);
+        let body = data
+            .get(*at + 1..*at + 1 + 2 * n)
+            .ok_or(InsError::Truncated(name))?;
+        *at += 1 + 2 * n;
+        let (left, right) = body.split_at(n);
+        Ok(Table {
+            rows: left.iter().copied().zip(right.iter().copied()).collect(),
+        })
+    }
+
+    /// Append the table as stored.
+    pub fn write(&self, out: &mut Vec<u8>, name: &'static str) -> Result<(), InsError> {
+        let n = u8::try_from(self.rows.len()).map_err(|_| InsError::TableTooLong(name))?;
+        out.push(n);
+        out.extend(self.rows.iter().map(|&(l, _)| l));
+        out.extend(self.rows.iter().map(|&(_, r)| r));
+        Ok(())
+    }
 }
 
 /// An instrument file: the instrument and its own four tables.
@@ -94,6 +164,8 @@ pub enum InsError {
     Trailing(usize),
     /// A table has more than 255 rows, so it can't be written.
     TableTooLong(&'static str),
+    /// A table pointer past the end of its table, so the file can't be written.
+    PointerOutOfRange(&'static str),
 }
 
 impl fmt::Display for InsError {
@@ -106,6 +178,9 @@ impl fmt::Display for InsError {
                 "bytes are left over after the speedtable, from offset {at}"
             ),
             InsError::TableTooLong(name) => write!(f, "the {name} has more than 255 rows"),
+            InsError::PointerOutOfRange(name) => {
+                write!(f, "the instrument points past the end of its {name}")
+            }
         }
     }
 }
@@ -117,41 +192,27 @@ const TABLES: [&str; 4] = ["wavetable", "pulsetable", "filtertable", "speedtable
 impl Ins {
     /// Read an instrument file.
     pub fn read(data: &[u8]) -> Result<Self, InsError> {
-        let mut at = 0usize;
-        let mut take = |n: usize, what: &'static str| -> Result<&[u8], InsError> {
-            let bytes = data.get(at..at + n).ok_or(InsError::Truncated(what))?;
-            at += n;
-            Ok(bytes)
-        };
-        if take(4, "magic").map_err(|_| InsError::BadMagic)? != INS_MAGIC {
+        if data.get(..4) != Some(INS_MAGIC) {
             return Err(InsError::BadMagic);
         }
-        let b = take(25, "instrument")?;
-        let instrument = Instrument {
-            ad: b[0],
-            sr: b[1],
-            wave: b[2],
-            pulse: b[3],
-            filter: b[4],
-            vibrato: b[5],
-            vibrato_delay: b[6],
-            gate_timer: b[7],
-            first_wave: b[8],
-            name: b[9..25].try_into().expect("16 bytes"),
-        };
-        let mut tables: [Table; 4] = Default::default();
-        for (table, name) in tables.iter_mut().zip(TABLES) {
-            let n = usize::from(take(1, name)?[0]);
-            let left = take(n, name)?.to_vec();
-            let right = take(n, name)?;
-            table.rows = left.into_iter().zip(right.iter().copied()).collect();
-        }
+        let record: &[u8; 25] = data
+            .get(4..29)
+            .ok_or(InsError::Truncated("instrument"))?
+            .try_into()
+            .expect("25 bytes");
+        let mut at = 29;
+        let mut table = |name| Table::read(data, &mut at, name);
+        let (wave, pulse, filter, speed) = (
+            table(TABLES[0])?,
+            table(TABLES[1])?,
+            table(TABLES[2])?,
+            table(TABLES[3])?,
+        );
         if at != data.len() {
             return Err(InsError::Trailing(at));
         }
-        let [wave, pulse, filter, speed] = tables;
         Ok(Ins {
-            instrument,
+            instrument: Instrument::from_bytes(record),
             wave,
             pulse,
             filter,
@@ -159,31 +220,33 @@ impl Ins {
         })
     }
 
-    /// The file's bytes.
-    pub fn write(&self) -> Result<Vec<u8>, InsError> {
+    /// Whether every table pointer is 0 or inside its own table (the vibrato parameter points into the speedtable).
+    pub fn check(&self) -> Result<(), InsError> {
         let i = &self.instrument;
+        for (pointer, table, name) in [
+            (i.wave, &self.wave, TABLES[0]),
+            (i.pulse, &self.pulse, TABLES[1]),
+            (i.filter, &self.filter, TABLES[2]),
+            (i.vibrato, &self.speed, TABLES[3]),
+        ] {
+            if usize::from(pointer) > table.rows.len() {
+                return Err(InsError::PointerOutOfRange(name));
+            }
+        }
+        Ok(())
+    }
+
+    /// The file's bytes, if every pointer is inside its table ([`Ins::check`]).
+    pub fn write(&self) -> Result<Vec<u8>, InsError> {
+        self.check()?;
         let mut out = Vec::with_capacity(4 + 25 + 4);
         out.extend_from_slice(INS_MAGIC);
-        out.extend_from_slice(&[
-            i.ad,
-            i.sr,
-            i.wave,
-            i.pulse,
-            i.filter,
-            i.vibrato,
-            i.vibrato_delay,
-            i.gate_timer,
-            i.first_wave,
-        ]);
-        out.extend_from_slice(&i.name);
+        out.extend_from_slice(&self.instrument.to_bytes());
         for (table, name) in [&self.wave, &self.pulse, &self.filter, &self.speed]
             .into_iter()
             .zip(TABLES)
         {
-            let n = u8::try_from(table.rows.len()).map_err(|_| InsError::TableTooLong(name))?;
-            out.push(n);
-            out.extend(table.rows.iter().map(|&(l, _)| l));
-            out.extend(table.rows.iter().map(|&(_, r)| r));
+            table.write(&mut out, name)?;
         }
         Ok(out)
     }

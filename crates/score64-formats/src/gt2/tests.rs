@@ -59,6 +59,102 @@ fn bad_files_are_refused_with_the_reason() {
     let mut long = Ins::read(&good).unwrap();
     long.speed.rows = vec![(0, 0); 256];
     assert_eq!(long.write(), Err(InsError::TableTooLong("speedtable")));
+    // A pointer past its table can't be written: the wavetable has six rows.
+    let mut past = Ins::read(&good).unwrap();
+    past.instrument.wave = 7;
+    assert_eq!(past.write(), Err(InsError::PointerOutOfRange("wavetable")));
+    past.instrument.wave = 6;
+    assert!(past.write().is_ok());
+    past.instrument.vibrato = 1; // the speedtable is empty
+    assert_eq!(past.check(), Err(InsError::PointerOutOfRange("speedtable")));
+}
+
+#[test]
+fn every_field_has_its_own_byte() {
+    // A distinct value in every field and tables of different lengths, written by hand from the reference layout.
+    let ins = Ins {
+        instrument: Instrument {
+            ad: 0x11,
+            sr: 0x22,
+            wave: 0x01,
+            pulse: 0x02,
+            filter: 0x03,
+            vibrato: 0x01,
+            vibrato_delay: 0x77,
+            gate_timer: 0x80 | 0x05,
+            first_wave: 0x99,
+            name: *b"Name\0\0\0\0\0\0\0\0\0\0\0\0",
+        },
+        wave: Table {
+            rows: vec![(0xA1, 0xB1)],
+        },
+        pulse: Table {
+            rows: vec![(0xA2, 0xB2), (0xA3, 0xB3)],
+        },
+        filter: Table {
+            rows: vec![(0xA4, 0xB4), (0xA5, 0xB5), (0xA6, 0xB6)],
+        },
+        speed: Table {
+            rows: vec![(0xA7, 0xB7), (0xA8, 0xB8), (0xA9, 0xB9), (0xAA, 0xBA)],
+        },
+    };
+    let mut expected = b"GTI5".to_vec();
+    expected.extend([0x11, 0x22, 0x01, 0x02, 0x03, 0x01, 0x77, 0x85, 0x99]);
+    expected.extend(b"Name\0\0\0\0\0\0\0\0\0\0\0\0");
+    expected.extend([1, 0xA1, 0xB1]);
+    expected.extend([2, 0xA2, 0xA3, 0xB2, 0xB3]);
+    expected.extend([3, 0xA4, 0xA5, 0xA6, 0xB4, 0xB5, 0xB6]);
+    expected.extend([4, 0xA7, 0xA8, 0xA9, 0xAA, 0xB7, 0xB8, 0xB9, 0xBA]);
+    assert_eq!(ins.write().unwrap(), expected);
+    assert_eq!(Ins::read(&expected).unwrap(), ins);
+    // The annotator, written from the same layout separately, reads each field from the same byte.
+    let dump = crate::annotate::ins(&expected).unwrap();
+    assert!(
+        dump.contains(
+            "\"Name\" AD 11 SR 22 wave 01 pulse 02 filter 03 vib 01/77 gate 05 no-HR 1st 99"
+        ),
+        "{dump}"
+    );
+    assert!(dump.contains("speedtable: 4 rows"), "{dump}");
+}
+
+#[test]
+fn the_songs_instruments_are_the_same_record() {
+    // sixteen-steps.sng's twelve instruments, from offset $A8, use the same 25-byte record; their playback matches
+    // VICE frame for frame (fixtures/gt2-original/README.md). "Lead PWM" has vibrato 01 delay $18; "Bass filtered"
+    // a filter table pointer.
+    let sng = fixture("sixteen-steps.sng");
+    let record = |n: usize| -> Instrument {
+        let at = 0xA8 + 25 * n;
+        Instrument::from_bytes(sng[at..at + 25].try_into().unwrap())
+    };
+    let lead = record(0);
+    assert_eq!(lead.name_text(), "Lead PWM");
+    assert_eq!(
+        (lead.ad, lead.sr, lead.wave, lead.pulse),
+        (0x09, 0x8A, 0x01, 0x01)
+    );
+    assert_eq!(
+        (
+            lead.filter,
+            lead.vibrato,
+            lead.vibrato_delay,
+            lead.gate_timer
+        ),
+        (0, 0x01, 0x18, 0x02)
+    );
+    let combat = record(1);
+    assert_eq!(
+        (combat.wave, combat.pulse, combat.vibrato),
+        (0x03, 0x05, 0x02)
+    );
+    let bass = record(4);
+    assert_eq!(bass.name_text(), "Bass filtered");
+    assert_eq!((bass.wave, bass.pulse, bass.filter), (0x11, 0x09, 0x01));
+    for n in 0..12 {
+        let at = 0xA8 + 25 * n;
+        assert_eq!(record(n).to_bytes(), sng[at..at + 25], "instrument {n}");
+    }
 }
 
 #[test]
@@ -69,6 +165,11 @@ fn names_are_sixteen_zero_padded_bytes() {
     ins.instrument.set_name("Bass");
     assert_eq!(&ins.instrument.name[..5], b"Bass\0");
     assert_eq!(ins.instrument.name_text(), "Bass");
+    // Only printable ASCII is stored and shown; the rest becomes '?', never half a character.
+    ins.instrument.set_name("Bäss\t");
+    assert_eq!(&ins.instrument.name[..6], b"B?ss?\0");
+    ins.instrument.name[0] = 0x07;
+    assert_eq!(ins.instrument.name_text(), "??ss?");
 }
 
 fn table() -> impl Strategy<Value = Table> {
@@ -84,23 +185,27 @@ fn ins() -> impl Strategy<Value = Ins> {
         table(),
         table(),
     )
-        .prop_map(|(b, name, wave, pulse, filter, speed)| Ins {
-            instrument: Instrument {
-                ad: b[0],
-                sr: b[1],
-                wave: b[2],
-                pulse: b[3],
-                filter: b[4],
-                vibrato: b[5],
-                vibrato_delay: b[6],
-                gate_timer: b[7],
-                first_wave: b[8],
-                name,
-            },
-            wave,
-            pulse,
-            filter,
-            speed,
+        .prop_map(|(b, name, wave, pulse, filter, speed)| {
+            // Pointers inside their tables (or 0), as a file the writer accepts has them.
+            let inside = |p: u8, t: &Table| (usize::from(p) % (t.rows.len() + 1)) as u8;
+            Ins {
+                instrument: Instrument {
+                    ad: b[0],
+                    sr: b[1],
+                    wave: inside(b[2], &wave),
+                    pulse: inside(b[3], &pulse),
+                    filter: inside(b[4], &filter),
+                    vibrato: inside(b[5], &speed),
+                    vibrato_delay: b[6],
+                    gate_timer: b[7],
+                    first_wave: b[8],
+                    name,
+                },
+                wave,
+                pulse,
+                filter,
+                speed,
+            }
         })
 }
 
