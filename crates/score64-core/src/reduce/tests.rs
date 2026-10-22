@@ -187,6 +187,8 @@ fn an_overlap_too_close_to_trim_drops_the_less_confident_note() {
     );
     assert_eq!(shape(&r.notes), [(1, 4, "E-4".into())]);
     assert_eq!(reasons(&r), [DropReason::Overlap]);
+    // As sure as E was surer than C.
+    assert!((r.decisions[0].confidence.get() - 0.4).abs() < 1e-6);
     // On a tie the earlier note stays.
     let r = monophonise(
         [note(0, 4, "C-4", 0.9), note(1, 4, "E-4", 0.9)],
@@ -513,6 +515,24 @@ proptest! {
             prop_assert_eq!(restarted, restarts);
             prop_assert!(!restarted || kept.attack == Attack::Fresh);
         }
+        // Step 3's promises: kept notes are at least the minimum long, and an overlap drop sits too close to a kept
+        // note at least as confident.
+        for kept in &r.notes {
+            prop_assert!(kept.length >= rules.min_rows, "{kept:?}");
+        }
+        for d in &r.decisions {
+            if let Proposal::DropNote { row, pitch, length, reason: DropReason::Overlap, .. } = d.proposal {
+                let conf = soup
+                    .iter()
+                    .filter(|o| o.row == row && o.pitch == pitch && o.length == length)
+                    .map(|o| o.confidence.get())
+                    .fold(f32::INFINITY, f32::min);
+                let near = r.notes.iter().any(|k| {
+                    k.row.abs_diff(row) < rules.min_rows.get() && k.confidence.get() >= conf
+                });
+                prop_assert!(near, "overlap drop at {row} has no confident neighbour");
+            }
+        }
         for d in &r.decisions {
             prop_assert_eq!(&d.provenance, &Provenance::Rules { rule: MONOPHONISE.into() });
             prop_assert_eq!(d.subtune.as_str(), "main");
@@ -696,4 +716,25 @@ fn rules_read_with_defaults() {
     let rules: MonoRules = serde_json::from_str(r#"{"skyline":"lowest"}"#).unwrap();
     assert_eq!(rules.skyline, Skyline::Lowest);
     assert_eq!(rules.min_rows, MonoRules::default().min_rows);
+}
+
+#[test]
+fn ids_and_bars_name_the_voice_and_the_bar_edges() {
+    // Voice 3, a tie on row 16 (the first row of bar 1) and a too-short note on row 15 (the last of bar 0).
+    let n = name();
+    let place = Placement {
+        voice: Voice::new(3).unwrap(),
+        ..at(&n)
+    };
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let r = monophonise(
+        [note(15, 1, "C-4", 0.9), legato(note(16, 4, "D-4", 0.9))],
+        &place,
+        &rules,
+    );
+    let got: Vec<_> = r.decisions.iter().map(|d| (d.id.as_str(), d.bar)).collect();
+    assert_eq!(got, [("mono-short-v3-r15-p48", 0), ("mono-tie-v3-r16", 1)]);
 }
