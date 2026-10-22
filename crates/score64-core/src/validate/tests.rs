@@ -460,9 +460,27 @@ fn rule_9_hard_restart() {
     // Without hard restart ($80) the gate still goes off early: the same warnings.
     let c = ctx_with(vec![("quick", quick(1, false, true))]);
     assert_eq!(hr(&song(one_row()).clone(), &c).len(), 2);
-    // A legato instrument ($40) does no gate-off before its notes.
+    // A legato instrument ($40) does no gate-off before its notes, so fresh notes straight after another won't
+    // retrigger: the score and the instrument disagree.
     let c = ctx_with(vec![("quick", quick(1, true, false))]);
-    assert_eq!(hr(&song(one_row()), &c), []);
+    let p: Vec<Problem> = validate(&song(one_row()), &c)
+        .into_iter()
+        .filter(|p| p.rule == Rule::HardRestart)
+        .collect();
+    assert_eq!(
+        p.iter().map(|p| (p.severity, p.row)).collect::<Vec<_>>(),
+        [(Severity::Warning, Some(1)), (Severity::Warning, Some(2))]
+    );
+    assert!(p[0].message.contains("won't retrigger"), "{}", p[0].message);
+    // Marked legato, they agree; after silence the gate is already off, so the note does attack.
+    let mut tied = one_row();
+    tied[1].attack = Attack::Legato;
+    tied[2].attack = Attack::Legato;
+    assert_eq!(hr(&song(tied), &c), []);
+    assert_eq!(
+        hr(&song(vec![note(0, 1, "C-4"), note(2, 1, "D-4")]), &c),
+        []
+    );
 
     // Gate timer not below the tempo: GoatTracker stops playback. Here the cut error follows from it.
     let c = ctx_with(vec![("quick", quick(3, true, true))]);

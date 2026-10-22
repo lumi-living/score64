@@ -439,6 +439,18 @@ impl Checker<'_> {
                 continue;
             };
             if !incoming.gate_off {
+                // The score says new attack, but with the gate still on from the note before and no gate-off, the
+                // instrument cannot retrigger it: the packed song plays it legato.
+                self.warn(
+                    Rule::HardRestart,
+                    Some(next.row),
+                    voice,
+                    format!(
+                        "`{}` has gate-off disabled (gate-timer bit $40), so this fresh note straight after another won't retrigger",
+                        line.instrument_of(next).0
+                    ),
+                    "mark it legato, or use an instrument that turns the gate off",
+                );
                 continue;
             }
             // The gate has been on since the attack that started a run of legato notes.

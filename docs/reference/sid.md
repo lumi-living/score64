@@ -51,6 +51,7 @@ Validator rule 9 checks this:
 - **Error:** a gate timer not below a row's frames per row.
 - **Error:** a gate-off at or before the start of the note it cuts. With legal gate timers this can only happen alongside the error above, because one row is always longer than the gate timer.
 - **Warning:** a note left with only one or two gated frames. That's legal but probably sounds clipped.
+- **Warning:** a fresh note straight after another whose instrument has gate-off disabled (`$40`). The gate is still on and nothing turns it off, so the note won't retrigger and plays legato. Mark it `Legato`, or use an instrument that gates off.
 
 The gated time is counted from the attack that started the note, through any legato notes tied to it. Notes after silence, legato notes and the first note on a voice have nothing to cut.
 
