@@ -15,6 +15,10 @@ updates:
       # A release candidate whose API still changes between rcs; bumped by hand with the sidecar differential test
       # (#21, #23), see docs/TOOLING.md.
       - dependency-name: "ort"
+      # pinned to Convert64's versions; bump both apps together by hand
+      - dependency-name: "egui"
+      - dependency-name: "eframe"
+      - dependency-name: "egui_material_icons"
     labels: ["enhancement"]
 
   - package-ecosystem: github-actions
