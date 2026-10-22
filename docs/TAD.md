@@ -157,6 +157,18 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 
 **Decisions.** Each rules choice is a `LeadSource` decision (`lead-b<bar>`). Its confidence is the lead's mean salience margin over the best other part, relative to its own, over its run. It is 1 when no other part plays.
 
+**Fold drums** (`reduce::fold_drums`, rule `fold-drums@1`, and `reduce::interleave_drums`, rule `interleave-drums@1`, #43) put transcribed drum hits on a voice.
+- **Kinds.** A hit's General MIDI note gives its `DrumKind`: kick, snare, hat (and cymbals) or other.
+- **Kit.** A project's `DrumKit` maps each kind to a `DrumSound`: an instrument preset, a pitch and a length in rows. The sounds themselves, such as a noise snare or a triangle kick, are presets, which Score64 doesn't name.
+- **A voice of their own.** The highest-priority hit on a row wins (kick, snare, hat, other), and each note lasts its sound's rows or until the next hit. Clashing hits and kinds missing from the kit are dropped as decisions (`clash`, `unmapped`).
+- **Interleaving.** Where no voice is free, `interleave_drums` takes the hits and another monophonic line, such as a bass, and folds the hits itself. That way it always knows which notes are drums, even when several kinds share one preset or the line plays a kit preset.
+  - A hit cuts the line note sounding over it (a `TrimNote` decision), and that note doesn't resume.
+  - `on_clash` decides a row that both start on, at confidence 0.5.
+  - Hi-hats are dropped before lengths are set (`interleave`) unless allowed.
+  - A line note after a drum hit always starts fresh (`Retrigger`).
+  - The drums keep their own instruments.
+- **Decision ids.** `drums-…` and `inter-…` ids follow monophonise's scheme (`<prefix>-<kind>-v<voice>-r<row>`, plus `-p<semitone>` for drops). A clash between kinds is certain, because priority is fixed. A clash within one kind is as sure as the winner was more confident.
+
 **Chords** (`reduce::detect_chords` and `reduce::arpeggiate`, rule `chords@1`, #42) find the harmony beat by beat and play it as arpeggios.
 - **Detection.** Each beat's 12 pitch classes are weighted by the rows each note sounds in that beat, times its confidence. Templates for every root and quality are scored: major, minor, sus4, sus2, dominant 7th, minor 7th and major 7th.
   - **Score:** the weight on the template's tones minus the weight off them, over the beat's total weight, with a small cost for each tone past three. A chord's root must sound.
@@ -182,10 +194,17 @@ Decision ids name what they're about, so they stay the same when notes elsewhere
 
 They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
+**Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
+- **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
+- **Choosing the shift.** Only shifts that keep every note playable count. Among those it picks the one that leaves the fewest notes outside the range of the role at their row. On a tie, it moves nothing if that's as good, so a bar moves only to bring notes in. Next it prefers the previous bar's shift, if the bars are next to each other and in the same role, so the line doesn't jump an octave at a bar line. Then it takes the smallest.
+- **Notes that still don't fit** stay where they are, and rule 6 warns about them.
+- **Full-range roles never move.** Notes whose role may use the whole range (drums and texture, by default) are left alone and don't count. That's a property of the ranges, so narrowing the drums' range folds drums too, just as rule 6 then checks them.
+- **Decisions.** Each bar with a non-zero shift is one `Octave` decision, `octave-v<voice>-b<bar>`. Its confidence is the share of the bar's folded notes in range after the shift. The input can come in any order.
+
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
 Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
@@ -250,7 +269,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Layer | What |
 |---|---|
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
-| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Any note soup monophonises to a line with no errors, every note kept or dropped by a decision, whatever the input order (#40) |
+| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Any note soup monophonises to a line with no errors, every note kept or dropped by a decision, whatever the input order (#40); octave folding only moves pitches, by whole octaves, never leaves a bar with more notes out of range, and picks each bar's best playable shift (#41) |
 | Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
 | Differential | Ports against originals: `.sng` writer vs pygoattracker; Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |

@@ -312,6 +312,9 @@ pub fn drop_reason() -> impl Strategy<Value = DropReason> {
         Just(DropReason::Repeat),
         Just(DropReason::Skyline),
         Just(DropReason::Overlap),
+        Just(DropReason::Clash),
+        Just(DropReason::Unmapped),
+        Just(DropReason::Interleave),
     ]
 }
 

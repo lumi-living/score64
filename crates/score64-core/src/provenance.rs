@@ -272,7 +272,8 @@ pub enum Proposal {
         /// The stem or transcribed part, by content hash.
         source: ContentHash,
     },
-    /// Shift a voice's notes in this bar by whole octaves (octave folding).
+    /// Shift a voice's notes in this bar by whole octaves (octave folding). Notes whose role may use the whole pitch
+    /// range stay where they are.
     Octave {
         /// The voice.
         voice: Voice,
@@ -357,4 +358,10 @@ pub enum DropReason {
     Skyline,
     /// It overlaps its neighbour too closely to trim to the minimum length, and has the lower confidence.
     Overlap,
+    /// Another note on the same row wins: a higher-priority drum hit, or the line drums are interleaved with.
+    Clash,
+    /// A drum hit whose kind has no sound in the project's drum kit.
+    Unmapped,
+    /// A hi-hat left out when drums share a voice with another line.
+    Interleave,
 }

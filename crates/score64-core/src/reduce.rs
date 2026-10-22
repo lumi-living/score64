@@ -3,8 +3,9 @@
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
 //! skyline), overlaps trimmed, ties that lost their note restarted. [`choose_lead`] (#39) picks the part that
-//! carries the melody, bar by bar. [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as
-//! arpeggios.
+//! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles' ranges.
+//! [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of their own or into another line.
+//! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -17,9 +18,16 @@ use crate::score::{Attack, Note, SubtuneName, Voice};
 
 mod chords;
 mod lead;
+mod octave;
 pub use chords::{Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, arpeggiate, detect_chords};
 pub use lead::{
     Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
+};
+pub use octave::{FOLD_OCTAVES, fold_octaves};
+mod drums;
+pub use drums::{
+    DrumKind, DrumKit, DrumSound, FOLD_DRUMS, INTERLEAVE_DRUMS, InterleaveRules, OnClash,
+    fold_drums, interleave_drums,
 };
 
 /// The rule name and version [`monophonise`] records in its decisions.
@@ -107,11 +115,7 @@ pub fn monophonise(
     at: &Placement,
     rules: &MonoRules,
 ) -> Reduced {
-    let mut log = Log {
-        at,
-        decisions: Vec::new(),
-        ids: BTreeSet::new(),
-    };
+    let mut log = Log::new(at, MONOPHONISE, "mono");
     let mut notes: Vec<Note> = notes.into_iter().collect();
     notes.sort_by(|a, b| canonical(a, b, rules.skyline));
 
@@ -194,7 +198,7 @@ pub fn monophonise(
         if prev.row.saturating_add(prev.length.get()) > next {
             let length = NonZeroU32::new(next - prev.row).expect("rows are distinct and in order");
             let id = log.record(
-                format!("mono-trim-v{}-r{}", at.voice.get(), prev.row),
+                log.id("trim", prev.row),
                 prev.row,
                 Proposal::TrimNote {
                     voice: at.voice,
@@ -215,7 +219,7 @@ pub fn monophonise(
     for note in &mut line {
         if note.attack == Attack::Legato && end != Some(note.row) {
             let id = log.record(
-                format!("mono-tie-v{}-r{}", at.voice.get(), note.row),
+                log.id("tie", note.row),
                 note.row,
                 Proposal::Retrigger {
                     voice: at.voice,
@@ -256,14 +260,32 @@ fn canonical(a: &Note, b: &Note, skyline: Skyline) -> Ordering {
         .then_with(|| a.decision.cmp(&b.decision))
 }
 
-/// The decisions one call makes.
+/// The decisions one call of a rule makes, with ids `<prefix>-<kind>-v<voice>-r<row>` (and `-p<semitone>` for drops),
+/// `-2`, `-3`, ... added when one is taken.
 struct Log<'a> {
     at: &'a Placement<'a>,
+    rule: &'static str,
+    prefix: &'static str,
     decisions: Vec<Decision>,
     ids: BTreeSet<DecisionId>,
 }
 
-impl Log<'_> {
+impl<'a> Log<'a> {
+    fn new(at: &'a Placement<'a>, rule: &'static str, prefix: &'static str) -> Self {
+        Log {
+            at,
+            rule,
+            prefix,
+            decisions: Vec::new(),
+            ids: BTreeSet::new(),
+        }
+    }
+
+    /// The id for a decision of `kind` about the note on `row`.
+    fn id(&self, kind: &str, row: u32) -> String {
+        format!("{}-{kind}-v{}-r{row}", self.prefix, self.at.voice.get())
+    }
+
     /// Record a decision under `id`, or `id-2`, `id-3`, ... if that is taken.
     fn record(
         &mut self,
@@ -290,7 +312,7 @@ impl Log<'_> {
             bar: row / u32::from(self.at.rows_per_bar.get()),
             proposal,
             provenance: Provenance::Rules {
-                rule: MONOPHONISE.into(),
+                rule: self.rule.into(),
             },
             confidence,
             reviewed: false,
@@ -299,20 +321,19 @@ impl Log<'_> {
     }
 
     fn drop(&mut self, note: &Note, reason: DropReason, confidence: Confidence) {
+        let kind = match reason {
+            DropReason::Ghost => "ghost",
+            DropReason::TooShort => "short",
+            DropReason::Repeat => "repeat",
+            DropReason::Skyline => "skyline",
+            DropReason::Overlap => "overlap",
+            DropReason::Clash => "clash",
+            DropReason::Unmapped => "unmapped",
+            DropReason::Interleave => "interleave",
+        };
+        let id = format!("{}-p{}", self.id(kind, note.row), note.pitch.semitone());
         self.record(
-            format!(
-                "mono-{}-v{}-r{}-p{}",
-                match reason {
-                    DropReason::Ghost => "ghost",
-                    DropReason::TooShort => "short",
-                    DropReason::Repeat => "repeat",
-                    DropReason::Skyline => "skyline",
-                    DropReason::Overlap => "overlap",
-                },
-                self.at.voice.get(),
-                note.row,
-                note.pitch.semitone()
-            ),
+            id,
             note.row,
             Proposal::DropNote {
                 voice: self.at.voice,
