@@ -12,7 +12,7 @@ fn hash(b: u8) -> ContentHash {
     ContentHash([b; 32])
 }
 
-/// A small combat song with one of everything, for the snapshot and the field tests: a lead with a tie, and voice 3
+/// A small song with one of everything, for the snapshot and the field tests: a lead with a tie, and voice 3
 /// switching from bass to drums at the bar line, with per-note drum instruments.
 fn example() -> (Song, Vec<Decision>) {
     let n = |row, length, pitch: &str, attack| Note {
@@ -44,9 +44,9 @@ fn example() -> (Song, Vec<Decision>) {
     let fpr = |n| FramesPerRow::new(n).unwrap();
     let song = Song {
         schema: Schema::default(),
-        profile: Profile::Combat,
+        profile: ProfileName::new(builtin::SFX_SHARES_V3).unwrap(),
         subtunes: vec![Subtune {
-            name: SubtuneName::new("combat").unwrap(),
+            name: SubtuneName::new("theme").unwrap(),
             profile: None,
             frames_per_row: fpr(6),
             tempo: vec![TempoChange {
@@ -85,11 +85,11 @@ fn example() -> (Song, Vec<Decision>) {
             ],
         }],
     };
-    let combat = SubtuneName::new("combat").unwrap();
+    let theme = SubtuneName::new("theme").unwrap();
     let decisions = vec![
         Decision {
             id: DecisionId::new("octave-bar0").unwrap(),
-            subtune: combat.clone(),
+            subtune: theme.clone(),
             bar: 0,
             proposal: Proposal::Octave {
                 voice: Voice::new(1).unwrap(),
@@ -104,7 +104,7 @@ fn example() -> (Song, Vec<Decision>) {
         },
         Decision {
             id: DecisionId::new("v3-drums-bar1").unwrap(),
-            subtune: combat.clone(),
+            subtune: theme.clone(),
             bar: 1,
             proposal: Proposal::VoiceRole {
                 voice: Voice::new(3).unwrap(),
@@ -118,7 +118,7 @@ fn example() -> (Song, Vec<Decision>) {
         },
         Decision {
             id: DecisionId::new("loop").unwrap(),
-            subtune: combat,
+            subtune: theme,
             bar: 0,
             proposal: Proposal::LoopRow { row: 0 },
             provenance: Provenance::Manual,
@@ -230,7 +230,7 @@ fn tempo_is_three_to_127_frames_per_row() {
 fn subtunes_have_unique_stable_names() {
     let (song, decisions) = example();
     let (index, subtune) = song.subtune(&decisions[0].subtune).unwrap();
-    assert_eq!((index, subtune.name.as_str()), (0, "combat"));
+    assert_eq!((index, subtune.name.as_str()), (0, "theme"));
 
     let mut twice = serde_json::to_value(&song).unwrap();
     let copy = twice["subtunes"][0].clone();
@@ -238,8 +238,8 @@ fn subtunes_have_unique_stable_names() {
     let e = serde_json::from_value::<Song>(twice)
         .unwrap_err()
         .to_string();
-    assert!(e.contains(r#"two subtunes are called "combat""#), "{e}");
-    assert!(SubtuneName::new("Climax").is_none());
+    assert!(e.contains(r#"two subtunes are called "theme""#), "{e}");
+    assert!(SubtuneName::new("Peak").is_none());
 }
 
 #[test]

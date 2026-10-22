@@ -27,7 +27,7 @@ A tool that turns music and sound into game-ready Commodore 64 SID assets. One R
 
 - Rust 2024 edition, `cargo fmt`, `clippy -D warnings`. Snapshot tests with `insta`; property tests with `proptest`.
 - UI state lives in the app crate; the core never depends on egui.
-- Commit messages: imperative, scoped (`core: keep voice 3 free of lead and bass in combat profile`).
+- Commit messages: imperative, scoped (`core: keep lead and bass off expendable voices`).
 - Issues: epics labelled `epic`, children are sub-issues and say "Part of #N"; milestones M0–M3.
 
 Maintainers may keep personal tooling notes in `.claude/*.local.md` (git-ignored); nothing in the project depends on them.

@@ -5,6 +5,7 @@ use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema as JsonSchemaDoc, SchemaGenerator, json_schema};
 
+use crate::profile::ProfileName;
 use crate::provenance::{Confidence, ContentHash, DecisionId};
 use crate::score::{FramesPerRow, Pitch, SCHEMA_VERSION, Schema, SubtuneName, Voice};
 
@@ -47,4 +48,8 @@ schema!(FramesPerRow, "FramesPerRow", {
     "type": "integer",
     "minimum": 3,
     "maximum": 127
+});
+schema!(ProfileName, "ProfileName", {
+    "type": "string",
+    "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
 });

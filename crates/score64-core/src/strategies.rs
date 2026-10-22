@@ -7,7 +7,7 @@ use std::num::{NonZeroU8, NonZeroU32};
 
 use proptest::prelude::*;
 
-use crate::profile::Profile;
+use crate::profile::{ProfileName, builtin};
 use crate::provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
@@ -40,9 +40,15 @@ pub fn role() -> impl Strategy<Value = Role> {
     ]
 }
 
-/// Any profile.
-pub fn profile() -> impl Strategy<Value = Profile> {
-    proptest::sample::select(Profile::ALL.to_vec())
+/// Any built-in profile's name.
+pub fn profile() -> impl Strategy<Value = ProfileName> {
+    proptest::sample::select(vec![
+        builtin::FULL,
+        builtin::SFX_SHARES_V3,
+        builtin::SFX_OWNS_V3,
+        builtin::SFX_OWNS_V2_V3,
+    ])
+    .prop_map(|n| ProfileName::new(n).expect("valid"))
 }
 
 /// Any confidence.

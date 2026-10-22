@@ -1,438 +1,348 @@
-//! Voice profiles (`docs/TAD.md` §3.1): which SID voices carry music in a subtune, with which roles, which may use
-//! the SID's one filter, and which voice sound effects may take. A profile belongs to a subtune (the song's is the default), because one packed mission
-//! set mixes stages with different voice rules.
+//! Voice profiles (`docs/TAD.md` §3.1): for each SID voice, whether it carries music, music that sound effects may
+//! interrupt, or only sound effects; which roles its music may have; and whether it may use the SID's one filter.
 //!
-//! This module defines the rules as data. The validator (#13) checks songs against them and reports per bar and
-//! voice.
+//! Profiles are validated data. Score64 ships four built-in profiles ([`Profiles::builtin`]); a project can define
+//! more ([`Profiles::with`]). Subtunes refer to profiles by name. The validator checks songs against them.
 
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::score::{Role, Song, Voice};
+use crate::provenance::valid_id;
+use crate::score::{Role, Voice};
 
-/// A subtune's voice profile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    /// Three voices, any role on any voice.
-    Menu,
-    /// V1 lead, V2 bass or arpeggio, V3 expendable for sound effects (drums, arpeggio or texture only).
-    Combat,
-    /// Two voices (V1 lead, V2 bass or arpeggio); V3 has no music, so sound effects have it to themselves.
-    Combat2,
-    /// Mission stage 0 (quiet): the ambience bed on V1, filtered. V2 carries ambient effects and V3 foley and combat
-    /// effects, so neither has music.
-    Bed,
-    /// Mission stage 1: the bed continues on V1 with a low drone on V2. V3 stays with foley and combat effects.
-    Drone,
-    /// Mission stage 2: the drone on V2 turns into a slow pulse or ostinato; the bed continues on V1, V3 stays
-    /// with effects.
-    Ostinato,
-    /// Mission stage 3: the climax, under `combat` rules (V3 expendable).
-    Climax,
-    /// Mission stages 4 and 5: short end stings (victory, defeat), three voices, any role.
-    Sting,
+/// A profile's name: 1–64 of `a`–`z`, `0`–`9`, `-` and `_`, starting with a letter or digit.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ProfileName(String);
+
+impl ProfileName {
+    /// `s`, if it is a valid name.
+    pub fn new(s: impl Into<String>) -> Option<Self> {
+        let s = s.into();
+        valid_id(&s).then_some(ProfileName(s))
+    }
+
+    /// The name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
-/// What a profile allows on one voice.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct VoiceRule {
-    /// Whether the voice carries music, and in which roles.
-    pub usage: VoiceUse,
-    /// Whether the voice may be routed through the filter. The SID has one filter, so in the mission's quiet stages
-    /// only the bed (V1) may use it: its cutoff sweeps would move any other filtered voice too. The expendable
-    /// voice never may (validator rule 4).
-    pub filter: bool,
+impl fmt::Display for ProfileName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
-impl VoiceRule {
-    /// Whether music may use this voice in `role`.
-    pub fn allows(self, role: Role) -> bool {
-        self.usage.allows(role)
+impl TryFrom<String> for ProfileName {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, String> {
+        let shown = format!("{s:?}");
+        ProfileName::new(s).ok_or_else(|| {
+            format!("{shown} is not a profile name (1–64 of a-z, 0-9, - and _, starting with a letter or digit)")
+        })
+    }
+}
+
+impl From<ProfileName> for String {
+    fn from(n: ProfileName) -> String {
+        n.0
     }
 }
 
 /// Whether a voice carries music.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum VoiceUse {
-    /// Music with one of these roles (any role if empty).
-    Music(&'static [Role]),
-    /// Music with one of these roles that sound effects may interrupt. After an effect the voice stays silent until
-    /// the music's next new note (#119), so it should carry short, frequent notes; notes start with an explicit
-    /// pulse width and the voice is not routed through the filter (validator rule 4).
-    Expendable(&'static [Role]),
-    /// No music on this voice.
-    Unused,
+    /// Music.
+    Music,
+    /// Music that sound effects may interrupt. After an effect the voice stays silent until the music's next new
+    /// note (`docs/reference/player.md`), so it should carry short, frequent notes; its notes start with an explicit
+    /// pulse width and it never uses the filter (rule 4).
+    Expendable,
+    /// Sound effects only; no music.
+    Effects,
 }
 
-impl VoiceUse {
-    /// Whether music may use this voice in `role`.
-    pub fn allows(self, role: Role) -> bool {
-        match self {
-            VoiceUse::Music(roles) | VoiceUse::Expendable(roles) => {
-                roles.is_empty() || roles.contains(&role)
+/// What a profile allows on one voice. Read from files through checks: an effects-only voice has no roles and no
+/// filter; an expendable voice names its roles, which may not be lead or bass, and has no filter.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(try_from = "VoiceRuleFields", into = "VoiceRuleFields")]
+pub struct VoiceRule {
+    usage: VoiceUse,
+    roles: Vec<Role>,
+    filter: bool,
+}
+
+/// [`VoiceRule`] as written in files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+struct VoiceRuleFields {
+    /// `music`, `expendable` or `effects`.
+    usage: VoiceUse,
+    /// Roles its music may have; empty or absent means any (music voices only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    roles: Vec<Role>,
+    /// Whether it may be routed through the filter.
+    #[serde(default)]
+    filter: bool,
+}
+
+impl VoiceRule {
+    /// A rule, if it is consistent (see the type's docs).
+    pub fn new(usage: VoiceUse, roles: Vec<Role>, filter: bool) -> Result<Self, String> {
+        if roles
+            .iter()
+            .enumerate()
+            .any(|(i, r)| roles[..i].contains(r))
+        {
+            return Err("a role is listed twice".into());
+        }
+        match usage {
+            VoiceUse::Music => {}
+            VoiceUse::Expendable => {
+                if filter {
+                    return Err("an expendable voice may not use the filter (rule 4)".into());
+                }
+                if roles.is_empty() {
+                    return Err("an expendable voice must list its roles".into());
+                }
+                if roles.iter().any(|r| matches!(r, Role::Lead | Role::Bass)) {
+                    return Err("an expendable voice may not carry lead or bass (rule 4)".into());
+                }
             }
-            VoiceUse::Unused => false,
+            VoiceUse::Effects => {
+                if filter || !roles.is_empty() {
+                    return Err("an effects-only voice has no roles and no filter".into());
+                }
+            }
+        }
+        Ok(VoiceRule {
+            usage,
+            roles,
+            filter,
+        })
+    }
+
+    /// Music with any role, filter allowed.
+    pub fn music() -> Self {
+        VoiceRule {
+            usage: VoiceUse::Music,
+            roles: vec![],
+            filter: true,
+        }
+    }
+
+    /// Sound effects only.
+    pub fn effects() -> Self {
+        VoiceRule {
+            usage: VoiceUse::Effects,
+            roles: vec![],
+            filter: false,
+        }
+    }
+
+    /// Music, music that effects may interrupt, or effects only.
+    pub fn usage(&self) -> VoiceUse {
+        self.usage
+    }
+
+    /// The roles its music may have; empty means any.
+    pub fn roles(&self) -> &[Role] {
+        &self.roles
+    }
+
+    /// Whether it may be routed through the filter.
+    pub fn filter(&self) -> bool {
+        self.filter
+    }
+
+    /// Whether it carries music (plain or expendable).
+    pub fn is_music(&self) -> bool {
+        self.usage != VoiceUse::Effects
+    }
+
+    /// Whether music on it may have `role`.
+    pub fn allows(&self, role: Role) -> bool {
+        self.is_music() && (self.roles.is_empty() || self.roles.contains(&role))
+    }
+}
+
+impl TryFrom<VoiceRuleFields> for VoiceRule {
+    type Error = String;
+    fn try_from(f: VoiceRuleFields) -> Result<Self, String> {
+        VoiceRule::new(f.usage, f.roles, f.filter)
+    }
+}
+
+impl From<VoiceRule> for VoiceRuleFields {
+    fn from(r: VoiceRule) -> Self {
+        VoiceRuleFields {
+            usage: r.usage,
+            roles: r.roles,
+            filter: r.filter,
         }
     }
 }
 
-const fn music(roles: &'static [Role], filter: bool) -> VoiceRule {
-    VoiceRule {
-        usage: VoiceUse::Music(roles),
-        filter,
-    }
+/// A named profile: one rule per SID voice. At least one voice carries music.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(try_from = "ProfileFields", into = "ProfileFields")]
+pub struct Profile {
+    name: ProfileName,
+    voices: [VoiceRule; 3],
 }
 
-const ANY: VoiceRule = music(&[], true);
-const LEAD: VoiceRule = music(&[Role::Lead], true);
-const BASS_OR_ARP: VoiceRule = music(&[Role::Bass, Role::Arp], true);
-const BED: VoiceRule = music(&[Role::Bed], true);
-const DRONE: VoiceRule = music(&[Role::Drone], false);
-const OSTINATO: VoiceRule = music(&[Role::Ostinato], false);
-const EXPENDABLE: VoiceRule = VoiceRule {
-    usage: VoiceUse::Expendable(&[Role::Drums, Role::Arp, Role::Texture]),
-    filter: false,
-};
-/// No music: the voice belongs to sound effects (or, in `combat2`, is simply free for them).
-const EFFECTS: VoiceRule = VoiceRule {
-    usage: VoiceUse::Unused,
-    filter: false,
-};
+/// [`Profile`] as written in files.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+struct ProfileFields {
+    /// Name, unique among the built-in and project profiles.
+    name: ProfileName,
+    /// Voice 1.
+    v1: VoiceRule,
+    /// Voice 2.
+    v2: VoiceRule,
+    /// Voice 3.
+    v3: VoiceRule,
+}
 
 impl Profile {
-    /// Every profile.
-    pub const ALL: [Profile; 8] = [
-        Profile::Menu,
-        Profile::Combat,
-        Profile::Combat2,
-        Profile::Bed,
-        Profile::Drone,
-        Profile::Ostinato,
-        Profile::Climax,
-        Profile::Sting,
-    ];
-
-    /// The name used in files.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Profile::Menu => "menu",
-            Profile::Combat => "combat",
-            Profile::Combat2 => "combat2",
-            Profile::Bed => "bed",
-            Profile::Drone => "drone",
-            Profile::Ostinato => "ostinato",
-            Profile::Climax => "climax",
-            Profile::Sting => "sting",
+    /// A profile, if at least one voice carries music.
+    pub fn new(name: ProfileName, voices: [VoiceRule; 3]) -> Result<Self, String> {
+        if !voices.iter().any(VoiceRule::is_music) {
+            return Err(format!("profile `{name}` has no music voice"));
         }
+        Ok(Profile { name, voices })
     }
 
-    /// What the profile allows on voices 1, 2 and 3 (the No Glory voice plan for the mission stages).
-    pub const fn voices(self) -> [VoiceRule; 3] {
-        match self {
-            Profile::Menu | Profile::Sting => [ANY, ANY, ANY],
-            Profile::Combat | Profile::Climax => [LEAD, BASS_OR_ARP, EXPENDABLE],
-            Profile::Combat2 => [LEAD, BASS_OR_ARP, EFFECTS],
-            Profile::Bed => [BED, EFFECTS, EFFECTS],
-            Profile::Drone => [BED, DRONE, EFFECTS],
-            Profile::Ostinato => [BED, OSTINATO, EFFECTS],
-        }
+    /// Its name.
+    pub fn name(&self) -> &ProfileName {
+        &self.name
     }
 
-    /// What the profile allows on `voice`.
-    pub const fn voice(self, voice: Voice) -> VoiceRule {
-        self.voices()[(voice.get() - 1) as usize]
+    /// The rule for `voice`.
+    pub fn voice(&self, voice: Voice) -> &VoiceRule {
+        &self.voices[usize::from(voice.get() - 1)]
     }
 
     /// The voices that carry music.
-    pub fn music_voices(self) -> impl Iterator<Item = Voice> {
+    pub fn music_voices(&self) -> impl Iterator<Item = Voice> + '_ {
         (1..=3)
             .filter_map(Voice::new)
-            .filter(move |&v| !matches!(self.voice(v).usage, VoiceUse::Unused))
+            .filter(|&v| self.voice(v).is_music())
     }
 
-    /// The voice sound effects interrupt music on, if any.
-    pub fn expendable_voice(self) -> Option<Voice> {
+    /// The voices sound effects may interrupt music on.
+    pub fn expendable_voices(&self) -> impl Iterator<Item = Voice> + '_ {
         (1..=3)
             .filter_map(Voice::new)
-            .find(|&v| matches!(self.voice(v).usage, VoiceUse::Expendable(_)))
+            .filter(|&v| self.voice(v).usage() == VoiceUse::Expendable)
     }
 
     /// Whether music on `voice` may have `role`.
-    pub fn allows(self, voice: Voice, role: Role) -> bool {
+    pub fn allows(&self, voice: Voice, role: Role) -> bool {
         self.voice(voice).allows(role)
     }
 
     /// Whether `voice` may be routed through the filter.
-    pub fn may_filter(self, voice: Voice) -> bool {
-        self.voice(voice).filter
-    }
-
-    /// Whether this is one of the mission stages.
-    pub const fn is_mission_stage(self) -> bool {
-        matches!(
-            self,
-            Profile::Bed | Profile::Drone | Profile::Ostinato | Profile::Climax | Profile::Sting
-        )
+    pub fn may_filter(&self, voice: Voice) -> bool {
+        self.voice(voice).filter()
     }
 }
 
-impl fmt::Display for Profile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.name())
+impl TryFrom<ProfileFields> for Profile {
+    type Error = String;
+    fn try_from(f: ProfileFields) -> Result<Self, String> {
+        Profile::new(f.name, [f.v1, f.v2, f.v3])
     }
 }
 
-/// The subtunes of a mission set, in the order the game numbers them: bed, drone, ostinato, climax, then up to two
-/// stings (victory, defeat).
-pub const MISSION_LAYOUT: [Profile; 6] = [
-    Profile::Bed,
-    Profile::Drone,
-    Profile::Ostinato,
-    Profile::Climax,
-    Profile::Sting,
-    Profile::Sting,
-];
+impl From<Profile> for ProfileFields {
+    fn from(p: Profile) -> Self {
+        let [v1, v2, v3] = p.voices;
+        ProfileFields {
+            name: p.name,
+            v1,
+            v2,
+            v3,
+        }
+    }
+}
 
-/// The fewest subtunes a mission set has: the four stages, without stings.
-pub const MISSION_MIN_SUBTUNES: usize = 4;
+/// Names of the built-in profiles.
+pub mod builtin {
+    /// All three voices are music, any role, filter allowed.
+    pub const FULL: &str = "full";
+    /// Voices 1–2 are music; voice 3 is music that sound effects may interrupt (drums, arpeggio or texture only).
+    pub const SFX_SHARES_V3: &str = "sfx-shares-v3";
+    /// Voices 1–2 are music; voice 3 is for sound effects only.
+    pub const SFX_OWNS_V3: &str = "sfx-owns-v3";
+    /// Voice 1 is music; voices 2–3 are for sound effects only.
+    pub const SFX_OWNS_V2_V3: &str = "sfx-owns-v2-v3";
+}
 
-/// Why a song that uses mission stages is not a mission set.
+/// The profiles a song may name: the built-in ones plus any a project defines.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MissionLayoutError {
-    /// It has this many subtunes, not 4–6.
-    Count(usize),
-    /// Subtune `index` (called `name`) plays under `found` where the layout has `expected`.
-    Stage {
-        /// Position (the game's subtune number).
-        index: usize,
-        /// Its name.
-        name: String,
-        /// What the layout puts there.
-        expected: Profile,
-        /// What it has.
-        found: Profile,
-    },
+pub struct Profiles(Vec<Profile>);
+
+impl Profiles {
+    /// The built-in profiles: `full`, `sfx-shares-v3`, `sfx-owns-v3` and `sfx-owns-v2-v3`.
+    pub fn builtin() -> Self {
+        let name = |s: &str| ProfileName::new(s).expect("valid built-in name");
+        let shared = VoiceRule::new(
+            VoiceUse::Expendable,
+            vec![Role::Drums, Role::Arp, Role::Texture],
+            false,
+        )
+        .expect("valid built-in rule");
+        let p = |n: &str, voices| Profile::new(name(n), voices).expect("valid built-in profile");
+        let (m, e) = (VoiceRule::music, VoiceRule::effects);
+        Profiles(vec![
+            p(builtin::FULL, [m(), m(), m()]),
+            p(builtin::SFX_SHARES_V3, [m(), m(), shared]),
+            p(builtin::SFX_OWNS_V3, [m(), m(), e()]),
+            p(builtin::SFX_OWNS_V2_V3, [m(), e(), e()]),
+        ])
+    }
+
+    /// The built-in profiles plus `project`'s, whose names must be new.
+    pub fn with(project: impl IntoIterator<Item = Profile>) -> Result<Self, String> {
+        let mut all = Self::builtin();
+        for p in project {
+            if all.get(p.name()).is_some() {
+                return Err(format!(
+                    "profile `{}` is defined twice, or redefines a built-in profile",
+                    p.name()
+                ));
+            }
+            all.0.push(p);
+        }
+        Ok(all)
+    }
+
+    /// The profile called `name`.
+    pub fn get(&self, name: &ProfileName) -> Option<&Profile> {
+        self.0.iter().find(|p| p.name() == name)
+    }
+
+    /// Every profile, built-in ones first.
+    pub fn iter(&self) -> impl Iterator<Item = &Profile> {
+        self.0.iter()
+    }
 }
 
-impl fmt::Display for MissionLayoutError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MissionLayoutError::Count(n) => write!(
-                f,
-                "a mission set has {MISSION_MIN_SUBTUNES} to {} subtunes (bed, drone, ostinato, climax, stings), not {n}",
-                MISSION_LAYOUT.len()
-            ),
-            MissionLayoutError::Stage {
-                index,
-                name,
-                expected,
-                found,
-            } => write!(
-                f,
-                "subtune {index} ({name}) is `{found}`, but a mission set has `{expected}` there"
-            ),
-        }
+impl Default for Profiles {
+    fn default() -> Self {
+        Self::builtin()
     }
-}
-
-impl std::error::Error for MissionLayoutError {}
-
-/// Whether `song` is laid out as a mission set. A song is one when any of its subtunes plays under a mission stage;
-/// other songs pass unchecked.
-pub fn check_mission_layout(song: &Song) -> Result<(), MissionLayoutError> {
-    let profiles: Vec<Profile> = song.subtunes.iter().map(|s| song.profile_of(s)).collect();
-    if !profiles.iter().any(|p| p.is_mission_stage()) {
-        return Ok(());
-    }
-    if !(MISSION_MIN_SUBTUNES..=MISSION_LAYOUT.len()).contains(&profiles.len()) {
-        return Err(MissionLayoutError::Count(profiles.len()));
-    }
-    for (index, (&found, &expected)) in profiles.iter().zip(&MISSION_LAYOUT).enumerate() {
-        if found != expected {
-            return Err(MissionLayoutError::Stage {
-                index,
-                name: song.subtunes[index].name.as_str().to_owned(),
-                expected,
-                found,
-            });
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
-mod tests {
-    use std::num::{NonZeroU8, NonZeroU32};
-
-    use super::*;
-    use crate::score::{FramesPerRow, Schema, Subtune, SubtuneName};
-
-    fn v(n: u8) -> Voice {
-        Voice::new(n).unwrap()
-    }
-
-    fn voices(p: Profile) -> Vec<u8> {
-        p.music_voices().map(Voice::get).collect()
-    }
-
-    #[test]
-    fn combat_keeps_lead_and_bass_off_the_expendable_voice() {
-        for p in [Profile::Combat, Profile::Climax] {
-            assert!(p.allows(v(1), Role::Lead));
-            assert!(!p.allows(v(1), Role::Bass));
-            assert!(p.allows(v(2), Role::Bass) && p.allows(v(2), Role::Arp));
-            assert!(!p.allows(v(2), Role::Lead));
-            for r in [Role::Drums, Role::Arp, Role::Texture] {
-                assert!(p.allows(v(3), r), "{p} {r:?}");
-            }
-            for r in [Role::Lead, Role::Bass, Role::Drone, Role::Bed] {
-                assert!(!p.allows(v(3), r), "{p} {r:?}");
-            }
-            assert_eq!(p.expendable_voice(), Some(v(3)));
-            assert_eq!(voices(p), [1, 2, 3]);
-        }
-        assert_eq!(Profile::Climax.voices(), Profile::Combat.voices());
-    }
-
-    /// The GDD voice table: V1 bed throughout the quiet stages, V2 drone then ostinato, V3 effects until the climax.
-    #[test]
-    fn mission_stages_follow_the_voice_plan() {
-        assert_eq!(voices(Profile::Bed), [1]);
-        assert_eq!(voices(Profile::Drone), [1, 2]);
-        assert_eq!(voices(Profile::Ostinato), [1, 2]);
-        assert_eq!(voices(Profile::Climax), [1, 2, 3]);
-        for p in [Profile::Bed, Profile::Drone, Profile::Ostinato] {
-            assert!(p.allows(v(1), Role::Bed), "{p}");
-            assert!(!p.allows(v(1), Role::Lead), "{p}: no lead sneaking in");
-            assert_eq!(
-                p.voice(v(3)).usage,
-                VoiceUse::Unused,
-                "{p}: V3 is foley and combat effects"
-            );
-            assert_eq!(p.expendable_voice(), None);
-        }
-        assert!(Profile::Drone.allows(v(2), Role::Drone));
-        assert!(!Profile::Drone.allows(v(2), Role::Ostinato));
-        assert!(Profile::Ostinato.allows(v(2), Role::Ostinato));
-        assert!(!Profile::Ostinato.allows(v(2), Role::Lead));
-        assert!(
-            !Profile::Bed.allows(v(2), Role::Drone),
-            "V2 carries ambient effects in the bed"
-        );
-    }
-
-    #[test]
-    fn only_the_bed_may_filter_in_the_quiet_stages() {
-        for p in [Profile::Bed, Profile::Drone, Profile::Ostinato] {
-            assert!(p.may_filter(v(1)), "{p}");
-            assert!(!p.may_filter(v(2)) && !p.may_filter(v(3)), "{p}");
-        }
-        for p in Profile::ALL {
-            if let Some(x) = p.expendable_voice() {
-                assert!(!p.may_filter(x), "{p}: never on the expendable voice");
-            }
-        }
-        assert!(Profile::Menu.may_filter(v(3)));
-    }
-
-    #[test]
-    fn voice_counts_and_free_profiles() {
-        assert_eq!(voices(Profile::Combat2), [1, 2]);
-        assert_eq!(Profile::Combat2.voice(v(3)).usage, VoiceUse::Unused);
-        for p in [Profile::Menu, Profile::Sting] {
-            for n in 1..=3 {
-                for r in [Role::Lead, Role::Bass, Role::Drone, Role::Texture] {
-                    assert!(p.allows(v(n), r), "{p} V{n} {r:?}");
-                }
-            }
-        }
-        for p in Profile::ALL {
-            let expendable = matches!(p, Profile::Combat | Profile::Climax);
-            assert_eq!(p.expendable_voice().is_some(), expendable, "{p}");
-            assert_eq!(
-                serde_json::to_value(p).unwrap(),
-                p.name(),
-                "file name of {p}"
-            );
-        }
-    }
-
-    fn song(default: Profile, stages: &[Option<Profile>]) -> Song {
-        let subtune = |i: usize, profile| Subtune {
-            name: SubtuneName::new(format!("s{i}")).unwrap(),
-            profile,
-            frames_per_row: FramesPerRow::new(6).unwrap(),
-            tempo: vec![],
-            rows_per_bar: NonZeroU8::new(16).unwrap(),
-            length: NonZeroU32::new(16).unwrap(),
-            loop_row: 0,
-            marks: vec![0],
-            voices: vec![],
-        };
-        Song {
-            schema: Schema::default(),
-            profile: default,
-            subtunes: stages
-                .iter()
-                .enumerate()
-                .map(|(i, &p)| subtune(i, p))
-                .collect(),
-        }
-    }
-
-    #[test]
-    fn subtunes_override_the_songs_profile() {
-        let s = song(Profile::Combat, &[None, Some(Profile::Menu)]);
-        assert_eq!(s.profile_of(&s.subtunes[0]), Profile::Combat);
-        assert_eq!(s.profile_of(&s.subtunes[1]), Profile::Menu);
-        let json = serde_json::to_value(&s).unwrap();
-        assert!(
-            json["subtunes"][0].get("profile").is_none(),
-            "the default is not repeated"
-        );
-        assert_eq!(json["subtunes"][1]["profile"], "menu");
-    }
-
-    #[test]
-    fn mission_sets_follow_the_layout() {
-        use Profile::*;
-        let stages = |ps: &[Profile]| ps.iter().map(|&p| Some(p)).collect::<Vec<_>>();
-        let full = song(Menu, &stages(&MISSION_LAYOUT));
-        assert_eq!(check_mission_layout(&full), Ok(()));
-        let no_stings = song(Menu, &stages(&[Bed, Drone, Ostinato, Climax]));
-        assert_eq!(check_mission_layout(&no_stings), Ok(()));
-        assert_eq!(
-            check_mission_layout(&song(Menu, &stages(&[Bed, Drone, Climax]))),
-            Err(MissionLayoutError::Count(3))
-        );
-        let swapped = song(Menu, &stages(&[Bed, Ostinato, Drone, Climax]));
-        let e = check_mission_layout(&swapped).unwrap_err();
-        assert_eq!(
-            e,
-            MissionLayoutError::Stage {
-                index: 1,
-                name: "s1".into(),
-                expected: Drone,
-                found: Ostinato
-            }
-        );
-        assert_eq!(
-            e.to_string(),
-            "subtune 1 (s1) is `ostinato`, but a mission set has `drone` there"
-        );
-        // The song's default counts: four subtunes all defaulting to `bed` are a broken mission set.
-        let defaulted = song(Bed, &[None, None, None, None]);
-        assert!(matches!(
-            check_mission_layout(&defaulted),
-            Err(MissionLayoutError::Stage { index: 1, .. })
-        ));
-        // Songs without mission stages are not mission sets.
-        assert_eq!(
-            check_mission_layout(&song(Combat, &[None, Some(Menu)])),
-            Ok(())
-        );
-    }
-}
+mod tests;

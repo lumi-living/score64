@@ -11,6 +11,7 @@
 //! Features: `schema` derives JSON Schemas (for engine commands whose arguments embed model types); `proptest`
 //! exposes [`strategies`] for property tests.
 
+pub mod adaptive;
 pub mod profile;
 pub mod provenance;
 #[cfg(feature = "schema")]
@@ -19,9 +20,8 @@ pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
 
-pub use profile::{
-    MISSION_LAYOUT, MissionLayoutError, Profile, VoiceRule, VoiceUse, check_mission_layout,
-};
+pub use adaptive::{AdaptiveSet, LayerProblem};
+pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
