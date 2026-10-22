@@ -19,7 +19,9 @@ use crate::score::{Attack, Note, SubtuneName, Voice};
 mod chords;
 mod lead;
 mod octave;
-pub use chords::{Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, arpeggiate, detect_chords};
+pub use chords::{
+    Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, MIN_SCORE, arpeggiate, detect_chords,
+};
 pub use lead::{
     Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
 };

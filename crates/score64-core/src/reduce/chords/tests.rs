@@ -226,8 +226,12 @@ proptest! {
     /// On any note soup: spans are in order, apart, inside the subtune and on beat boundaries; the arpeggios they give
     /// validate with no errors (pitch-range warnings allowed); and the order of the notes does not matter.
     #[test]
-    fn any_soup_gives_ordered_spans_and_a_valid_arp_line(soup in strategies::note_soup(), reverse in any::<bool>()) {
-        let length = rows(300);
+    fn any_soup_gives_ordered_spans_and_a_valid_arp_line(
+        soup in strategies::note_soup(),
+        seed in any::<u64>(),
+        length in 1u32..300,
+    ) {
+        let length = rows(length);
         let spans = detect_chords(&soup, beat(), length);
         let mut end = 0;
         for s in &spans {
@@ -243,14 +247,160 @@ proptest! {
         for (note, arp) in a.notes.iter().zip(&a.arps) {
             let top = *arp.intervals.last().unwrap();
             prop_assert!(note.pitch.semitone() + top <= Pitch::MAX.semitone());
+            prop_assert_eq!((note.row, note.length), (arp.row, arp.length));
+            prop_assert_eq!(&note.decision, &arp.decision);
         }
+        let mut ids: Vec<_> = a.decisions.iter().map(|d| d.id.clone()).collect();
+        ids.dedup();
+        prop_assert_eq!(ids.len(), a.decisions.len());
         let (song, ctx) = checked(a);
+        prop_assert!(spans.iter().all(|s| s.confidence.get() >= MIN_SCORE));
         let errors: Vec<_> = validate(&song, &ctx).into_iter().filter(|p| p.is_error()).collect();
         prop_assert!(errors.is_empty(), "{errors:#?}");
-        let mut flipped = soup;
-        if reverse {
-            flipped.reverse();
+        let mut shuffled = soup;
+        let mut x = seed | 1;
+        for i in (1..shuffled.len()).rev() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            shuffled.swap(i, (x % (i as u64 + 1)) as usize);
         }
-        prop_assert_eq!(detect_chords(&flipped, beat(), length), spans);
+        prop_assert_eq!(detect_chords(&shuffled, beat(), length), spans);
     }
+}
+
+fn weighted(row: u32, length: u32, pitch: &str, confidence: f32) -> Note {
+    let mut n = note(row, length, pitch);
+    n.confidence = Confidence::new(confidence).unwrap();
+    n
+}
+
+#[test]
+fn the_bass_settles_chords_with_the_same_notes_whatever_the_weights() {
+    // D E A is D sus2 and A sus4; with D lowest it must read as D sus2 for any confidences.
+    for (d, e, a) in [
+        (0.9, 0.9, 0.9),
+        (0.31, 0.77, 0.53),
+        (0.99, 0.12, 0.47),
+        (0.2, 0.6, 0.8),
+    ] {
+        let notes = [
+            weighted(0, 4, "D-4", d),
+            weighted(0, 4, "E-4", e),
+            weighted(0, 4, "A-4", a),
+        ];
+        let spans = detect_chords(&notes, beat(), rows(4));
+        assert_eq!(
+            found(&spans),
+            [(0, 4, 2, ChordQuality::Sus2)],
+            "{d} {e} {a}"
+        );
+    }
+}
+
+#[test]
+fn missing_tones_and_a_cluster_weaken_or_drop_the_chord() {
+    // A lone C is only a third of C major; a bare fifth two thirds.
+    let lone = detect_chords(&[note(0, 4, "C-4")], beat(), rows(4));
+    assert!(
+        (lone[0].confidence.get() - 1.0 / 3.0).abs() < 1e-5,
+        "{:?}",
+        lone[0].confidence
+    );
+    let fifth = detect_chords(&chord(0, 4, &["C-4", "G-4"]), beat(), rows(4));
+    assert!((fifth[0].confidence.get() - 2.0 / 3.0).abs() < 1e-5);
+    // Four semitones in a row is no chord.
+    let cluster = detect_chords(&chord(0, 4, &["C-4", "C#4", "D-4", "D#4"]), beat(), rows(4));
+    assert!(cluster.is_empty(), "{cluster:?}");
+}
+
+#[test]
+fn the_score_is_tones_on_minus_tones_off() {
+    // C E G at 0.9 for four rows (3.6 each) and a passing D for one (0.9): (2 × 10.8 − 11.7) / 11.7.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.push(note(0, 1, "D-4"));
+    let spans = detect_chords(&notes, beat(), rows(4));
+    assert!((spans[0].confidence.get() - (2.0 * 10.8 - 11.7) / 11.7).abs() < 1e-4);
+}
+
+#[test]
+fn a_faint_seventh_costs_more_than_it_brings() {
+    // C E G and a faint B: the triad, because a seventh chord pays for its fourth tone.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.push(weighted(0, 1, "B-4", 0.2));
+    assert_eq!(
+        found(&detect_chords(&notes, beat(), rows(4)))[0].3,
+        ChordQuality::Major
+    );
+}
+
+#[test]
+fn a_chords_root_must_sound() {
+    // E and G: C major would fit as well as E minor, but C does not sound.
+    let spans = detect_chords(&chord(0, 4, &["E-4", "G-4"]), beat(), rows(4));
+    assert_eq!(found(&spans), [(0, 4, 4, ChordQuality::Minor)]);
+}
+
+#[test]
+fn rows_and_confidence_both_weigh() {
+    // C and E shared; G against A decides C major or A minor. A sounds longer: A minor.
+    let mut notes = chord(0, 4, &["C-4", "E-4"]);
+    notes.push(note(0, 4, "A-3"));
+    notes.push(note(0, 1, "G-4"));
+    assert_eq!(found(&detect_chords(&notes, beat(), rows(4)))[0].2, 9);
+    // A is surer: A minor again.
+    let mut notes = chord(0, 4, &["C-4", "E-4"]);
+    notes.push(weighted(0, 4, "A-3", 0.9));
+    notes.push(weighted(0, 4, "G-4", 0.2));
+    assert_eq!(found(&detect_chords(&notes, beat(), rows(4)))[0].2, 9);
+}
+
+#[test]
+fn only_adjacent_beats_merge_and_spans_average_their_beats() {
+    // C, silence, C: two spans.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.extend(chord(8, 4, &["C-4", "E-4", "G-4"]));
+    let spans = detect_chords(&notes, beat(), rows(12));
+    assert_eq!(
+        found(&spans).iter().map(|s| s.0).collect::<Vec<_>>(),
+        [0, 8]
+    );
+    // A clean beat and one with a passing tone: the span's confidence is their mean.
+    let mut notes = chord(0, 8, &["C-4", "E-4", "G-4"]);
+    notes.push(note(4, 1, "D-4"));
+    let spans = detect_chords(&notes, beat(), rows(8));
+    let second = (2.0 * 10.8 - 11.7) / 11.7;
+    assert!((spans[0].confidence.get() - (1.0 + second) / 2.0).abs() < 1e-4);
+}
+
+#[test]
+fn roots_sit_nearest_the_middle_of_the_range() {
+    // Arp range C-3 to C-6, middle F#4 (54): a G chord's root is G-4 (55), not G-3 or G-5.
+    let n = name();
+    let g = ChordSpan {
+        row: 32,
+        length: rows(4),
+        chord: Chord {
+            root: 7,
+            quality: ChordQuality::Major,
+        },
+        confidence: Confidence::CERTAIN,
+    };
+    let a = arpeggiate(&[g], &at(&n), RoleRanges::default().arp);
+    assert_eq!(a.notes[0].pitch.to_string(), "G-4");
+    assert_eq!(a.decisions[0].bar, 2);
+    // A range narrower than an octave with no A in it: the playable A nearest its middle, not the highest.
+    let narrow = PitchRange {
+        low: "C-4".parse().unwrap(),
+        high: "E-4".parse().unwrap(),
+    };
+    let span = ChordSpan {
+        chord: Chord {
+            root: 9,
+            quality: ChordQuality::Major,
+        },
+        ..g
+    };
+    let a = arpeggiate(&[span], &at(&n), narrow);
+    assert_eq!(a.notes[0].pitch.to_string(), "A-3");
 }

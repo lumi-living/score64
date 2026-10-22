@@ -20,6 +20,9 @@ pub const CHORDS: &str = "chords@1";
 /// What a template costs for each tone past three, so a triad wins over a seventh chord unless the seventh sounds.
 const EXTRA_TONE_COST: f32 = 0.05;
 
+/// The score a beat's best chord needs: below it, the beat has no chord (a cluster, or noise).
+pub const MIN_SCORE: f32 = 0.25;
+
 /// The chord qualities detection knows, simplest first: on a tie the earlier one wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -94,12 +97,14 @@ pub struct ChordSpan {
 }
 
 /// Detect the chord of each beat of a subtune `length` rows long from `notes` (any parts, overlapping, in any order),
-/// and merge consecutive beats with the same chord into one span.
+/// and merge consecutive beats with the same chord into one span. Beats count from row 0 in `rows_per_beat` rows.
 ///
 /// Each beat's pitch classes are weighted by the rows each note sounds in the beat, times its confidence. Every root
-/// and [`ChordQuality`] is scored: the weight on its tones minus the weight off them, over the beat's weight, less
-/// a little for each tone past three. A chord's root must sound. The best scores; on a tie the one rooted on the
-/// beat's lowest note, then the simpler quality, then the lower root. A beat with nothing sounding, or with no chord whose root sounds, has none.
+/// and [`ChordQuality`] is scored: the weight on its tones minus the weight off them, over the beat's weight, scaled
+/// by the share of its tones that sound (a lone C is a weak C major), less a little for each tone past three. A
+/// chord's root must sound. The best scores; on a tie the one rooted on the beat's lowest sounding note, then the
+/// simpler quality, then the lower root. A beat with nothing sounding, or whose best scores under
+/// [`MIN_SCORE`], has no chord. A span's confidence is the mean of its beats' scores.
 pub fn detect_chords(
     notes: &[Note],
     rows_per_beat: NonZeroU8,
@@ -119,14 +124,15 @@ pub fn detect_chords(
         for n in &notes {
             let from = n.row.max(start);
             let to = n.row.saturating_add(n.length.get()).min(end);
-            if from < to {
+            if from < to && n.confidence.get() > 0.0 {
                 weight[usize::from(n.pitch.semitone() % 12)] +=
                     (to - from) as f32 * n.confidence.get();
                 lowest = Some(lowest.map_or(n.pitch, |l| l.min(n.pitch)));
             }
         }
         let bass = lowest.map(|p| p.semitone() % 12);
-        let Some((chord, score)) = best_chord(&weight, bass) else {
+        let Some((chord, score)) = best_chord(&weight, bass).filter(|&(_, s)| s >= MIN_SCORE)
+        else {
             continue;
         };
         let span_length = NonZeroU32::new(end - start).expect("a beat has rows");
@@ -175,11 +181,16 @@ fn best_chord(weight: &[f32; 12], bass: Option<u8>) -> Option<(Chord, f32)> {
                 continue;
             }
             let tones = quality.intervals();
-            let on: f32 = tones
-                .iter()
-                .map(|&i| weight[usize::from((root + i) % 12)])
-                .sum();
-            let score = (2.0 * on - total) / total - EXTRA_TONE_COST * (tones.len() - 3) as f32;
+            // Summed over the pitch classes in order, so chords sharing their notes score exactly the same.
+            let mut mask = [false; 12];
+            for &i in tones {
+                mask[usize::from((root + i) % 12)] = true;
+            }
+            let on: f32 = (0..12).filter(|&pc| mask[pc]).map(|pc| weight[pc]).sum();
+            let sounding = (0..12).filter(|&pc| mask[pc] && weight[pc] > 0.0).count();
+            let share = sounding as f32 / tones.len() as f32;
+            let score =
+                (2.0 * on - total) / total * share - EXTRA_TONE_COST * (tones.len() - 3) as f32;
             let on_bass = |r: u8| bass == Some(r);
             if best.is_none_or(|(c, s)| (score, on_bass(root)) > (s, on_bass(c.root))) {
                 best = Some((Chord { root, quality }, score));
@@ -201,9 +212,9 @@ pub struct Arpeggio {
 }
 
 /// Play `spans` (from [`detect_chords`]) as arpeggios on the voice in `at`: each span's root, in the octave nearest
-/// the middle of `range` that keeps every chord tone playable, with an [`ArpEvent`] of the chord's intervals. A
-/// span whose chord can't fit (with the range above every octave that keeps it playable) is placed in the highest
-/// octave that does. Each span is one [`Proposal::Chord`] decision, which the note and the arpeggio record.
+/// the middle of `range` that keeps every chord tone playable, with an [`ArpEvent`] of the chord's intervals (the
+/// lower of two equally near). When no such root lies in the range (a range narrower than an octave, or at the very
+/// top), the playable root nearest its middle is taken. Each span is one [`Proposal::Chord`] decision, which the note and the arpeggio record.
 pub fn arpeggiate(spans: &[ChordSpan], at: &Placement, range: PitchRange) -> Arpeggio {
     let middle = (i16::from(range.low.semitone()) + i16::from(range.high.semitone())) / 2;
     let mut out = Arpeggio {
@@ -217,11 +228,12 @@ pub fn arpeggiate(spans: &[ChordSpan], at: &Placement, range: PitchRange) -> Arp
         // Roots of this pitch class whose whole chord GoatTracker can play.
         let roots = (0u8..=Pitch::MAX.semitone())
             .filter(|s| s % 12 == span.chord.root && s + top <= Pitch::MAX.semitone());
+        let nearest = |s: &u8| (i16::from(*s) - middle).abs();
         let root = roots
             .clone()
             .filter(|&s| range.contains(Pitch::new(s).expect("in range")))
-            .min_by_key(|&s| (i16::from(s) - middle).abs())
-            .or_else(|| roots.max())
+            .min_by_key(nearest)
+            .or_else(|| roots.min_by_key(nearest))
             .and_then(Pitch::new)
             .expect("every pitch class has a playable root");
         let id = DecisionId::new(format!("chord-v{}-r{}", at.voice.get(), span.row))

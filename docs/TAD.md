@@ -171,11 +171,11 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 
 **Chords** (`reduce::detect_chords` and `reduce::arpeggiate`, rule `chords@1`, #42) find the harmony beat by beat and play it as arpeggios.
 - **Detection.** Each beat's 12 pitch classes are weighted by the rows each note sounds in that beat, times its confidence. Templates for every root and quality are scored: major, minor, sus4, sus2, dominant 7th, minor 7th and major 7th.
-  - **Score:** the weight on the template's tones minus the weight off them, over the beat's total weight, with a small cost for each tone past three. A chord's root must sound.
+  - **Score:** the weight on the template's tones minus the weight off them, over the beat's total weight. That is scaled by the share of the template's tones that sound, so a lone C is a weak C major, and there is a small cost for each tone past three. A chord's root must sound. A beat whose best chord scores under 0.25 (a cluster) has no chord.
   - **Ties:** the chord rooted on the beat's lowest note wins, then the simpler quality, then the lower root. A bare fifth therefore reads as major, and of the sus2 on D and the sus4 on A (the same notes), the bass decides.
   - **Spans:** beats with the same chord merge into one `ChordSpan`, whose confidence is the mean of its beats' scores. A silent beat has no chord.
 - **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
-  - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable.
+  - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
   - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
   - GoatTracker's wavetable encoding of an arpeggio belongs to the `.sng` writer (#47).
 
@@ -204,7 +204,7 @@ They're unique within the subtune when each voice is monophonised once, with all
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat; no file holds decisions yet, so the kinds can still change shape), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
 Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
