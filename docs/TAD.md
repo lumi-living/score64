@@ -15,11 +15,22 @@ The validator in `score64-core` rejects a song that:
 1. has more than one note sounding at a time on any voice,
 2. places a note off the row grid,
 3. exceeds the voice count of its profile,
-4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width,
+4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width (and warns about lead, bass or long notes there),
 5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
-6. violates the role's pitch range after octave folding,
+6. violates the role's pitch range after octave folding (a warning),
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
 8. packs larger than the configured budget, or uses zero page outside the configured pair.
+
+`score64_core::validate(song, &Context)` checks rules 1–6 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste: pitch ranges by role, lead or bass on an expendable voice, and long notes on an expendable voice. The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `Context` is gathered from the project: the profiles (built-in plus the project's), the adaptive sets it declares, per-instrument facts (whether the instrument routes the voice through the filter, and whether it sets a pulse width at note start), and the role pitch ranges.
+
+- **Rule 1** also covers one line per voice, and legato notes that don't start exactly where the previous note ends.
+- **Rule 2:** rows are integers, so "off the grid" means outside the subtune or out of order: notes, arpeggios, tempo changes, loop row, marks and role spans.
+- **Rule 3** checks each voice against its subtune's profile (§3.1), including the role of every span. A profile name that isn't defined is a problem; the profile checks are skipped for that subtune, but the others still run.
+- **Rule 4** applies each voice's filter permission, and requires explicit pulse widths on expendable voices. An instrument without facts is an error, because it can't be checked. On expendable voices the rule also warns about lead or bass, and about notes longer than `Context::expendable_long_rows` (4 rows, one beat, by default): after an effect the voice is silent until its next note (#119).
+- **Rule 5** applies each declared adaptive set (§3.1): layer order, and a timing mark at every declared switch point.
+- **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere.
+- **Rule 7** waits for the sound-effect model (E13).
+- **Rule 8** is `check_pack(PackFacts, PackBudget)`, run after packing.
 
 ## 2. Pipeline
 
