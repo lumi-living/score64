@@ -121,12 +121,12 @@ fn beats_with_the_same_chord_merge_and_silence_has_none() {
 
 #[test]
 fn a_note_counts_where_it_sounds() {
-    // A held C under an E-G that starts a beat later: the first beat is a bare C (major by the tie rule), the second
-    // a C major triad, so the two merge.
+    // A held C under an E-G that starts a beat later: the first beat is a lone C (no chord, under the floor); in the
+    // second the held C completes C major.
     let mut notes = vec![note(0, 8, "C-4")];
     notes.extend(chord(4, 4, &["E-4", "G-4"]));
     let spans = detect_chords(&notes, beat(), rows(8));
-    assert_eq!(found(&spans), [(0, 8, 0, ChordQuality::Major)]);
+    assert_eq!(found(&spans), [(4, 4, 0, ChordQuality::Major)]);
 }
 
 #[test]
@@ -250,6 +250,7 @@ proptest! {
             prop_assert_eq!((note.row, note.length), (arp.row, arp.length));
             prop_assert_eq!(&note.decision, &arp.decision);
         }
+        // Spans come in row order, so equal ids would sit side by side.
         let mut ids: Vec<_> = a.decisions.iter().map(|d| d.id.clone()).collect();
         ids.dedup();
         prop_assert_eq!(ids.len(), a.decisions.len());
@@ -300,15 +301,15 @@ fn the_bass_settles_chords_with_the_same_notes_whatever_the_weights() {
 
 #[test]
 fn missing_tones_and_a_cluster_weaken_or_drop_the_chord() {
-    // A lone C is only a third of C major; a bare fifth two thirds.
-    let lone = detect_chords(&[note(0, 4, "C-4")], beat(), rows(4));
-    assert!(
-        (lone[0].confidence.get() - 1.0 / 3.0).abs() < 1e-5,
-        "{:?}",
-        lone[0].confidence
-    );
+    // A lone C is a third of C major, under the floor: no chord. A bare fifth is two thirds.
+    assert!(detect_chords(&[note(0, 4, "C-4")], beat(), rows(4)).is_empty());
     let fifth = detect_chords(&chord(0, 4, &["C-4", "G-4"]), beat(), rows(4));
     assert!((fifth[0].confidence.get() - 2.0 / 3.0).abs() < 1e-5);
+    // A faint G with C and E counts for little: nearly the same as C and E alone.
+    let mut faint = chord(0, 4, &["C-4", "E-4"]);
+    faint.push(weighted(0, 1, "G-4", 0.01));
+    let s = detect_chords(&faint, beat(), rows(4));
+    assert!(s[0].confidence.get() < 0.7, "{:?}", s[0].confidence);
     // Four semitones in a row is no chord.
     let cluster = detect_chords(&chord(0, 4, &["C-4", "C#4", "D-4", "D#4"]), beat(), rows(4));
     assert!(cluster.is_empty(), "{cluster:?}");
@@ -338,6 +339,10 @@ fn a_faint_seventh_costs_more_than_it_brings() {
 fn a_chords_root_must_sound() {
     // E and G: C major would fit as well as E minor, but C does not sound.
     let spans = detect_chords(&chord(0, 4, &["E-4", "G-4"]), beat(), rows(4));
+    assert_eq!(found(&spans), [(0, 4, 4, ChordQuality::Minor)]);
+    // With G in the bass the bass rule can't settle it (G is neither chord's root): only the root check keeps C major
+    // out.
+    let spans = detect_chords(&chord(0, 4, &["G-3", "E-4", "G-4"]), beat(), rows(4));
     assert_eq!(found(&spans), [(0, 4, 4, ChordQuality::Minor)]);
 }
 

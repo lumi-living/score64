@@ -20,8 +20,9 @@ pub const CHORDS: &str = "chords@1";
 /// What a template costs for each tone past three, so a triad wins over a seventh chord unless the seventh sounds.
 const EXTRA_TONE_COST: f32 = 0.05;
 
-/// The score a beat's best chord needs: below it, the beat has no chord (a cluster, or noise).
-pub const MIN_SCORE: f32 = 0.25;
+/// The score a beat's best chord needs: below it, the beat has no chord (a cluster, noise, or a lone note: a melody
+/// on its own is not harmony).
+pub const MIN_SCORE: f32 = 0.4;
 
 /// The chord qualities detection knows, simplest first: on a tie the earlier one wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -101,7 +102,8 @@ pub struct ChordSpan {
 ///
 /// Each beat's pitch classes are weighted by the rows each note sounds in the beat, times its confidence. Every root
 /// and [`ChordQuality`] is scored: the weight on its tones minus the weight off them, over the beat's weight, scaled
-/// by the share of its tones that sound (a lone C is a weak C major), less a little for each tone past three. A
+/// by how fully its tones sound (each counts up to the tones' mean weight, so a faint note adds little), less a little
+/// for each tone past three. A
 /// chord's root must sound. The best scores; on a tie the one rooted on the beat's lowest sounding note, then the
 /// simpler quality, then the lower root. A beat with nothing sounding, or whose best scores under
 /// [`MIN_SCORE`], has no chord. A span's confidence is the mean of its beats' scores.
@@ -187,8 +189,14 @@ fn best_chord(weight: &[f32; 12], bass: Option<u8>) -> Option<(Chord, f32)> {
                 mask[usize::from((root + i) % 12)] = true;
             }
             let on: f32 = (0..12).filter(|&pc| mask[pc]).map(|pc| weight[pc]).sum();
-            let sounding = (0..12).filter(|&pc| mask[pc] && weight[pc] > 0.0).count();
-            let share = sounding as f32 / tones.len() as f32;
+            // How fully the chord sounds: each tone counts up to the tones' mean weight, so a faint note is a faint
+            // part of the chord, not a whole one.
+            let mean = on / tones.len() as f32;
+            let full: f32 = (0..12)
+                .filter(|&pc| mask[pc])
+                .map(|pc| weight[pc].min(mean))
+                .sum();
+            let share = if on > 0.0 { full / on } else { 0.0 };
             let score =
                 (2.0 * on - total) / total * share - EXTRA_TONE_COST * (tones.len() - 3) as f32;
             let on_bass = |r: u8| bass == Some(r);
@@ -214,7 +222,8 @@ pub struct Arpeggio {
 /// Play `spans` (from [`detect_chords`]) as arpeggios on the voice in `at`: each span's root, in the octave nearest
 /// the middle of `range` that keeps every chord tone playable, with an [`ArpEvent`] of the chord's intervals (the
 /// lower of two equally near). When no such root lies in the range (a range narrower than an octave, or at the very
-/// top), the playable root nearest its middle is taken. Each span is one [`Proposal::Chord`] decision, which the note and the arpeggio record.
+/// top), the playable root nearest its middle is taken. Each span is one [`Proposal::Chord`] decision, which the note
+/// and the arpeggio record.
 pub fn arpeggiate(spans: &[ChordSpan], at: &Placement, range: PitchRange) -> Arpeggio {
     let middle = (i16::from(range.low.semitone()) + i16::from(range.high.semitone())) / 2;
     let mut out = Arpeggio {
