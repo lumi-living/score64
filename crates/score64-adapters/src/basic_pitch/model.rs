@@ -6,7 +6,9 @@
 //! Running `nmp.onnx`: a port of `basic_pitch.inference.run_inference` (windowing, model call, unwrapping).
 
 use std::path::Path;
+use std::sync::OnceLock;
 
+use ort::environment::Environment;
 use ort::session::Session;
 use ort::value::Tensor;
 
@@ -35,6 +37,16 @@ pub struct ModelOutput {
     pub contour: Vec<f32>,
 }
 
+/// The process-wide ONNX Runtime environment, created on first use (`ort` 2.0.0-rc.14 needs one for every session).
+fn environment() -> ort::Result<&'static Environment> {
+    static ENV: OnceLock<Environment> = OnceLock::new();
+    if let Some(env) = ENV.get() {
+        return Ok(env);
+    }
+    let env = ort::environment::init().build()?;
+    Ok(ENV.get_or_init(|| env))
+}
+
 /// A loaded Basic Pitch model.
 pub struct BasicPitch {
     session: Session,
@@ -44,7 +56,7 @@ impl BasicPitch {
     /// Load `nmp.onnx`.
     pub fn load(model: &Path) -> ort::Result<Self> {
         Ok(Self {
-            session: Session::builder()?.commit_from_file(model)?,
+            session: Session::builder(environment()?)?.commit_from_file(model)?,
         })
     }
 
