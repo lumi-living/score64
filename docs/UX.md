@@ -1,6 +1,6 @@
 # Score64 — UX foundations
 
-**Status:** draft for M0. Same family conventions as Convert64: desktop-first, light and dark themes, Material Symbols (Outlined), keyboard-first, commercial-editor polish.
+**Status:** draft for M0. Same family conventions as Convert64: desktop-first, light and dark themes, Material Symbols (the unfilled Rounded cut, via `egui_material_icons`' `outline` feature), keyboard-first, commercial-editor polish.
 
 ## 1. Who it is for and what they do
 
@@ -25,6 +25,8 @@ Expert users in long sessions. The jobs:
 4. **Recalculation is explicit.** An override marks downstream stages stale; nothing re-runs (or spends money) until asked.
 5. **Hardware truth is always on screen**: budgets, chip warnings and validator results next to the thing they judge.
 6. **Every view is linkable** (`score64://asset/<id>/history?a=v7&b=v9&bar=33`).
+
+Window and view preferences (the theme, which section is on screen, panel sizes) are app-local chrome, kept by the app between runs. They are not engine commands. Everything that acts on a project is a command (ADR-005).
 
 ## 3. Information architecture
 
