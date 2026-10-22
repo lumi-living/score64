@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::profile::ProfileName;
 use crate::provenance::{Confidence, DecisionId, SourceRef, valid_id};
 
 /// The version of the score's file layout this code reads and writes.
@@ -44,21 +45,26 @@ impl From<Schema> for u32 {
     }
 }
 
-/// A whole song: one or more subtunes under one voice profile.
+/// A whole song: one or more subtunes, each under a voice profile.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "SongFields", into = "SongFields")]
 pub struct Song {
     /// Layout version; always [`SCHEMA_VERSION`].
     pub schema: Schema,
-    /// The voice profile every subtune follows (rules in `docs/TAD.md` §3.1).
-    pub profile: Profile,
+    /// The voice profile, by name, of every subtune that does not name its own (`docs/TAD.md` §3.1).
+    pub profile: ProfileName,
     /// Subtunes, with unique names. The position is the number the game passes to the player's init in A
     /// (0-based); everything else in the project refers to a subtune by name, so reordering cannot re-target it.
     pub subtunes: Vec<Subtune>,
 }
 
 impl Song {
+    /// The name of the profile `subtune` plays under: its own, or the song's.
+    pub fn profile_of<'a>(&'a self, subtune: &'a Subtune) -> &'a ProfileName {
+        subtune.profile.as_ref().unwrap_or(&self.profile)
+    }
+
     /// The subtune called `name`, with its position.
     pub fn subtune(&self, name: &SubtuneName) -> Option<(usize, &Subtune)> {
         self.subtunes
@@ -75,8 +81,8 @@ impl Song {
 struct SongFields {
     /// Layout version.
     schema: Schema,
-    /// Voice profile.
-    profile: Profile,
+    /// Default voice profile.
+    profile: ProfileName,
     /// Subtunes, with unique names; the position is the player's subtune number.
     subtunes: Vec<Subtune>,
 }
@@ -107,7 +113,7 @@ impl From<Song> for SongFields {
     }
 }
 
-/// A subtune's stable name, which decisions and project files use (for example `bed`, `climax`, `victory`): 1–64
+/// A subtune's stable name, which decisions and project files use (for example `title`, `calm`, `peak`): 1–64
 /// characters of `a`–`z`, `0`–`9`, `-` and `_`, starting with a letter or digit.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
@@ -142,21 +148,6 @@ impl From<SubtuneName> for String {
     }
 }
 
-/// Voice profile names (`docs/TAD.md` §3.1). The rules themselves live with the validator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    /// Three voices, any role on any voice.
-    Menu,
-    /// V1 lead, V2 bass, V3 expendable for sound effects.
-    Combat,
-    /// Two voices; V3 silent, reserved for sound effects.
-    Combat2,
-    /// Layered subtunes: bed, drone, ostinato, climax, stings.
-    Mission,
-}
-
 /// One subtune: a grid of rows at a tempo, with one line per voice.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -164,6 +155,10 @@ pub enum Profile {
 pub struct Subtune {
     /// Stable name, unique in the song.
     pub name: SubtuneName,
+    /// This subtune's voice profile, by name, when it is not the song's. One packed file can mix subtunes with
+    /// different voice rules (an adaptive set's quiet and busy layers, say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ProfileName>,
     /// Frames (50 Hz player calls) per row at row 0.
     pub frames_per_row: FramesPerRow,
     /// Tempo changes after row 0, in row order.
@@ -223,6 +218,39 @@ impl From<FramesPerRow> for u8 {
     }
 }
 
+impl Subtune {
+    /// The frames per row at `row`: the starting tempo, or the last tempo change at or before it.
+    pub fn frames_per_row_at(&self, row: u32) -> FramesPerRow {
+        self.tempo
+            .iter()
+            .filter(|t| t.row <= row)
+            .max_by_key(|t| t.row)
+            .map_or(self.frames_per_row, |t| t.frames_per_row)
+    }
+
+    /// The player frames from the start of row `from` to the start of row `to` (0 if `to` is not after `from`),
+    /// following tempo changes in between.
+    pub fn frames(&self, from: u32, to: u32) -> u64 {
+        let mut changes: Vec<u32> = self
+            .tempo
+            .iter()
+            .map(|t| t.row)
+            .filter(|&r| r > from && r < to)
+            .collect();
+        changes.sort_unstable();
+        changes.dedup();
+        let mut total = 0;
+        let mut at = from;
+        for next in changes.into_iter().chain([to]) {
+            if next > at {
+                total += u64::from(next - at) * u64::from(self.frames_per_row_at(at).get());
+                at = next;
+            }
+        }
+        total
+    }
+}
+
 /// A tempo change on the grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -279,6 +307,8 @@ pub enum Role {
     Bass,
     /// Chords as wavetable arpeggios.
     Arp,
+    /// Supporting chord tones or a counter-line, held or moving (a pad).
+    Harmony,
     /// Drums.
     Drums,
     /// A held note.

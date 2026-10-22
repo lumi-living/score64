@@ -26,7 +26,7 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
   - Release tooling: cargo-dist configuration [#9](https://github.com/lumi-living/score64/issues/9)
 - **E2 Score model & validator** ([#10](https://github.com/lumi-living/score64/issues/10)) — The tracker-grid score model (ADR-006), voice profiles, tempo grid and the validator for TAD §1.3, with property tests.
   - Score model types: Note, VoiceLine, Role, Subtune, Song, Decision [#11](https://github.com/lumi-living/score64/issues/11)
-  - Voice profiles: menu, combat, combat2, mission [#12](https://github.com/lumi-living/score64/issues/12)
+  - Voice profiles as data: built-in and project-defined, per subtune [#12](https://github.com/lumi-living/score64/issues/12)
   - Validator for TAD §1.3 rules with per-bar, per-voice errors [#13](https://github.com/lumi-living/score64/issues/13)
   - Property tests: any reduced song validates [#14](https://github.com/lumi-living/score64/issues/14)
   - Tempo grid: frames-per-row, BPM snapping with error report [#15](https://github.com/lumi-living/score64/issues/15)
@@ -88,6 +88,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - HTML report: synced A/B players, piano roll, metrics [#63](https://github.com/lumi-living/score64/issues/63)
   - Example project with a Makefile [#64](https://github.com/lumi-living/score64/issues/64)
   - CLI reference document [#65](https://github.com/lumi-living/score64/issues/65)
+  - validate command: every problem with its severity, non-zero exit only on errors, --json [#136](https://github.com/lumi-living/score64/issues/136)
 
 ## M2 Studio & sound effects
 
@@ -124,14 +125,14 @@ Score64 Studio (library, listen, map, pipeline, history, approvals), LLM decider
 
 ## M3 Adaptive & integrations
 
-Adaptive mission sets and live audition, VICE harness, C64 Ultimate, DAWproject, release 0.1.
+Adaptive sets and live audition, VICE harness, C64 Ultimate, DAWproject, release 0.1.
 
-- **E15 Adaptive sets & audition** ([#94](https://github.com/lumi-living/score64/issues/94)) — Mission profile layering and live audition over the real packed set.
-  - Mission profile: bed, drone, ostinato, climax and stings from one source [#95](https://github.com/lumi-living/score64/issues/95)
+- **E15 Adaptive sets & audition** ([#94](https://github.com/lumi-living/score64/issues/94)) — Layered adaptive sets and live audition over the real packed set.
+  - Adaptive set from one source: layers declared by the project, built up from one arrangement [#95](https://github.com/lumi-living/score64/issues/95)
   - Audition driver (KickAssembler) with a request mailbox [#96](https://github.com/lumi-living/score64/issues/96)
   - Live audition in Studio via the helper [#97](https://github.com/lumi-living/score64/issues/97)
   - Scenario record → reference render [#98](https://github.com/lumi-living/score64/issues/98)
-  - Ambient event table export and reference scheduler (asm) [#99](https://github.com/lumi-living/score64/issues/99)
+  - Event table export and reference scheduler (asm) [#99](https://github.com/lumi-living/score64/issues/99)
 - **E16 Hardware harness & integrations** ([#100](https://github.com/lumi-living/score64/issues/100)) — KickAssembler test programs run headless in VICE, plus hardware and DAW integrations.
   - VICE harness: raster-time measurement of the play routine [#101](https://github.com/lumi-living/score64/issues/101)
   - VICE harness: zero-page guard [#102](https://github.com/lumi-living/score64/issues/102)

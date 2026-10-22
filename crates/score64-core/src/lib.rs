@@ -11,20 +11,30 @@
 //! Features: `schema` derives JSON Schemas (for engine commands whose arguments embed model types); `proptest`
 //! exposes [`strategies`] for property tests.
 
+pub mod adaptive;
+pub mod grid;
+pub mod profile;
 pub mod provenance;
 #[cfg(feature = "schema")]
 mod schema;
 pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
+pub mod validate;
 
+pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
+pub use grid::{BeatGrid, Quantised, TempoSnap, snap_tempo};
+pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
 pub use score::{
-    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Profile, Role, RoleSpan, Roles,
-    SCHEMA_VERSION, Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
+    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, SCHEMA_VERSION,
+    Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
+pub use validate::{Context, InstrumentFacts, Problem, Rule, check_pack, validate};
 
+#[cfg(test)]
+mod properties;
 #[cfg(test)]
 mod tests;

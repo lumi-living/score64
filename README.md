@@ -19,7 +19,7 @@ Getting music into a C64 game is mostly mechanical work that nobody enjoys: tran
 Score64 automates the mechanical part and keeps every judgement call visible:
 
 - "the pad's chords become a minor arpeggio on voice 2's weak beats; the lead stays on voice 1",
-- "voice 3 carries drums in combat, so sound effects can borrow it without breaking the tune",
+- "voice 3 carries only drums here, so sound effects can borrow it without breaking the tune",
 - "this version is 0.4 KB over budget and the melody similarity dropped; the previous one is approved".
 
 ## How it works (short version)
