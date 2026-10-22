@@ -20,10 +20,11 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
   - ✓ CI: fmt, clippy, test matrix and licence-boundary job [#3](https://github.com/lumi-living/score64/issues/3)
   - ✓ Community files, issue templates, Dependabot [#4](https://github.com/lumi-living/score64/issues/4)
   - ✓ Branch protection on main with the CI contexts [#5](https://github.com/lumi-living/score64/issues/5)
-  - score64-app boots an empty eframe window (light/dark, Material Symbols) [#6](https://github.com/lumi-living/score64/issues/6)
+  - ✓ score64-app boots an empty eframe window (light/dark, Material Symbols) [#6](https://github.com/lumi-living/score64/issues/6)
   - ✓ Command engine skeleton shared by CLI, MCP and app (ADR-005) [#7](https://github.com/lumi-living/score64/issues/7)
   - ✓ score64-emu helper skeleton and versioned stdin/stdout protocol [#8](https://github.com/lumi-living/score64/issues/8)
   - Release tooling: cargo-dist configuration [#9](https://github.com/lumi-living/score64/issues/9)
+  - Supply-chain checks with cargo-deny: licences, advisories, bans [#148](https://github.com/lumi-living/score64/issues/148)
 - **E2 Score model & validator** ([#10](https://github.com/lumi-living/score64/issues/10)) — The tracker-grid score model (ADR-006), voice profiles, tempo grid and the validator for TAD §1.3, with property tests.
   - ✓ Score model types: Note, VoiceLine, Role, Subtune, Song, Decision [#11](https://github.com/lumi-living/score64/issues/11)
   - ✓ Voice profiles as data: built-in and project-defined, per subtune [#12](https://github.com/lumi-living/score64/issues/12)
@@ -103,6 +104,8 @@ Score64 Studio (library, listen, map, pipeline, history, approvals), LLM decider
   - Listen view: waveform, piano roll, tracker view, spectrogram [#70](https://github.com/lumi-living/score64/issues/70)
   - Pipeline view with job runner and progress (egui-snarl) [#71](https://github.com/lumi-living/score64/issues/71)
   - Command palette and score64:// deep links [#72](https://github.com/lumi-living/score64/issues/72)
+  - App hosts the command engine on a worker thread (ADR-012) [#146](https://github.com/lumi-living/score64/issues/146)
+  - Keep the family theme in step with Convert64 (xtask check) [#147](https://github.com/lumi-living/score64/issues/147)
 - **E11 Voice map & decisions** ([#73](https://github.com/lumi-living/score64/issues/73)) — Make every arrangement decision visible and overridable; optional LLM suggestions (ADR-008).
   - Voice map view [#74](https://github.com/lumi-living/score64/issues/74)
   - Decision panel: provenance, confidence, override → stale → re-run [#75](https://github.com/lumi-living/score64/issues/75)
@@ -130,7 +133,7 @@ Score64 Studio (library, listen, map, pipeline, history, approvals), LLM decider
 Adaptive sets and live audition, VICE harness, C64 Ultimate, DAWproject, release 0.1.
 
 - **E15 Adaptive sets & audition** ([#94](https://github.com/lumi-living/score64/issues/94)) — Layered adaptive sets and live audition over the real packed set.
-  - Adaptive set from one source: layers declared by the project, built up from one arrangement [#95](https://github.com/lumi-living/score64/issues/95)
+  - Adaptive set from one source: project-declared layers built from one arrangement [#95](https://github.com/lumi-living/score64/issues/95)
   - Audition driver (KickAssembler) with a request mailbox [#96](https://github.com/lumi-living/score64/issues/96)
   - Live audition in Studio via the helper [#97](https://github.com/lumi-living/score64/issues/97)
   - Scenario record → reference render [#98](https://github.com/lumi-living/score64/issues/98)
@@ -148,3 +151,4 @@ Adaptive sets and live audition, VICE harness, C64 Ultimate, DAWproject, release
   - README screenshots and documentation pass [#110](https://github.com/lumi-living/score64/issues/110)
   - Name clearance check before announcing [#111](https://github.com/lumi-living/score64/issues/111)
   - CSDb announcement draft [#112](https://github.com/lumi-living/score64/issues/112)
+  - Ship third-party licence notices with release binaries (Apache-2.0 icon font, OFL fonts, crates) [#143](https://github.com/lumi-living/score64/issues/143)
