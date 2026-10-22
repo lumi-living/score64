@@ -37,7 +37,23 @@ Sustain is a level (0–15), not a time.
 
 ## Hard restart
 
-Envelope state carries over between notes and can make a new note start late or silent (the "ADSR bug"). Players avoid it with a **hard restart**: gate off with fast release a couple of frames before the next note, optionally set the test bit for one frame, then start the note. GoatTracker's packed player does this per instrument; gt2reloc's `-Axx` sets the hard-restart ADSR value (default `0F00`). Score64 instrument presets must state their hard-restart behaviour, and the validator flags notes shorter than the hard-restart lead time.
+Envelope state carries over between notes and can make a new note start late or silent (the "ADSR bug"). Players avoid it with a **hard restart**: gate off with fast release a couple of frames before the next note, optionally set the test bit for one frame, then start the note. GoatTracker's packed player does this per instrument; gt2reloc's `-Axx` sets the hard-restart ADSR value (default `0F00`). Score64 instrument presets must state their hard-restart behaviour.
+
+In GoatTracker 2 (readme §3.3, "HR/Gate Timer"; `player.s` and `gplay.c`) an instrument's **gate timer** (0–63) is how many frames before the next row the player fetches that row. If the row holds a new note, the gate goes off then:
+
+- The **timing** comes from the instrument playing in the row before the new note. The player reloads the timer from the channel's instrument at the start of every row.
+- **Whether** the gate goes off comes from the new note's instrument. Bit `$40` disables gate-off, which makes a legato instrument. Bit `$80` disables only the hard-restart ADSR write; the gate still goes off.
+- Tie notes (toneportamento `3xx`) get neither.
+- The gate timer must be at most the tempo minus 1 on every row the instrument plays; "in case of illegal (too high) gateoff timer values, the song playback is stopped". Tempos below 3 are funktempo, which the score doesn't model.
+
+Validator rule 9 checks this:
+
+- **Error:** a gate timer not below a row's frames per row.
+- **Error:** a gate-off at or before the start of the note it cuts. With legal gate timers this can only happen alongside the error above, because one row is always longer than the gate timer.
+- **Warning:** a note left with only one or two gated frames. That's legal but probably sounds clipped.
+- **Warning:** a fresh note straight after another whose instrument has gate-off disabled (`$40`). The gate is still on and nothing turns it off, so the note won't retrigger and plays legato. Mark it `Legato`, or use an instrument that gates off.
+
+The gated time is counted from the attack that started the note, through any legato notes tied to it. Notes after silence, legato notes and the first note on a voice have nothing to cut.
 
 ## Frequency
 

@@ -4,7 +4,7 @@ expression: "toml::to_string(&DecisionsFile { decision: decisions }).unwrap()"
 ---
 [[decision]]
 id = "octave-bar0"
-subtune = "combat"
+subtune = "theme"
 bar = 0
 confidence = 0.7
 reviewed = false
@@ -21,7 +21,7 @@ prompt = "1111111111111111111111111111111111111111111111111111111111111111"
 
 [[decision]]
 id = "v3-drums-bar1"
-subtune = "combat"
+subtune = "theme"
 bar = 1
 confidence = 0.8
 reviewed = false
@@ -37,7 +37,7 @@ rule = "drum-fold@1"
 
 [[decision]]
 id = "loop"
-subtune = "combat"
+subtune = "theme"
 bar = 0
 confidence = 1.0
 reviewed = true

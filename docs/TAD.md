@@ -15,11 +15,24 @@ The validator in `score64-core` rejects a song that:
 1. has more than one note sounding at a time on any voice,
 2. places a note off the row grid,
 3. exceeds the voice count of its profile,
-4. in `combat` / `mission` climax profiles, puts lead or bass on voice 3, routes voice 3 through the filter, or starts a voice-3 note without an explicit pulse width,
-5. has a subtune without a timing mark on every bar (adaptive sets),
-6. violates the role's pitch range after octave folding,
+4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width (and warns about lead, bass or long notes there),
+5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
+6. violates the role's pitch range after octave folding (a warning),
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
-8. packs larger than the configured budget, or uses zero page outside the configured pair.
+8. packs larger than the configured budget, or uses zero page outside the configured pair,
+9. gives an instrument a gate timer that is not below the tempo on a row it plays, or turns a note's gate off before it can sound (and warns when a note keeps only one or two gated frames, or when a fresh note's instrument has gate-off disabled so it won't retrigger; see `reference/sid.md` §Hard restart).
+
+`score64_core::validate(song, &Context)` checks rules 1–6 and 9 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste: pitch ranges by role, lead or bass on an expendable voice, long notes on an expendable voice, notes a hard restart leaves with only one or two gated frames, and fresh notes whose instrument can't retrigger them (gate-off disabled). The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `Context` is gathered from the project: the profiles (built-in plus the project's), the adaptive sets it declares, per-instrument facts (whether the instrument routes the voice through the filter, whether it sets a pulse width at note start, and its gate timer, gate-off and hard-restart settings), and the role pitch ranges.
+
+- **Rule 1** also covers one line per voice, and legato notes that don't start exactly where the previous note ends.
+- **Rule 2:** rows are integers, so "off the grid" means outside the subtune or out of order: notes, arpeggios, tempo changes, loop row, marks and role spans.
+- **Rule 3** checks each voice against its subtune's profile (§3.1), including the role of every span. A profile name that isn't defined is a problem; the profile checks are skipped for that subtune, but the others still run.
+- **Rule 4** applies each voice's filter permission, and requires explicit pulse widths on expendable voices. An instrument without facts is an error, because it can't be checked. On expendable voices the rule also warns about lead or bass, and about notes longer than `Context::expendable_long_rows` (4 rows, one beat, by default): after an effect the voice is silent until its next note (#119).
+- **Rule 5** applies each declared adaptive set (§3.1): layer order, and a timing mark at every declared switch point.
+- **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere.
+- **Rule 7** waits for the sound-effect model (E13).
+- **Rule 8** is `check_pack(PackFacts, PackBudget)`, run after packing.
+- **Rule 9** follows GoatTracker's gate timer. Instrument facts state it (0–63), along with whether gate-off and hard restart happen. Frames are counted with the tempo map (`Subtune::frames`), so tempo changes between notes are respected.
 
 ## 2. Pipeline
 
@@ -51,8 +64,8 @@ Stages and ports:
 The core model is a **tracker grid**, not MIDI ticks (ADR-006):
 
 ```rust
-pub struct Song { pub schema: Schema /* = 1 */, pub profile: Profile, pub subtunes: Vec<Subtune> /* index = A at init */ }
-pub struct Subtune { pub name: SubtuneName /* unique, stable */, pub frames_per_row: FramesPerRow /* 3..=127 */,
+pub struct Song { pub schema: Schema /* = 1 */, pub profile: ProfileName /* default */, pub subtunes: Vec<Subtune> /* index = A at init */ }
+pub struct Subtune { pub name: SubtuneName /* unique, stable */, pub profile: Option<ProfileName>, pub frames_per_row: FramesPerRow /* 3..=127 */,
                      pub tempo: Vec<TempoChange>, pub rows_per_bar: NonZeroU8, pub length: NonZeroU32,
                      pub loop_row: u32, pub marks: Vec<u32> /* rows with timing marks */, pub voices: Vec<VoiceLine> }
 pub struct VoiceLine { pub voice: Voice /* 1..=3 */, pub roles: Roles /* [{row, role}], first at row 0 */,
@@ -61,25 +74,61 @@ pub struct Note { pub row: u32, pub length: NonZeroU32, pub pitch: Pitch /* C-0.
                   pub instrument: Option<PresetId> /* overrides the line's */, pub source: Option<SourceRef>,
                   pub confidence: Confidence, pub decision: Option<DecisionId> }
 pub enum Attack { Fresh /* new gate, hard restart before it */, Legato /* tied: gate stays on */ }
-pub enum Role { Lead, Bass, Arp, Drums, Drone, Ostinato, Bed, Texture }
+pub enum Role { Lead, Bass, Arp, Harmony, Drums, Drone, Ostinato, Bed, Texture }
 pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, start_us: u64, end_us: u64 }
 ```
 
 - **Time is rows.** Notes, arpeggios, marks, tempo changes and loop points are integer rows; a note's gate ends at `row + length` unless the next note is `Legato`. Wall-clock time appears only in `SourceRef`, as integer microseconds into the source file it names by content hash (ADR-004), so provenance survives renames.
-- **Tempo** is frames per row at 50 Hz (PAL), set per subtune and changed by `TempoChange` events on the grid. With four rows per beat, BPM = 750 / frames-per-row (see `reference/tempo-grid.md`). `FramesPerRow` is 3 to 127. GoatTracker tempo values below 3 select **funktempo** (alternating row lengths), which the score does **not** model yet, and a hard restart needs the frames anyway; tempo snapping (#15) chooses only from 3 upwards.
-- **Instruments and roles change within a line.** A voice line has a default instrument, and any note may name its own (a drum line's kick, snare and hi-hat). Its roles are spans from a row on, the first at row 0, so a voice can switch role at a bar line (for example, voice 3 from bass to drums in `combat`), as `voice_role` decisions do.
-- **Subtunes have stable names** (`bed`, `drone`, `climax`, …), unique in the song. The position in the list is the number the game passes to init; decisions and project files refer to the name, so adding or reordering subtunes cannot re-target them.
+- **Tempo** is frames per row, set per subtune and changed by `TempoChange` events on the grid (`Subtune::frames_per_row_at`, `Subtune::frames`). With four rows per beat, a tracker quotes BPM = 750 / frames-per-row at a nominal 50 Hz; a PAL C64 really runs at 50.1246 Hz, 0.249 % faster (see `reference/tempo-grid.md`). `FramesPerRow` is 3 to 127. GoatTracker tempo values below 3 select **funktempo** (alternating row lengths), which the score does **not** model yet, and a hard restart needs the frames anyway.
+- **The grid** (`score64_core::grid`) joins the two clocks:
+  - `snap_tempo` picks the row length whose real PAL tempo is nearest a detected tempo, choosing only from 3 upwards. It reports the nominal and real tempo, the relative error and the drift per minute.
+  - `BeatGrid` turns source times (µs) into rows from the beat tracker's beats, spreading rows evenly between beats so rubato never accumulates. `quantise` gives a note's row and length, and how far its start moved (at most half a row).
+- **Instruments and roles change within a line.** A voice line has a default instrument, and any note may name its own (a drum line's kick, snare and hi-hat). Its roles are spans from a row on, the first at row 0, so a voice can switch role at a bar line (for example, voice 3 from bass to drums under `sfx-shares-v3`), as `voice_role` decisions do.
+- **Subtunes have stable names** (`title`, `calm`, `peak`, …), unique in the song. The position in the list is the number the game passes to init; decisions and project files refer to the name, so adding or reordering subtunes cannot re-target them.
 - **Timing marks belong to the subtune.** The player has one mark byte (start+$3F with `-H1`), which the game reads per subtune.
 - **Pitch** is what GoatTracker patterns can play: C-0 to G#7 (note bytes `$60`–`$BC`), written as tracker names (`"A-4"`). Vibrato, slides and pulse modulation belong to instruments, not notes.
 - **Files** (ADR-004): fields serialise in declaration order, lists instead of maps, absent options left out, unknown fields and newer schema versions rejected. JSON and TOML round trips are byte-stable (property-tested). The crate's `schema` feature derives JSON Schemas for engine commands; its `proptest` feature exposes generators of structurally sound songs and decisions.
 
 ### 3.1 Profiles
-| Profile | Voices | Rules |
-|---|---|---|
-| `menu` | 3, free | Any role on any voice |
-| `combat` | 3 | V1 lead, V2 bass (+ weak-beat arps), V3 expendable (drums/arp/texture); validator rule 4 |
-| `combat2` | 2 | V3 silent, reserved for sound effects |
-| `mission` | 1 → 3 | Subtunes 0 bed (V1), 1 drone, 2 ostinato (V2), 3 climax (`combat` rules), 4–5 stings |
+A profile says, for each SID voice, whether it carries **music**, **expendable** music (music that sound effects may interrupt), or **effects** only. It also says which roles the voice's music may have and whether it may use the filter. Profiles are validated data (`score64_core::profile`):
+
+- A voice's roles list what its music may play; an empty list means any role.
+- An effects-only voice has no roles and no filter.
+- An expendable voice never uses the filter (rule 4). That rule is mechanical: the music's filter routing stays on while an effect plays, so the effect would be filtered too. Lead or bass on an expendable voice is allowed. Plenty of games let effects cut the lead on purpose, so the validator only warns about it.
+- Every profile has at least one music voice.
+
+Score64 ships four built-in profiles:
+
+| Profile | V1 | V2 | V3 |
+|---|---|---|---|
+| `full` | music, any role, filter | music, any role, filter | music, any role, filter |
+| `sfx-shares-v3` | music, any role, filter | music, any role, filter | **expendable**, any role, no filter |
+| `sfx-owns-v3` | music, any role, filter | music, any role, filter | effects only |
+| `sfx-owns-v2-v3` | music, any role, filter | effects only | effects only |
+
+**Projects define their own** profiles in the same shape, so a game's voice plan lives in its project, not in Score64. Names must not repeat or redefine a built-in. For example, a quiet layer could keep the filter on a bed voice and give the rest to effects:
+
+```toml
+[[profile]]
+name = "calm"
+v1 = { usage = "music", roles = ["bed"], filter = true }
+v2 = { usage = "effects" }
+v3 = { usage = "effects" }
+```
+
+Roles can be narrowed per voice so the validator catches, say, a lead line in a layer meant for a bed. The filter flag matters because the SID has one filter: a filtered voice moves with every other filtered voice's cutoff sweeps.
+
+**A profile belongs to a subtune**, by name. `Subtune.profile` overrides `Song.profile`, which is the default (`Song::profile_of`), because one packed file can mix subtunes with different voice rules.
+
+**Adaptive sets** are declared by the project as an ordered list of layers, each a subtune by name, for example `calm`, `tension`, `pulse`, `peak`. Core checks the song against each set (`AdaptiveSet::check`, rule 5):
+
+- every layer exists;
+- the layers sit at consecutive positions in the declared order, so the game can step through them by subtune number;
+- every **switch point** the set declares has a timing mark in every layer, so the game knows when it may switch. A set switches on every bar by default (`switch = "every_bar"`), or on every N bars (`switch = { every_bars = 4 }`), or on explicit rows only (`switch = { rows = [0, 64, 128] }`). Explicit rows past a layer's end are problems too.
+
+A song may hold other subtunes before or after a set, such as a title tune.
+
+An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
 ### 3.2 Reduction
 Lead selection by salience (pitch, density, overrides) → monophonise (skyline) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → minimum note length and ghost-note removal → loop search on downbeats → timing marks on bar lines.
@@ -149,7 +198,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Layer | What |
 |---|---|
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
-| Property (`proptest`) | Validator invariants hold for any reduced song; encoders round-trip |
+| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Once the reduction exists, any note soup must reduce to lines with no errors (E6, #40) |
 | Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
 | Differential | Ports against originals: `.sng` writer vs pygoattracker; Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |
