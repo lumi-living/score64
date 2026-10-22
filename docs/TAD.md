@@ -21,6 +21,17 @@ The validator in `score64-core` rejects a song that:
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
 8. packs larger than the configured budget, or uses zero page outside the configured pair.
 
+`score64_core::validate(song, &Context)` checks rules 1–6 and returns every `Problem` with its rule, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. `Context` is gathered from the project: the profiles (built-in plus the project's), the adaptive sets it declares, per-instrument facts (whether the instrument routes the voice through the filter, and whether it sets a pulse width at note start), and the role pitch ranges.
+
+- **Rule 1** also covers one line per voice, and legato notes that don't start exactly where the previous note ends.
+- **Rule 2:** rows are integers, so "off the grid" means outside the subtune or out of order: notes, arpeggios, tempo changes, loop row, marks and role spans.
+- **Rule 3** checks each voice against its subtune's profile (§3.1), including the role of every span. A profile name that isn't defined is a problem; the profile checks are skipped for that subtune, but the others still run.
+- **Rule 4** applies each voice's filter permission, and requires explicit pulse widths on expendable voices. An instrument without facts is a problem, because it can't be checked.
+- **Rule 5** applies each declared adaptive set (§3.1).
+- **Rule 6** reports the octave fold that would bring a note into its role's range. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere.
+- **Rule 7** waits for the sound-effect model (E13).
+- **Rule 8** is `check_pack(PackFacts, PackBudget)`, run after packing.
+
 ## 2. Pipeline
 
 Each stage is a pure function of (input artifacts, stage config, stage version) → (output artifacts, manifest). Outputs are cached under a hash of those inputs (`blake3`), so re-runs are incremental and paid calls happen once.
