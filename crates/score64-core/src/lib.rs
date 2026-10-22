@@ -20,6 +20,7 @@ mod schema;
 pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
+pub mod transcription;
 pub mod validate;
 
 pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
@@ -32,6 +33,7 @@ pub use score::{
     ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, SCHEMA_VERSION,
     Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
+pub use transcription::{Dropped, Part, QuantiseReport, QuantisedPart, SourceNote, Unplaced};
 pub use validate::{Context, InstrumentFacts, Problem, Rule, check_pack, validate};
 
 #[cfg(test)]

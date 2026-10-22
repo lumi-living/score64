@@ -83,6 +83,9 @@ pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, 
 - **The grid** (`score64_core::grid`) joins the two clocks:
   - `snap_tempo` picks the row length whose real PAL tempo is nearest a detected tempo, choosing only from 3 upwards. It reports the nominal and real tempo, the relative error and the drift per minute.
   - `BeatGrid` turns source times (µs) into rows from the beat tracker's beats, spreading rows evenly between beats so rubato never accumulates. `quantise` gives a note's row and length, and how far its start moved (at most half a row).
+  - `BeatGrid::quantise_part` (`score64_core::transcription`) puts a transcribed `Part` on the grid. A `Part` is one stem's or instrument's `SourceNote`s in µs and MIDI pitch, with the source's content hash.
+    - **Notes:** each comes back as a fresh-attack grid note with the transcriber's confidence and a `SourceRef` to its span, in row then pitch order. Overlaps stay; the reduction resolves them (#40).
+    - **Report (`QuantiseReport`):** per part, the mean and largest start error in rows, how many starts moved more than a quarter row, and every note left out, with why: a pitch GoatTracker can't play, a start before row 0, or an empty span (#36).
 - **Instruments and roles change within a line.** A voice line has a default instrument, and any note may name its own (a drum line's kick, snare and hi-hat). Its roles are spans from a row on, the first at row 0, so a voice can switch role at a bar line (for example, voice 3 from bass to drums under `sfx-shares-v3`), as `voice_role` decisions do.
 - **Subtunes have stable names** (`title`, `calm`, `peak`, …), unique in the song. The position in the list is the number the game passes to init; decisions and project files refer to the name, so adding or reordering subtunes cannot re-target them.
 - **Timing marks belong to the subtune.** The player has one mark byte (start+$3F with `-H1`), which the game reads per subtune.
