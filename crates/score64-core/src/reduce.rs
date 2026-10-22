@@ -2,7 +2,8 @@
 //! recorded as a [`Decision`] (provenance `rules`).
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
-//! skyline), overlaps trimmed, ties that lost their note restarted.
+//! skyline), overlaps trimmed, ties that lost their note restarted. [`fold_drums`] and [`interleave_drums`] (#43)
+//! put drum hits on a voice of their own or into another line.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -12,6 +13,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
+
+mod drums;
+pub use drums::{
+    Clash, DrumKind, DrumKit, DrumSound, FOLD_DRUMS, INTERLEAVE_DRUMS, InterleaveRules, fold_drums,
+    interleave_drums,
+};
 
 /// The rule name and version [`monophonise`] records in its decisions.
 pub const MONOPHONISE: &str = "monophonise@1";
@@ -299,6 +306,9 @@ impl Log<'_> {
                     DropReason::Repeat => "repeat",
                     DropReason::Skyline => "skyline",
                     DropReason::Overlap => "overlap",
+                    DropReason::Clash => "clash",
+                    DropReason::Unmapped => "unmapped",
+                    DropReason::Interleave => "interleave",
                 },
                 self.at.voice.get(),
                 note.row,

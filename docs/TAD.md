@@ -138,6 +138,12 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 
 `score64_core::reduce` holds the rules. Each is a pure function from notes to notes plus the `Decision`s it made (provenance `Rules`, with the rule's name and version).
 
+**Fold drums** (`reduce::fold_drums`, rule `fold-drums@1`, and `reduce::interleave_drums`, rule `interleave-drums@1`, #43) put transcribed drum hits on a voice.
+- **Kinds.** A hit's General MIDI note gives its `DrumKind`: kick, snare, hat (and cymbals) or other.
+- **Kit.** A project's `DrumKit` maps each kind to a `DrumSound`: an instrument preset, a pitch and a length in rows. The sounds themselves, such as a noise snare or a triangle kick, are presets, which Score64 doesn't name.
+- **A voice of their own.** The highest-priority hit on a row wins (kick, snare, hat, other), and each note lasts its sound's rows or until the next hit. Clashing hits and kinds missing from the kit are dropped as decisions (`clash`, `unmapped`).
+- **Interleaving.** Where no voice is free, the folded drums are interleaved with another monophonic line, such as a bass. A hit cuts the line note sounding over it (a `TrimNote` decision), and that note doesn't resume. `on_clash` decides a row both start on. Hi-hats are dropped unless allowed (`interleave`). A tie broken by a hit restarts (`Retrigger`). The drums keep their own instruments.
+
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
 2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
@@ -156,7 +162,7 @@ They're unique within the subtune when each voice is monophonised once, with all
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
 Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
