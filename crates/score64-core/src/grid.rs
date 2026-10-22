@@ -2,9 +2,9 @@
 //! row, and quantising source times onto rows.
 //!
 //! Two clocks meet here. The source has a beat grid in wall-clock time (from the beat tracker), which places notes on
-//! rows. The C64 plays rows at a whole number of frames each, at the PAL frame rate, which fixes the tempo the music
-//! is heard at. [`snap_tempo`] chooses the row length and reports how far the C64's tempo is from the source's;
-//! [`BeatGrid`] turns source times into rows.
+//! rows. The C64 plays rows at a whole number of frames each, at the frame rate of its video standard
+//! ([`VideoStandard`]: PAL or NTSC), which fixes the tempo the music is heard at. [`snap_tempo`] chooses the row
+//! length and reports how far the C64's tempo is from the source's; [`BeatGrid`] turns source times into rows.
 
 use std::num::{NonZeroU8, NonZeroU32};
 
@@ -12,11 +12,60 @@ use serde::{Deserialize, Serialize};
 
 use crate::score::FramesPerRow;
 
-/// The PAL C64's real frame rate: 985,248 Hz CPU clock / 19,656 cycles per frame ≈ 50.1246 Hz.
-pub const PAL_FRAME_RATE: f64 = 985_248.0 / 19_656.0;
+/// The video standard of the C64 a song is made for (#139). It sets the frame rate the player runs at, and so the
+/// tempo every row length plays at; PAL unless the project says otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub enum VideoStandard {
+    /// PAL (VIC-II 6569): 312 lines of 63 cycles, 985,248 Hz, about 50.1246 frames a second.
+    #[default]
+    Pal,
+    /// NTSC (VIC-II 6567R8): 263 lines of 65 cycles, 1,022,727 Hz (14.31818 MHz / 14), about 59.826 frames a second.
+    Ntsc,
+}
 
-/// The rounded frame rate trackers quote tempos at (GoatTracker: BPM = 750 / frames per row at four rows per beat).
-pub const NOMINAL_FRAME_RATE: f64 = 50.0;
+impl VideoStandard {
+    /// The CPU clock, in Hz.
+    pub const fn clock_hz(self) -> u32 {
+        match self {
+            VideoStandard::Pal => 985_248,
+            VideoStandard::Ntsc => 1_022_727,
+        }
+    }
+
+    /// CPU cycles per video frame: raster lines × cycles per line.
+    pub const fn cycles_per_frame(self) -> u32 {
+        match self {
+            VideoStandard::Pal => 312 * 63,
+            VideoStandard::Ntsc => 263 * 65,
+        }
+    }
+
+    /// The real frame rate, in Hz: the clock over the cycles per frame.
+    pub const fn frame_rate(self) -> f64 {
+        self.clock_hz() as f64 / self.cycles_per_frame() as f64
+    }
+
+    /// The rounded frame rate tempos are quoted at: 50 Hz for PAL, as trackers do (GoatTracker: BPM = 750 / frames
+    /// per row at four rows per beat), and by the same rule 60 Hz for NTSC (Score64's convention).
+    pub const fn nominal_frame_rate(self) -> f64 {
+        match self {
+            VideoStandard::Pal => 50.0,
+            VideoStandard::Ntsc => 60.0,
+        }
+    }
+}
+
+/// The PAL C64's real frame rate: 985,248 Hz CPU clock / 19,656 cycles per frame ≈ 50.1246 Hz.
+pub const PAL_FRAME_RATE: f64 = VideoStandard::Pal.frame_rate();
+
+/// The NTSC C64's real frame rate: 1,022,727 Hz CPU clock / 17,095 cycles per frame ≈ 59.826 Hz.
+pub const NTSC_FRAME_RATE: f64 = VideoStandard::Ntsc.frame_rate();
+
+/// The rounded frame rate PAL trackers quote tempos at (GoatTracker: BPM = 750 / frames per row at four rows per
+/// beat).
+pub const PAL_NOMINAL_FRAME_RATE: f64 = VideoStandard::Pal.nominal_frame_rate();
 
 /// The tempo, in beats per minute, of `frames_per_row` at `rows_per_beat` and `frame_rate`.
 pub fn bpm_at(frames_per_row: FramesPerRow, rows_per_beat: NonZeroU8, frame_rate: f64) -> f64 {
@@ -31,27 +80,34 @@ pub struct TempoSnap {
     pub detected_bpm: f64,
     /// Rows per beat the snap assumed.
     pub rows_per_beat: NonZeroU8,
+    /// The video standard the snap was for.
+    pub standard: VideoStandard,
     /// The chosen row length.
     pub frames_per_row: FramesPerRow,
-    /// The tempo a tracker shows for it (at 50 Hz).
+    /// The tempo a tracker quotes for it, at the standard's nominal rate (50 Hz PAL, 60 Hz NTSC).
     pub nominal_bpm: f64,
-    /// The tempo a PAL C64 really plays it at.
-    pub pal_bpm: f64,
-    /// `pal_bpm / detected_bpm - 1`: positive means the C64 plays faster than the source.
+    /// The tempo a C64 of that standard really plays it at.
+    pub real_bpm: f64,
+    /// `real_bpm / detected_bpm - 1`: positive means the C64 plays faster than the source.
     pub error: f64,
     /// How far the C64 gets ahead of (positive) or behind the source per minute of source, in milliseconds. Matters
     /// when the music must stay in step with something else, such as video or a recorded part.
     pub drift_ms_per_minute: f64,
 }
 
-/// Snap `detected_bpm` to the row length (3–127 frames) whose real PAL tempo is nearest, at `rows_per_beat` rows per
-/// beat. `None` when the tempo is not a positive, finite number. A tempo outside what 3–127 frames per row can play
-/// snaps to the nearest end, and the error says how far off that is.
-pub fn snap_tempo(detected_bpm: f64, rows_per_beat: NonZeroU8) -> Option<TempoSnap> {
+/// Snap `detected_bpm` to the row length (3–127 frames) whose real tempo on a `standard` C64 is nearest, at
+/// `rows_per_beat` rows per beat. `None` when the tempo is not a positive, finite number. A tempo outside what 3–127
+/// frames per row can play snaps to the nearest end, and the error says how far off that is.
+pub fn snap_tempo(
+    detected_bpm: f64,
+    rows_per_beat: NonZeroU8,
+    standard: VideoStandard,
+) -> Option<TempoSnap> {
     if !(detected_bpm.is_finite() && detected_bpm > 0.0) {
         return None;
     }
-    let ideal = PAL_FRAME_RATE * 60.0 / (f64::from(rows_per_beat.get()) * detected_bpm);
+    let frame_rate = standard.frame_rate();
+    let ideal = frame_rate * 60.0 / (f64::from(rows_per_beat.get()) * detected_bpm);
     let lo = ideal.floor().clamp(
         f64::from(FramesPerRow::MIN.get()),
         f64::from(FramesPerRow::MAX.get()),
@@ -63,19 +119,20 @@ pub fn snap_tempo(detected_bpm: f64, rows_per_beat: NonZeroU8) -> Option<TempoSn
         );
         FramesPerRow::new(f as u8).expect("clamped to the legal range")
     });
-    let error = |f: FramesPerRow| bpm_at(f, rows_per_beat, PAL_FRAME_RATE) / detected_bpm - 1.0;
+    let error = |f: FramesPerRow| bpm_at(f, rows_per_beat, frame_rate) / detected_bpm - 1.0;
     let frames_per_row = candidates
         .into_iter()
         .min_by(|a, b| error(*a).abs().total_cmp(&error(*b).abs()))
         .expect("two candidates");
-    let pal_bpm = bpm_at(frames_per_row, rows_per_beat, PAL_FRAME_RATE);
-    let error = pal_bpm / detected_bpm - 1.0;
+    let real_bpm = bpm_at(frames_per_row, rows_per_beat, frame_rate);
+    let error = real_bpm / detected_bpm - 1.0;
     Some(TempoSnap {
         detected_bpm,
         rows_per_beat,
+        standard,
         frames_per_row,
-        nominal_bpm: bpm_at(frames_per_row, rows_per_beat, NOMINAL_FRAME_RATE),
-        pal_bpm,
+        nominal_bpm: bpm_at(frames_per_row, rows_per_beat, standard.nominal_frame_rate()),
+        real_bpm,
         error,
         // A source minute holds detected_bpm beats; the C64 plays them in 60 / (1 + error) seconds.
         drift_ms_per_minute: 60_000.0 * error / (1.0 + error),
