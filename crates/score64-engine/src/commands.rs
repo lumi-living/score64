@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{Command, CommandError, Engine};
+use crate::{Command, CommandError, Effect, Engine};
 
 /// Arguments of a command that takes none: `{}`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -25,6 +25,7 @@ pub struct VersionOutput {
 impl Command for Version {
     const NAME: &'static str = "version";
     const SUMMARY: &'static str = "Show the Score64 version and the helper protocol it speaks.";
+    const EFFECT: Effect = Effect::ReadOnly;
     type Args = NoArgs;
     type Output = VersionOutput;
 
@@ -60,6 +61,7 @@ impl Command for HelperInfo {
     const NAME: &'static str = "helper_info";
     const SUMMARY: &'static str =
         "Start the emulator helper if it is not running, and show its version and engine.";
+    const EFFECT: Effect = Effect::ReadOnly;
     type Args = NoArgs;
     type Output = HelperInfoOutput;
 

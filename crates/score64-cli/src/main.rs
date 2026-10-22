@@ -62,6 +62,7 @@ fn main() -> ExitCode {
                     json!({
                         "name": e.name,
                         "summary": e.summary,
+                        "effect": e.effect,
                         "args": e.args_schema(),
                         "output": e.output_schema(),
                     })

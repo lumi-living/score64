@@ -4,6 +4,9 @@
 //!
 //! The engine also owns the long-lived resources commands share, starting with the emulator helper: started lazily,
 //! watched with a timeout, and restarted after it breaks (see [`HelperConfig`]).
+//!
+//! Threading: `run` takes `&mut Engine`, so an engine runs one command at a time. It is `Send`, so a front-end can
+//! own it on a background thread and talk to it through a channel; nothing calls it on a UI thread.
 
 mod commands;
 mod helper;
@@ -22,6 +25,8 @@ pub trait Command {
     const NAME: &'static str;
     /// One line for listings and tool descriptions.
     const SUMMARY: &'static str;
+    /// What running it does to the project.
+    const EFFECT: Effect;
     /// Arguments; unknown fields are an error.
     type Args: DeserializeOwned + JsonSchema;
     /// Result, as data a script or an agent can read.
@@ -29,6 +34,54 @@ pub trait Command {
 
     /// Run the command.
     fn run(engine: &mut Engine, args: Self::Args) -> Result<Self::Output, CommandError>;
+}
+
+/// What a command does to the project. The MCP server derives its tool hints from it; the engine records changes
+/// with provenance and makes them undoable (ADR-004, ADR-008).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Effect {
+    /// Changes no project file. Starting the helper, rendering and filling the stage cache count as reading: the
+    /// cache is rebuildable (ADR-004).
+    ReadOnly,
+    /// Changes project files (track files, decisions, approvals, `audio.lock`); recorded with provenance, undoable.
+    WritesProject,
+    /// Deletes or overwrites something the project's history cannot bring back.
+    Destructive,
+}
+
+/// MCP tool annotations for an [`Effect`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ToolHints {
+    /// `readOnlyHint`.
+    pub read_only: bool,
+    /// `destructiveHint`.
+    pub destructive: bool,
+    /// `idempotentHint`: repeating the call with the same arguments changes nothing more.
+    pub idempotent: bool,
+}
+
+impl Effect {
+    /// The MCP hints for this effect. Writes are not assumed idempotent.
+    pub const fn hints(self) -> ToolHints {
+        match self {
+            Effect::ReadOnly => ToolHints {
+                read_only: true,
+                destructive: false,
+                idempotent: true,
+            },
+            Effect::WritesProject => ToolHints {
+                read_only: false,
+                destructive: false,
+                idempotent: false,
+            },
+            Effect::Destructive => ToolHints {
+                read_only: false,
+                destructive: true,
+                idempotent: false,
+            },
+        }
+    }
 }
 
 /// What kind of failure a [`CommandError`] is. Stable: front-ends and agents may match on it.
@@ -84,6 +137,8 @@ pub struct Entry {
     pub name: &'static str,
     /// [`Command::SUMMARY`].
     pub summary: &'static str,
+    /// [`Command::EFFECT`].
+    pub effect: Effect,
     args_schema: fn() -> Schema,
     output_schema: fn() -> Schema,
     run: fn(&mut Engine, Value) -> Result<Value, CommandError>,
@@ -110,6 +165,7 @@ const fn entry<C: Command>() -> Entry {
     Entry {
         name: C::NAME,
         summary: C::SUMMARY,
+        effect: C::EFFECT,
         args_schema: schema::<C::Args>,
         output_schema: schema::<C::Output>,
         run: run_json::<C>,
@@ -134,6 +190,12 @@ pub static REGISTRY: &[Entry] = &[entry::<Version>(), entry::<HelperInfo>()];
 pub fn find(name: &str) -> Option<&'static Entry> {
     REGISTRY.iter().find(|e| e.name == name)
 }
+
+// The app moves the engine to a background thread (ADR-012): this stops compiling if it ever stops being Send.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Engine>();
+};
 
 /// Engine settings.
 #[derive(Clone, Debug, Default)]
@@ -204,6 +266,20 @@ mod tests {
                 e.name
             );
         }
+    }
+
+    #[test]
+    fn effects_serialise_and_map_to_tool_hints() {
+        assert_eq!(
+            serde_json::to_value(Effect::WritesProject).unwrap(),
+            "writes_project"
+        );
+        assert!(Effect::ReadOnly.hints().read_only && Effect::ReadOnly.hints().idempotent);
+        assert!(
+            !Effect::WritesProject.hints().read_only && !Effect::WritesProject.hints().destructive
+        );
+        assert!(Effect::Destructive.hints().destructive);
+        assert_eq!(find("version").unwrap().effect, Effect::ReadOnly);
     }
 
     #[test]

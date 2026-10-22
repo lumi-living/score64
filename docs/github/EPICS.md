@@ -81,6 +81,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - Fidelity metrics: melody similarity and onset F1 [#57](https://github.com/lumi-living/score64/issues/57)
   - Voice-3 dropout test [#58](https://github.com/lumi-living/score64/issues/58)
   - Oracle test: helper vs sidplayfp [#59](https://github.com/lumi-living/score64/issues/59)
+  - Command engine job model: long-running commands with progress and cancellation [#132](https://github.com/lumi-living/score64/issues/132)
 - **E9 CLI & HTML report** ([#60](https://github.com/lumi-living/score64/issues/60)) — The `score64` CLI over the command engine, and the shareable HTML report.
   - Commands: run, reduce, render, pack, report, index [#61](https://github.com/lumi-living/score64/issues/61)
   - JSON output and documented exit codes [#62](https://github.com/lumi-living/score64/issues/62)

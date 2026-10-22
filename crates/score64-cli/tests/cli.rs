@@ -44,6 +44,10 @@ fn commands_lists_the_registry_with_schemas() {
         .collect();
     assert_eq!(names, ["version", "helper_info"]);
     for c in list.as_array().unwrap() {
+        assert!(
+            ["read_only", "writes_project", "destructive"].contains(&c["effect"].as_str().unwrap()),
+            "{c}"
+        );
         assert_eq!(c["args"]["type"], "object");
         assert_eq!(c["output"]["type"], "object");
     }

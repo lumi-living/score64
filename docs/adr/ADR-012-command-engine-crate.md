@@ -1,6 +1,6 @@
 # ADR-012: The command engine is its own crate and owns the emulator helper
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-22
 **Deciders:** @jahaa
 
@@ -17,13 +17,25 @@ Convert64 (ADR-005 there) keeps its registry in `convert64-core`, which works be
 ## Decision
 
 1. **A new crate, `score64-engine` (MIT),** holds the command trait, the registry and the `Engine` that commands run against. It depends on `score64-core`, `-formats`, `-project`, `-analysis` and `-adapters`. The CLI, the MCP server and the app depend on it and on nothing below it for anything user-visible.
-2. **A command is a type implementing `Command`:** a stable snake_case `NAME`, a one-line `SUMMARY`, `Args` (serde-deserialisable, with a JSON Schema from `schemars`), `Output` (serde-serialisable, with a schema) and `run(&mut Engine, Args)`. `REGISTRY` lists every command as a name, a summary, both schemas and a JSON-in, JSON-out runner. Front-ends either call commands by type (the app, the CLI's typed subcommands) or by name with JSON (`score64 run`, the MCP server). Errors are data too: a `CommandError` with a stable kind and a message.
+2. **A command is a type implementing `Command`:** a stable snake_case `NAME`, a one-line `SUMMARY`, an `EFFECT`, `Args` (serde-deserialisable, with a JSON Schema from `schemars`), `Output` (serde-serialisable, with a schema) and `run(&mut Engine, Args)`. `REGISTRY` lists every command as a name, a summary, both schemas and a JSON-in, JSON-out runner. Front-ends either call commands by type (the app, the CLI's typed subcommands) or by name with JSON (`score64 run`, the MCP server). Errors are data too: a `CommandError` with a stable kind and a message.
 3. **The engine owns the helper.** Commands never see the raw client. The engine:
    - starts the helper lazily, on the first command that needs it;
    - runs it on a worker thread and waits for each job with a timeout. On timeout it kills the process, reports `HelperTimeout`, and starts a new helper on the next use;
    - after a `Malformed` reply, a broken pipe, a protocol error or a crash, drops the helper and starts a fresh one on the next use. A helper that answers with any other error keeps running;
    - counts starts, so a command that holds helper state (an audition session) can tell when it must load and init again.
 4. **One helper per engine.** The app holds one engine for its lifetime. The CLI and the MCP server hold one engine per process.
+5. **Every command declares its effect** (`Effect`):
+   - `read_only`: changes no project file. Starting the helper, rendering and filling the stage cache count as reading, because the cache is rebuildable (ADR-004).
+   - `writes_project`: changes track files, decisions, approvals or `audio.lock`. The engine records these changes with provenance and makes them undoable (ADR-004, ADR-008).
+   - `destructive`: deletes or overwrites something the project's history cannot bring back.
+
+   The MCP server derives its tool annotations from the effect: `read_only` sets `readOnlyHint` and `idempotentHint`, and `destructive` sets `destructiveHint`; writes are not assumed idempotent. `score64 commands --json` lists each command's effect.
+6. **Threading model: one command at a time.** `run` takes `&mut Engine`, so an engine runs commands one after another.
+   - The engine is `Send`; a compile-time assertion in the crate keeps it so.
+   - The app owns its engine on a background thread and talks to it through a channel. Nothing calls the engine on the UI thread.
+   - The CLI and the MCP server run commands in order on their own threads.
+
+   Long-running work with progress and cancellation (live audition, batch renders) is a separate job model, designed in #132 before the M1 render work builds on the engine.
 
 ## Options considered
 
@@ -52,10 +64,11 @@ B costs one crate and gains a clean layering: core (pure) → formats, project, 
 
 ## Consequences
 - Easier: parity between front-ends is structural; helper failures are handled once and tested once with scripted fakes; the MCP server can generate tool schemas from the registry.
-- Harder: commands that keep helper state must check the start count and rebuild their state after a restart; command names and argument shapes are an interface and need care once released.
-- Revisit when: a long-running job model (batch renders, progress, cancellation) is needed, or a second long-lived process joins the helper.
+- Harder: commands that keep helper state must check the start count and rebuild their state after a restart; command names, argument shapes and effects are an interface and need care once released.
+- Revisit when: a long-running job model is needed. Live audition will need one: with one command at a time, every other command would wait behind its render loop. It is planned in #132 for M1, before audition. Also revisit if a second long-lived process joins the helper.
 
 ## Action items
-- [ ] #7: the crate, `Command`, `REGISTRY`, `version` and `helper_info`, the helper lifecycle with tests, and the CLI's `version`, `commands` and `run`.
-- [ ] E14: the MCP server lists `REGISTRY` as tools.
+- [x] #7: the crate, `Command` with `Effect`, `REGISTRY`, `version` and `helper_info`, the helper lifecycle with tests, the `Engine: Send` assertion, and the CLI's `version`, `commands` and `run`.
+- [ ] #132: the job model (progress, cancellation) as an ADR amending this one, before the M1 render and audition commands.
+- [ ] E14: the MCP server lists `REGISTRY` as tools, with hints from each command's effect.
 - [ ] M1 render and audition commands use the engine's helper.
