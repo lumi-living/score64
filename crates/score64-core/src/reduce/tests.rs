@@ -6,6 +6,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::profile::{ProfileName, builtin};
+use crate::provenance::{ContentHash, SourceRef};
 use crate::score::{FramesPerRow, Pitch, PresetId, Role, Roles, Schema, Song, Subtune, VoiceLine};
 use crate::strategies;
 use crate::validate::{Context, InstrumentFacts, validate};
@@ -542,4 +543,26 @@ proptest! {
 fn pitch_is_a_goattracker_pitch() {
     // The helpers above lean on GoatTracker names.
     assert_eq!("G#7".parse::<Pitch>().unwrap(), Pitch::MAX);
+}
+
+#[test]
+fn notes_that_differ_only_in_source_or_instrument_reduce_the_same_in_any_order() {
+    // Two transcriptions of one note: everything equal but where they came from, or their instrument. Whichever
+    // order they come in, the same one is kept.
+    let n = name();
+    let source = |start| SourceRef::new(ContentHash([1; 32]), start, start + 100);
+    let mut a = note(0, 4, "C-4", 0.9);
+    let mut b = a.clone();
+    a.source = source(0);
+    b.source = source(50);
+    let one = monophonise([a.clone(), b.clone()], &at(&n), &MonoRules::default());
+    let two = monophonise([b, a], &at(&n), &MonoRules::default());
+    assert_eq!(one, two);
+    let mut c = note(0, 4, "C-4", 0.9);
+    let mut d = c.clone();
+    c.instrument = Some(PresetId("kick".into()));
+    d.instrument = Some(PresetId("snare".into()));
+    let one = monophonise([c.clone(), d.clone()], &at(&n), &MonoRules::default());
+    let two = monophonise([d, c], &at(&n), &MonoRules::default());
+    assert_eq!(one, two);
 }
