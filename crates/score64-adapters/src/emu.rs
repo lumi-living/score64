@@ -4,7 +4,8 @@
 
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use score64_formats::emu_protocol::{self as proto, ErrorCode, Reply, Request};
 use score64_formats::psid::Psid;
@@ -78,31 +79,61 @@ pub struct Helper<R: Read, W: Write> {
     reader: R,
     writer: W,
     info: HelperInfo,
-    child: Option<Child>,
+    killer: Killer,
 }
 
-impl Helper<ChildStdout, ChildStdin> {
+/// A helper on boxed pipes: what [`Helper::spawn`] returns, and what fakes in tests can stand in for.
+pub type DynHelper = Helper<Box<dyn Read + Send>, Box<dyn Write + Send>>;
+
+/// Kills a helper's process from any thread, including while another thread is blocked reading its replies (killing
+/// it closes the pipe, so that read returns). Cloning shares the same process. A killer with no process does nothing.
+#[derive(Clone, Default)]
+pub struct Killer(Arc<Mutex<Option<Child>>>);
+
+impl Killer {
+    /// A killer with no process yet; [`Helper::spawn_with`] puts the child in it before saying hello.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Kill the process, if any, and reap it.
+    pub fn kill(&self) {
+        if let Some(mut child) = self.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+
+    fn take(&self) -> Option<Child> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+}
+
+impl DynHelper {
     /// Start `binary serve` and say hello.
     pub fn spawn(binary: &Path, sample_rate: u32) -> Result<Self, HelperError> {
+        Self::spawn_with(binary, sample_rate, Killer::new())
+    }
+
+    /// As [`Self::spawn`], with the child placed in `killer` before the handshake, so a caller can kill a helper that
+    /// hangs even while saying hello.
+    pub fn spawn_with(
+        binary: &Path,
+        sample_rate: u32,
+        killer: Killer,
+    ) -> Result<Self, HelperError> {
         let mut child = Command::new(binary)
             .arg("serve")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?;
-        let (stdout, stdin) = (
-            child.stdout.take().expect("piped"),
-            child.stdin.take().expect("piped"),
-        );
-        let mut helper = match Helper::connect(stdout, stdin, sample_rate) {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(e);
-            }
-        };
-        helper.child = Some(child);
+        let stdout: Box<dyn Read + Send> = Box::new(child.stdout.take().expect("piped"));
+        let stdin: Box<dyn Write + Send> = Box::new(child.stdin.take().expect("piped"));
+        *killer.0.lock().unwrap_or_else(PoisonError::into_inner) = Some(child);
+        let mut helper =
+            Helper::connect(stdout, stdin, sample_rate).inspect_err(|_| killer.kill())?;
+        helper.killer = killer;
         Ok(helper)
     }
 
@@ -133,7 +164,7 @@ impl<R: Read, W: Write> Helper<R, W> {
                 helper: String::new(),
                 engine: String::new(),
             },
-            child: None,
+            killer: Killer::new(),
         };
         match h.ask(&Request::Hello {
             version: proto::VERSION,
@@ -166,6 +197,11 @@ impl<R: Read, W: Write> Helper<R, W> {
     /// The helper's `Ready` details.
     pub fn info(&self) -> &HelperInfo {
         &self.info
+    }
+
+    /// A handle that kills this helper's process from another thread.
+    pub fn killer(&self) -> Killer {
+        self.killer.clone()
     }
 
     /// The most frames one [`Self::render`] may ask for at this session's sample rate; split longer renders into
@@ -245,7 +281,7 @@ impl<R: Read, W: Write> Helper<R, W> {
     /// End the session and wait for the helper to exit.
     pub fn quit(mut self) -> Result<(), HelperError> {
         self.ok(&Request::Quit)?;
-        if let Some(mut child) = self.child.take() {
+        if let Some(mut child) = self.killer.take() {
             child.wait()?;
         }
         Ok(())
@@ -255,10 +291,7 @@ impl<R: Read, W: Write> Helper<R, W> {
 impl<R: Read, W: Write> Drop for Helper<R, W> {
     fn drop(&mut self) {
         // Never leave a helper process behind.
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        self.killer.kill();
     }
 }
 
