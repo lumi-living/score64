@@ -18,7 +18,7 @@ use crate::score::{Attack, Note, SubtuneName, Voice};
 
 mod lead;
 mod looping;
-pub use looping::{FIND_LOOP, LoopChoice, LoopRules, find_loop};
+pub use looping::{Candidate, FIND_LOOP, LoopChoice, LoopRules, find_loop};
 mod octave;
 pub use lead::{
     Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,

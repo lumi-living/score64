@@ -129,7 +129,7 @@ fn silent_bars_are_not_candidates_and_short_subtunes_loop_to_0() {
     s.voices[0].notes.retain(|n| n.row >= 32); // bars 0 and 1 silent
     let l = find_loop(&s, &LoopRules::default());
     assert!(
-        l.candidates.iter().all(|&(a, _)| a >= 3),
+        l.candidates.iter().all(|c| c.bar >= 3),
         "{:?}",
         l.candidates
     );
@@ -164,6 +164,7 @@ fn rules_read_with_defaults() {
     let r: LoopRules = serde_json::from_str(r#"{"context":4}"#).unwrap();
     assert_eq!(r.context.get(), 4);
     assert_eq!(r.min_similarity, LoopRules::default().min_similarity);
+    assert!(serde_json::from_str::<LoopRules>(r#"{"min_similarity":7}"#).is_err());
     assert!(serde_json::from_str::<LoopRules>(r#"{"context":0}"#).is_err());
 }
 
@@ -181,10 +182,10 @@ proptest! {
         prop_assert!(l.row < s.length.get());
         prop_assert_eq!(l.row % 16, 0);
         prop_assert!((0.0..=1.0).contains(&l.similarity));
-        prop_assert!(l.candidates.windows(2).all(|w| w[0].0 < w[1].0));
-        for &(a, sim) in &l.candidates {
-            prop_assert!(a >= 1 && a + context <= chords.len() as u32);
-            prop_assert!((0.0..=1.0).contains(&sim));
+        prop_assert!(l.candidates.windows(2).all(|w| w[0].bar < w[1].bar));
+        for c in &l.candidates {
+            prop_assert!(c.bar >= 1 && c.bar + context <= chords.len() as u32);
+            prop_assert!((0.0..=1.0).contains(&c.similarity));
         }
         // Splitting the line across two voices, listed either way round, changes nothing.
         let mut split = s.clone();
@@ -194,7 +195,7 @@ proptest! {
         other.voice = Voice::new(2).unwrap();
         other.notes = high;
         split.voices.insert(0, other);
-        prop_assert_eq!(find_loop(&split, &rules).row, l.row);
+        prop_assert_eq!(find_loop(&split, &rules), l);
     }
 
     /// A subtune of one chord pattern played over and over loops to an early bar, with full similarity.
@@ -202,7 +203,105 @@ proptest! {
     fn a_repeated_pattern_loops_early(times in 3usize..6) {
         let s = subtune(&[C, F, G].repeat(times));
         let l = find_loop(&s, &LoopRules::default());
-        prop_assert!(l.row <= 3 * 16, "{}", l.row);
+        prop_assert_eq!(l.row, 3 * 16);
         prop_assert!((l.similarity - 1.0).abs() < 1e-5);
     }
+}
+
+/// A subtune of `bars` bars from its notes, on one voice.
+fn from_notes(notes: Vec<Note>, bars: u32) -> Subtune {
+    let mut s = subtune(&vec![C; bars as usize]);
+    s.voices[0].notes = notes;
+    s
+}
+
+#[test]
+fn chroma_weighs_rows_sounding_and_confidence() {
+    // A half-bar C at 0.5 and a whole-bar G at 1.0 in bar 0: C weighs 8 × 0.5, G 16 × 1.
+    let mut c = note(0, 8, 48);
+    c.confidence = Confidence::new(0.5).unwrap();
+    let mut g = note(0, 16, 55);
+    g.confidence = Confidence::CERTAIN;
+    let s = from_notes(vec![c, g], 1);
+    let chroma = chroma_by_bar(&s, 1);
+    assert_eq!(chroma[0][0], 4.0);
+    assert_eq!(chroma[0][7], 16.0);
+    // A note held over a bar line counts in both, row by row.
+    let s = from_notes(vec![note(8, 16, 48)], 2);
+    let chroma = chroma_by_bar(&s, 2);
+    assert!((chroma[0][0] - 8.0 * 0.9).abs() < 1e-5 && (chroma[1][0] - 8.0 * 0.9).abs() < 1e-5);
+}
+
+#[test]
+fn arpeggios_share_the_note_and_count_once() {
+    // C for 16 rows at 0.9: plain for 4, then an arpeggio (C E G) for 8, a second arpeggio over the same rows, then
+    // plain again.
+    let mut s = from_notes(vec![note(0, 16, 48)], 1);
+    for _ in 0..2 {
+        s.voices[0].arps.push(ArpEvent {
+            row: 4,
+            length: NonZeroU32::new(8).unwrap(),
+            intervals: vec![0, 4, 7],
+            decision: None,
+        });
+    }
+    let chroma = chroma_by_bar(&s, 1);
+    // C: 8 plain rows × 0.9 plus 8 arpeggio rows × 0.3; E and G: 8 × 0.3 each.
+    assert!(
+        (chroma[0][0] - (8.0 * 0.9 + 8.0 * 0.3)).abs() < 1e-4,
+        "{:?}",
+        chroma[0]
+    );
+    assert!((chroma[0][4] - 2.4).abs() < 1e-4 && (chroma[0][7] - 2.4).abs() < 1e-4);
+    // An interval past the top wraps to its pitch class.
+    let mut s = from_notes(vec![note(0, 16, 90)], 1);
+    s.voices[0].arps.push(ArpEvent {
+        row: 0,
+        length: NonZeroU32::new(16).unwrap(),
+        intervals: vec![0, 200],
+        decision: None,
+    });
+    let chroma = chroma_by_bar(&s, 1);
+    assert!(chroma[0][(90 + 200) % 12] > 0.0);
+}
+
+#[test]
+fn notes_past_the_end_are_ignored() {
+    let mut s = subtune(&[C, G, C, G]);
+    let before = find_loop(&s, &LoopRules::default());
+    s.voices[0].notes.push(note(64 + 10, 4, 50));
+    s.voices[0].notes.push(note(60, 40, 51));
+    let after = find_loop(&s, &LoopRules::default());
+    assert_eq!(before.row, after.row);
+}
+
+#[test]
+fn the_last_candidate_bar_counts() {
+    // C G C G: the only candidate is bar 2, the last one before the ending's context.
+    let l = find_loop(&subtune(&[C, G, C, G]), &LoopRules::default());
+    assert_eq!(l.row, 32);
+}
+
+#[test]
+fn a_part_bar_or_trailing_silence_is_left_out_and_halves_the_confidence() {
+    // C F G three times, then four rows more of nothing: the ending is the last whole bars.
+    let mut s = subtune(&[C, F, G].repeat(3));
+    let clean = find_loop(&s, &LoopRules::default());
+    s.length = NonZeroU32::new(9 * 16 + 4).unwrap();
+    let part = find_loop(&s, &LoopRules::default());
+    assert_eq!(part.row, clean.row);
+    assert!((part.decision.confidence.get() - clean.decision.confidence.get() / 2.0).abs() < 1e-5);
+    // Two silent bars at the end: skipped, the same loop at half the confidence.
+    let mut s = subtune(&[C, F, G].repeat(3));
+    s.length = NonZeroU32::new(11 * 16).unwrap();
+    let silent = find_loop(&s, &LoopRules::default());
+    assert_eq!(silent.row, clean.row);
+    assert!(silent.decision.confidence < clean.decision.confidence);
+}
+
+#[test]
+fn a_silent_ending_gives_no_candidates() {
+    let mut s = subtune(&[C, G, C, G]);
+    s.voices[0].notes.clear();
+    assert!(find_loop(&s, &LoopRules::default()).candidates.is_empty());
 }

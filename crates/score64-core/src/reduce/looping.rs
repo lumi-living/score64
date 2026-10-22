@@ -21,8 +21,8 @@ pub const FIND_LOOP: &str = "find-loop@1";
 pub struct LoopRules {
     /// How many bars before a candidate are compared with the subtune's last bars.
     pub context: NonZeroU32,
-    /// The similarity a candidate needs, 0 to 1; with none that good the subtune loops to its start.
-    pub min_similarity: f32,
+    /// The similarity a candidate needs; with none that good the subtune loops to its start.
+    pub min_similarity: Confidence,
 }
 
 impl Default for LoopRules {
@@ -30,9 +30,19 @@ impl Default for LoopRules {
     fn default() -> Self {
         LoopRules {
             context: NonZeroU32::new(2).expect("non-zero"),
-            min_similarity: 0.8,
+            min_similarity: Confidence::new(0.8).expect("in range"),
         }
     }
+}
+
+/// A bar [`find_loop`] considered, and how alike the bars before it and the ending are, 0 to 1.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Candidate {
+    /// The bar.
+    pub bar: u32,
+    /// Its similarity.
+    pub similarity: f32,
 }
 
 /// Where [`find_loop`] would loop, and why.
@@ -42,48 +52,66 @@ pub struct LoopChoice {
     pub row: u32,
     /// How alike the bars before it and the ending are, 0 to 1; 0 for a loop to the start that no bar earned.
     pub similarity: f32,
-    /// Every candidate bar and its similarity, in bar order, for review.
-    pub candidates: Vec<(u32, f32)>,
+    /// Every candidate and its similarity, in bar order, for review.
+    pub candidates: Vec<Candidate>,
     /// The `LoopRow` decision (`loop`).
     pub decision: Decision,
 }
 
 /// Find the loop row of `subtune`.
 ///
-/// Every bar `a` from 1 on whose `context` bars before it end before the subtune's last `context` bars start is a
-/// candidate: its score is the cosine similarity of those bars' chroma (all voices, by rows sounding times
-/// confidence, arpeggios by their chord tones) with the last bars'. The best candidate at or above `min_similarity`
-/// wins, the earliest on a tie (the longest loop); with none, or a subtune too short to compare, the loop row is 0.
-/// Candidates whose bars are silent are skipped. One [`Proposal::LoopRow`] decision proposes it, as sure as the
-/// similarity; the subtune itself is not changed.
+/// The ending is the last `context` whole bars with music in them: a part bar at the end, and silent bars before
+/// it, are left out. Every bar `a` from 1 on whose `context` bars before it end before the ending starts is a
+/// candidate, scored by the cosine similarity of those bars' chroma (all voices, by rows sounding times confidence,
+/// arpeggios by their chord tones) with the ending's; candidates whose bars are silent are skipped. The best
+/// candidate at or above `min_similarity` wins, the earliest on a tie (the longest loop); with none, or a subtune too
+/// short to compare, the loop row is 0.
+///
+/// One [`Proposal::LoopRow`] decision proposes it, as sure as the similarity, or half as sure when the subtune ends
+/// inside a bar or after silence (the jump then comes from music the comparison did not see). The subtune itself is
+/// not changed, and tempo changes are not considered: a loop across one resumes at the ending's tempo.
 pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
     let rows = u32::from(subtune.rows_per_bar.get());
     let length = subtune.length.get();
-    let bars = length.div_ceil(rows);
-    let chroma = chroma_by_bar(subtune, bars);
+    // Whole bars only: the jump lands on a downbeat, so a part bar at the end can't be matched against one.
+    let whole = length / rows;
+    let chroma = chroma_by_bar(subtune, length.div_ceil(rows));
+    // The ending is the last bars with music, so trailing silence (common at the end of a transcription) is skipped.
+    let last = (0..whole)
+        .rev()
+        .find(|&b| chroma[b as usize].iter().any(|&w| w > 0.0))
+        .map_or(0, |b| b + 1);
     let context = rules.context.get();
-    let ending = bars
-        .checked_sub(context)
-        .map(|from| window(&chroma, from, context));
     let mut candidates = Vec::new();
-    if let Some(ending) = ending.filter(|e| norm(e) > 0.0) {
-        for a in context.max(1)..=bars - context {
+    if let Some(from) = last.checked_sub(context) {
+        let ending = window(&chroma, from, context);
+        for a in context.max(1)..=from {
             let before = window(&chroma, a - context, context);
-            if norm(&before) > 0.0 {
-                candidates.push((a, cosine(&before, &ending)));
+            if norm(&before) > 0.0 && norm(&ending) > 0.0 {
+                candidates.push(Candidate {
+                    bar: a,
+                    similarity: cosine(&before, &ending),
+                });
             }
         }
     }
-    let threshold = rules.min_similarity.clamp(0.0, 1.0);
+    let threshold = rules.min_similarity.get();
     let best = candidates
         .iter()
-        .filter(|&&(_, s)| s >= threshold)
+        .filter(|c| c.similarity >= threshold)
         // The highest; on a tie the earliest, which comes first.
-        .fold(None::<(u32, f32)>, |acc, &(a, s)| match acc {
-            Some((_, best)) if best >= s => acc,
-            _ => Some((a, s)),
+        .fold(None::<&Candidate>, |acc, c| match acc {
+            Some(best) if best.similarity >= c.similarity => acc,
+            _ => Some(c),
         });
-    let (bar, similarity) = best.unwrap_or((0, 0.0));
+    let (bar, similarity) = best.map_or((0, 0.0), |c| (c.bar, c.similarity));
+    // A subtune that ends inside a bar or after silence jumps from somewhere the comparison didn't see: half as sure.
+    let clean_end = length.is_multiple_of(rows) && last == whole;
+    let confidence = if clean_end {
+        similarity
+    } else {
+        similarity / 2.0
+    };
     let row = bar * rows;
     LoopChoice {
         row,
@@ -97,7 +125,7 @@ pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
             provenance: Provenance::Rules {
                 rule: FIND_LOOP.into(),
             },
-            confidence: Confidence::new(similarity.clamp(0.0, 1.0)).expect("clamped"),
+            confidence: Confidence::new(confidence.clamp(0.0, 1.0)).expect("clamped"),
             reviewed: false,
         },
     }
@@ -122,7 +150,7 @@ fn chroma_by_bar(subtune: &Subtune, bars: u32) -> Vec<[f32; 12]> {
     };
     for line in lines {
         let mut notes: Vec<&Note> = line.notes.iter().collect();
-        notes.sort_by_key(|n| (n.row, n.pitch));
+        notes.sort_by(|a, b| super::canonical(a, b, super::Skyline::Highest));
         let mut arps: Vec<_> = line.arps.iter().collect();
         arps.sort_by_key(|a| a.row);
         for n in &notes {
@@ -134,14 +162,23 @@ fn chroma_by_bar(subtune: &Subtune, bars: u32) -> Vec<[f32; 12]> {
                 .iter()
                 .filter(|a| a.row < end && n.row < a.row.saturating_add(a.length.get()))
             {
-                let from = arp.row.max(n.row);
+                // Overlapping arpeggios: the rows an earlier one covered are not counted again.
+                let from = arp.row.max(row);
                 let to = arp.row.saturating_add(arp.length.get()).min(end);
+                if from >= to {
+                    continue;
+                }
                 add(row, from, n.pitch.semitone(), c);
                 let share = c / arp.intervals.len().max(1) as f32;
                 for &i in &arp.intervals {
-                    add(from, to, n.pitch.semitone().saturating_add(i), share);
+                    add(
+                        from,
+                        to,
+                        ((u16::from(n.pitch.semitone()) + u16::from(i)) % 12) as u8,
+                        share,
+                    );
                 }
-                row = row.max(to);
+                row = to;
             }
             add(row, end, n.pitch.semitone(), c);
         }
