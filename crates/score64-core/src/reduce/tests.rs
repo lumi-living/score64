@@ -261,6 +261,17 @@ fn a_gap_of_exactly_the_minimum_is_trimmed_not_dropped() {
         [(0, 2, "C-4".into()), (2, 4, "E-4".into())]
     );
     assert!(reasons(&r).is_empty());
+    // And with the more confident note first, so the later one is checked against the note before it.
+    let r = monophonise(
+        [note(0, 4, "C-4", 0.9), note(2, 4, "E-4", 0.5)],
+        &at(&n),
+        &rules,
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 2, "C-4".into()), (2, 4, "E-4".into())]
+    );
+    assert!(reasons(&r).is_empty());
 }
 
 #[test]
