@@ -157,6 +157,12 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 
 **Decisions.** Each rules choice is a `LeadSource` decision (`lead-b<bar>`). Its confidence is the lead's mean salience margin over the best other part, relative to its own, over its run. It is 1 when no other part plays.
 
+**Find the loop** (`reduce::find_loop`, rule `find-loop@1`, #44) proposes where a subtune jumps back to at its end.
+- **Score.** A subtune plays to its end and carries on from `loop_row`, so a good loop row is a bar start after which the music once went the way the ending goes. The `context` bars just before it (default 2) should sound like the subtune's last bars.
+- **Comparison.** Bars are compared by chroma: each pitch class weighted by rows sounding times confidence, across all voices. Arpeggios count by their chord tones. The measure is cosine similarity.
+- **Choice.** The best candidate at or above `min_similarity` (0.8) wins, and the earliest on a tie, which gives the longest loop. With none, the loop row is 0.
+- **Decision.** One `LoopRow` decision (`loop`), as sure as the similarity. Every candidate's score is returned for review.
+
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
 2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
