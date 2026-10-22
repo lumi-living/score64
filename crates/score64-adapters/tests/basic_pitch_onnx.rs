@@ -7,12 +7,13 @@
 //!
 //! For each committed stem the sidecar runs basic-pitch 0.4.0 and writes its activations, notes and the exact
 //! `nmp.onnx` it used. The test runs that model through `ort` on the same 22,050 Hz samples and requires the same
-//! activations (within 1e-3) and the same notes.
+//! activations (within 1e-3; in practice bit-identical) and the same notes.
 
 mod common;
 
 use std::path::{Path, PathBuf};
 
+use ort::environment::Environment;
 use score64_adapters::basic_pitch::{BasicPitch, N_CONTOURS, N_NOTES, NoteParams, output_to_notes};
 use score64_adapters::sidecar::Manifest;
 
@@ -37,14 +38,14 @@ fn max_diff(name: &str, got: &[f32], want: &[f32]) -> f32 {
     max
 }
 
-fn check(manifest: &Manifest) {
+fn check(env: &Environment, manifest: &Manifest) {
     let out = |name: &str| {
         manifest
             .output(name)
             .unwrap_or_else(|| panic!("manifest lists no {name}"))
     };
     let audio = read_f32(&out("input_22050.f32"));
-    let mut bp = BasicPitch::load(&out("nmp.onnx")).expect("load model");
+    let mut bp = BasicPitch::load(env, &out("nmp.onnx")).expect("load model");
     let act = bp.infer(&audio).expect("inference");
     assert_eq!(act.contour.len(), act.frames * N_CONTOURS);
     assert_eq!(act.note.len(), act.frames * N_NOTES);
@@ -83,6 +84,10 @@ fn onnx_matches_python_package() {
         return;
     };
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    // ONNX Runtime allows one environment per process: create it once and share it.
+    let env = ort::environment::init()
+        .build()
+        .expect("ONNX Runtime environment");
     for stem in ["sparse-melody-bass", "dense-mix"] {
         let out_dir = common::scratch(&format!("basic-pitch-{stem}"));
         let audio = fixtures.join(stem).join("source.wav");
@@ -103,7 +108,7 @@ fn onnx_matches_python_package() {
                 .map_or("?", |(_, v)| v.as_str()),
             manifest.python
         );
-        check(&manifest);
+        check(&env, &manifest);
         let _ = std::fs::remove_dir_all(&out_dir);
     }
 }

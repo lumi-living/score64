@@ -7,7 +7,9 @@
 
 use std::path::Path;
 
+use ort::environment::Environment;
 use ort::session::Session;
+use ort::session::builder::AutoDevicePolicy;
 use ort::value::Tensor;
 
 use super::{ANNOTATIONS_FPS, AUDIO_N_SAMPLES, AUDIO_SAMPLE_RATE, FFT_HOP, N_CONTOURS, N_NOTES};
@@ -41,11 +43,18 @@ pub struct BasicPitch {
 }
 
 impl BasicPitch {
-    /// Load `nmp.onnx`.
-    pub fn load(model: &Path) -> ort::Result<Self> {
-        Ok(Self {
-            session: Session::builder()?.commit_from_file(model)?,
-        })
+    /// Load `nmp.onnx` in `env` (create one with `ort::environment::init().build()`; share it between sessions).
+    ///
+    /// The model runs on the CPU. From `ort` 2.0.0-rc.14 a new session picks its device by ONNX Runtime's "max
+    /// efficiency" policy, which prefers an NPU: on Apple Silicon that is the Neural Engine, at reduced precision, with
+    /// activations up to 0.16 away from the Python package and different notes. Registering the CPU execution provider
+    /// does not override that policy; `PreferCPU` does, and then the output matches the Python package bit for bit.
+    pub fn load(env: &Environment, model: &Path) -> ort::Result<Self> {
+        let session = Session::builder(env)?
+            .with_auto_device(AutoDevicePolicy::PreferCPU)
+            .map_err(ort::Error::<()>::from)?
+            .commit_from_file(model)?;
+        Ok(Self { session })
     }
 
     /// Run the model over mono 22,050 Hz audio.

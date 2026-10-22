@@ -34,7 +34,7 @@ score64-project = { path = "crates/score64-project" }
 score64-analysis = { path = "crates/score64-analysis" }
 score64-adapters = { path = "crates/score64-adapters" }
 clap = { version = "4.6.7", features = ["derive"] }
-ort = "=2.0.0-rc.13"
+ort = "=2.0.0-rc.14"
 # score64-emu only (GPL helper, ADR-002 / ADR-010 / ADR-011)
 residfp-sys = { path = "crates/residfp-sys" }
 cc = "1.8.0"

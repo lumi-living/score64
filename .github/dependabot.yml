@@ -12,6 +12,9 @@ updates:
       # Pinned exactly in score64-emu; changing either changes rendered audio and needs the oracle tests (ADR-010).
       - dependency-name: "emulator_6502"
       - dependency-name: "resid-rs"
+      # A release candidate whose API still changes between rcs; bumped by hand with the sidecar differential test
+      # (#21, #23), see docs/TOOLING.md.
+      - dependency-name: "ort"
     labels: ["enhancement"]
 
   - package-ecosystem: github-actions
