@@ -19,9 +19,10 @@ The validator in `score64-core` rejects a song that:
 5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
 6. violates the role's pitch range after octave folding (a warning),
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
-8. packs larger than the configured budget, or uses zero page outside the configured pair.
+8. packs larger than the configured budget, or uses zero page outside the configured pair,
+9. gives an instrument a gate timer that is not below the tempo on a row it plays, or turns a note's gate off before it can sound (and warns when a note keeps only one or two gated frames; see `reference/sid.md` §Hard restart).
 
-`score64_core::validate(song, &Context)` checks rules 1–6 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste: pitch ranges by role, lead or bass on an expendable voice, and long notes on an expendable voice. The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `Context` is gathered from the project: the profiles (built-in plus the project's), the adaptive sets it declares, per-instrument facts (whether the instrument routes the voice through the filter, and whether it sets a pulse width at note start), and the role pitch ranges.
+`score64_core::validate(song, &Context)` checks rules 1–6 and 9 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste: pitch ranges by role, lead or bass on an expendable voice, long notes on an expendable voice, and notes a hard restart leaves with only one or two gated frames. The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `Context` is gathered from the project: the profiles (built-in plus the project's), the adaptive sets it declares, per-instrument facts (whether the instrument routes the voice through the filter, whether it sets a pulse width at note start, and its gate timer, gate-off and hard-restart settings), and the role pitch ranges.
 
 - **Rule 1** also covers one line per voice, and legato notes that don't start exactly where the previous note ends.
 - **Rule 2:** rows are integers, so "off the grid" means outside the subtune or out of order: notes, arpeggios, tempo changes, loop row, marks and role spans.
@@ -31,6 +32,7 @@ The validator in `score64-core` rejects a song that:
 - **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere.
 - **Rule 7** waits for the sound-effect model (E13).
 - **Rule 8** is `check_pack(PackFacts, PackBudget)`, run after packing.
+- **Rule 9** follows GoatTracker's gate timer. Instrument facts state it (0–63), along with whether gate-off and hard restart happen. Frames are counted with the tempo map (`Subtune::frames`), so tempo changes between notes are respected.
 
 ## 2. Pipeline
 

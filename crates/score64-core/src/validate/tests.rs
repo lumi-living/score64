@@ -108,6 +108,9 @@ fn ctx() -> Context {
     let facts = |filter, pulse_at_start| InstrumentFacts {
         filter,
         pulse_at_start,
+        gate_timer: 2,
+        hard_restart: true,
+        gate_off: true,
     };
     Context {
         profiles: project_profiles(),
@@ -412,6 +415,125 @@ fn severities_split_taste_from_errors() {
     // Mechanics: an overlap is an error.
     lines(&mut s)[0].notes[1].row = 6;
     assert!(has_errors(&validate(&s, &ctx())));
+}
+
+#[test]
+fn rule_9_hard_restart() {
+    // A line of quick notes at 3 frames per row, on instruments whose gate timers the cases set.
+    let quick = |gate_timer: u8, hard_restart, gate_off| InstrumentFacts {
+        filter: false,
+        pulse_at_start: true,
+        gate_timer,
+        hard_restart,
+        gate_off,
+    };
+    let song = |notes: Vec<Note>| {
+        let mut s = theme();
+        s.subtunes[0].frames_per_row = FramesPerRow::new(3).unwrap();
+        s.subtunes[0].voices = vec![line(1, Role::Lead, "quick", notes)];
+        s
+    };
+    let ctx_with = |facts: Vec<(&str, InstrumentFacts)>| {
+        let mut c = ctx();
+        c.instruments
+            .extend(facts.into_iter().map(|(k, v)| (PresetId(k.into()), v)));
+        c
+    };
+    let hr = |s: &Song, c: &Context| -> Vec<(Severity, Option<u32>)> {
+        validate(s, c)
+            .into_iter()
+            .filter(|p| p.rule == Rule::HardRestart)
+            .map(|p| (p.severity, p.row))
+            .collect()
+    };
+    let one_row = || vec![note(0, 1, "C-4"), note(1, 1, "D-4"), note(2, 2, "E-4")];
+
+    // Gate timer 1 at 3 frames per row: two gated frames are left before each gate-off. Legal, probably clipped.
+    let c = ctx_with(vec![("quick", quick(1, true, true))]);
+    assert_eq!(
+        hr(&song(one_row()), &c),
+        [(Severity::Warning, Some(1)), (Severity::Warning, Some(2))]
+    );
+    // Gate timer 0 leaves every frame gated.
+    let c = ctx_with(vec![("quick", quick(0, true, true))]);
+    assert_eq!(hr(&song(one_row()), &c), []);
+    // Without hard restart ($80) the gate still goes off early: the same warnings.
+    let c = ctx_with(vec![("quick", quick(1, false, true))]);
+    assert_eq!(hr(&song(one_row()).clone(), &c).len(), 2);
+    // A legato instrument ($40) does no gate-off before its notes.
+    let c = ctx_with(vec![("quick", quick(1, true, false))]);
+    assert_eq!(hr(&song(one_row()), &c), []);
+
+    // Gate timer not below the tempo: GoatTracker stops playback. Here the cut error follows from it.
+    let c = ctx_with(vec![("quick", quick(3, true, true))]);
+    let p = hr(&song(one_row()), &c);
+    assert!(p.iter().all(|(s, _)| *s == Severity::Error), "{p:?}");
+    assert!(
+        p.contains(&(Severity::Error, Some(0))),
+        "tempo check at the first row: {p:?}"
+    );
+    let msgs: Vec<String> = validate(&song(one_row()), &c)
+        .into_iter()
+        .map(|p| p.message)
+        .collect();
+    assert!(
+        msgs.iter().any(|m| m.contains("stops playback")),
+        "{msgs:?}"
+    );
+    assert!(msgs.iter().any(|m| m.contains("never sounds")), "{msgs:?}");
+
+    // A tempo change mid-note is checked on the row it takes effect.
+    let c = ctx_with(vec![("quick", quick(4, true, true))]);
+    let mut s = song(vec![note(0, 8, "C-4")]);
+    s.subtunes[0].frames_per_row = FramesPerRow::new(6).unwrap();
+    s.subtunes[0].tempo = vec![TempoChange {
+        row: 4,
+        frames_per_row: FramesPerRow::new(4).unwrap(),
+    }];
+    assert_eq!(hr(&s, &c), [(Severity::Error, Some(4))]);
+
+    // Skipped: legato notes, the first note, and a note after silence.
+    let c = ctx_with(vec![("quick", quick(1, true, true))]);
+    let mut tied = one_row();
+    tied[1].attack = Attack::Legato;
+    tied[2].attack = Attack::Legato;
+    assert_eq!(hr(&song(tied), &c), []);
+    assert_eq!(
+        hr(&song(vec![note(0, 1, "C-4"), note(2, 1, "D-4")]), &c),
+        []
+    );
+
+    // After a tie, the gate has been on since the tied run's attack: 2 rows, 6 frames, minus 1 is plenty.
+    let mut run = vec![note(0, 1, "C-4"), note(1, 1, "D-4"), note(2, 1, "E-4")];
+    run[1].attack = Attack::Legato;
+    assert_eq!(hr(&song(run), &c), []);
+
+    // The lead time is the gate timer of the instrument playing before the new note (GoatTracker loads it at each
+    // row from the channel's instrument); whether the gate goes off is the incoming instrument's.
+    let c = ctx_with(vec![
+        ("long", quick(1, true, true)),
+        ("short", quick(0, true, true)),
+    ]);
+    let mut pair = vec![note(0, 1, "C-4"), note(1, 1, "D-4")];
+    pair[0].instrument = Some(PresetId("long".into()));
+    pair[1].instrument = Some(PresetId("short".into()));
+    assert_eq!(hr(&song(pair.clone()), &c), [(Severity::Warning, Some(1))]);
+    pair.swap(0, 1);
+    pair[0].row = 0;
+    pair[1].row = 1;
+    assert_eq!(
+        hr(&song(pair), &c),
+        [],
+        "gate timer 0 before, so nothing is cut"
+    );
+
+    // Out of GoatTracker's range.
+    let c = ctx_with(vec![("quick", quick(64, true, true))]);
+    assert!(
+        validate(&song(one_row()), &c)
+            .iter()
+            .any(|p| p.message.contains("allows 0 to 63"))
+    );
 }
 
 #[test]

@@ -88,6 +88,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - HTML report: synced A/B players, piano roll, metrics [#63](https://github.com/lumi-living/score64/issues/63)
   - Example project with a Makefile [#64](https://github.com/lumi-living/score64/issues/64)
   - CLI reference document [#65](https://github.com/lumi-living/score64/issues/65)
+  - validate command: every problem with its severity, non-zero exit only on errors, --json [#136](https://github.com/lumi-living/score64/issues/136)
 
 ## M2 Studio & sound effects
 
