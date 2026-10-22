@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::provenance::{Confidence, DropReason, Proposal};
 use crate::score::{Attack, Note, Pitch, PresetId};
 
-use super::{Log, Placement, Reduced};
+use super::{Log, Placement, Reduced, Skyline, canonical};
 
 /// The rule name and version [`fold_drums`] records in its decisions.
 pub const FOLD_DRUMS: &str = "fold-drums@1";
@@ -132,7 +132,7 @@ pub struct InterleaveRules {
 pub fn fold_drums(hits: impl IntoIterator<Item = Note>, at: &Placement, kit: &DrumKit) -> Reduced {
     let mut log = Log::new(at, FOLD_DRUMS, "drums");
     let folded = fold(hits, kit, &mut log, |_| true);
-    let mut notes: Vec<Note> = folded.into_iter().map(|(_, n)| n).collect();
+    let mut notes: Vec<Note> = folded.into_iter().map(|(.., n)| n).collect();
     for i in 1..notes.len() {
         let next = notes[i].row;
         let prev = &mut notes[i - 1];
@@ -151,9 +151,10 @@ pub fn fold_drums(hits: impl IntoIterator<Item = Note>, at: &Placement, kit: &Dr
 /// The hits are folded as [`fold_drums`] does, leaving hi-hats out unless `rules.hats` ([`DropReason::Interleave`]).
 /// A hit cuts the line note sounding over it, which does not resume (a [`Proposal::TrimNote`] decision). Where a hit
 /// and a line note start on one row, `rules.on_clash` picks the one that stays and the other is dropped
-/// ([`DropReason::Clash`], at confidence 0.5: either could be right). Drums keep their instruments and last their
+/// ([`DropReason::Clash`], at confidence 0.5: either could be right; a dropped hit is named as transcribed). Drums keep their instruments and last their
 /// sound's rows or until the next note; a line note after a drum hit always starts fresh, a broken tie with a
-/// [`Proposal::Retrigger`] decision. Line notes sharing a row with an earlier line note are dropped as clashes. Ids
+/// [`Proposal::Retrigger`] decision. Of line notes doubling a row, the highest stays and the rest are dropped as
+/// clashes (at 0.5). Ids
 /// are `inter-trim-…`, `inter-tie-…` and `inter-<reason>-…`, as for [`fold_drums`].
 pub fn interleave_drums(
     line: impl IntoIterator<Item = Note>,
@@ -164,26 +165,28 @@ pub fn interleave_drums(
 ) -> Reduced {
     let mut log = Log::new(at, INTERLEAVE_DRUMS, "inter");
     let mut line: Vec<Note> = line.into_iter().collect();
-    line.sort_by_key(|n| n.row);
+    // A total order, so a row the line doubles keeps the same note whatever the input order: the higher.
+    line.sort_by(|a, b| canonical(a, b, Skyline::Highest));
+    let sure = Confidence::new(CLASH_CONFIDENCE).expect("in range");
     // Each row's note, and whether it is a drum hit.
     let mut merged: BTreeMap<u32, (bool, Note)> = BTreeMap::new();
     for n in line {
         match merged.entry(n.row) {
             std::collections::btree_map::Entry::Occupied(_) => {
-                log.drop(&n, DropReason::Clash, Confidence::CERTAIN);
+                log.drop(&n, DropReason::Clash, sure);
             }
             std::collections::btree_map::Entry::Vacant(slot) => {
                 slot.insert((false, n));
             }
         }
     }
-    for (_, hit) in fold(hits, kit, &mut log, |kind| {
+    for (_, raw, hit) in fold(hits, kit, &mut log, |kind| {
         rules.hats || kind != DrumKind::Hat
     }) {
         if merged.contains_key(&hit.row) {
-            let sure = Confidence::new(CLASH_CONFIDENCE).expect("in range");
             if rules.on_clash == OnClash::Line {
-                log.drop(&hit, DropReason::Clash, sure);
+                // Named as it was transcribed, like every other dropped hit.
+                log.drop(&raw, DropReason::Clash, sure);
                 continue;
             }
             let (_, gone) = merged.remove(&hit.row).expect("just looked");
@@ -250,13 +253,14 @@ pub fn interleave_drums(
 }
 
 /// Fold `hits` into one note per row with the kit's sounds, keeping only kinds `keep` allows (the rest dropped as
-/// [`DropReason::Interleave`]); lengths are the sounds' own.
+/// [`DropReason::Interleave`]; a kind the kit has no sound for is [`DropReason::Unmapped`] first); lengths are the
+/// sounds' own. Each kept hit comes with its kind and the hit as transcribed.
 fn fold(
     hits: impl IntoIterator<Item = Note>,
     kit: &DrumKit,
     log: &mut Log,
     keep: impl Fn(DrumKind) -> bool,
-) -> Vec<(DrumKind, Note)> {
+) -> Vec<(DrumKind, Note, Note)> {
     let kind = |n: &Note| DrumKind::from_midi(n.pitch.midi());
     let mut hits: Vec<Note> = hits.into_iter().collect();
     // Canonical order: row, priority, confidence, then everything else, so no two different hits tie.
@@ -272,7 +276,7 @@ fn fold(
             .then_with(|| a.instrument.cmp(&b.instrument))
             .then_with(|| (a.attack == Attack::Legato).cmp(&(b.attack == Attack::Legato)))
     });
-    let mut out: Vec<(DrumKind, Note)> = Vec::with_capacity(hits.len());
+    let mut out: Vec<(DrumKind, Note, Note)> = Vec::with_capacity(hits.len());
     for hit in hits {
         let k = kind(&hit);
         let Some(sound) = kit.sound(k) else {
@@ -283,7 +287,7 @@ fn fold(
             log.drop(&hit, DropReason::Interleave, Confidence::CERTAIN);
             continue;
         }
-        if let Some((winner, w)) = out.last().filter(|(_, n)| n.row == hit.row) {
+        if let Some((winner, w, _)) = out.last().filter(|(_, raw, _)| raw.row == hit.row) {
             // Across kinds the priority decides; within one, the confidence did.
             let sure = if *winner == k {
                 (w.confidence.get() - hit.confidence.get()).clamp(0.0, 1.0)
@@ -299,6 +303,7 @@ fn fold(
         }
         out.push((
             k,
+            hit.clone(),
             Note {
                 row: hit.row,
                 length: sound.rows,

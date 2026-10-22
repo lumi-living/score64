@@ -385,7 +385,7 @@ fn clashes_with_the_line_are_coin_tosses_and_doubled_rows_go() {
     let confidences: Vec<f32> = r.decisions.iter().map(|d| d.confidence.get()).collect();
     assert_eq!(
         confidences,
-        [1.0, 0.5],
+        [0.5, 0.5],
         "the doubled line row, then the clash"
     );
 }
@@ -436,7 +436,9 @@ fn checked(notes: Vec<Note>, role: Role) -> (Song, Context) {
 
 /// Drum soups: General MIDI drum notes 35–59 on any rows, some repeated.
 fn drum_soup() -> impl Strategy<Value = Vec<Note>> {
-    proptest::collection::vec((0u32..256, 35u8..60, 0.0f32..=1.0), 0..48).prop_map(|hits| {
+    // Confidences from a few values, so hits often tie on them and the later tie-breaks are exercised.
+    let confidence = prop_oneof![Just(0.3f32), Just(0.6), Just(0.9), 0.0f32..=1.0];
+    proptest::collection::vec((0u32..256, 35u8..60, confidence), 0..48).prop_map(|hits| {
         hits.into_iter()
             .map(|(row, gm, c)| {
                 let mut h = hit(row, gm);
@@ -469,6 +471,23 @@ proptest! {
             flipped.reverse();
         }
         prop_assert_eq!(fold_drums(flipped, &at(&n), &kit()), r);
+    }
+
+    /// Interleaving gives the same result whatever order the line and the hits come in.
+    #[test]
+    fn interleaving_does_not_depend_on_input_order(
+        soup in drum_soup(),
+        line in strategies::note_soup(),
+        hats in any::<bool>(),
+        line_wins in any::<bool>(),
+    ) {
+        let n = name();
+        let rules = InterleaveRules { hats, on_clash: if line_wins { OnClash::Line } else { OnClash::Drum } };
+        let forward = interleave_drums(line.clone(), soup.clone(), &at(&n), &kit(), &rules);
+        let (mut line, mut soup) = (line, soup);
+        line.reverse();
+        soup.reverse();
+        prop_assert_eq!(interleave_drums(line, soup, &at(&n), &kit(), &rules), forward);
     }
 
     /// Interleaving any folded drums with any clean line gives a valid line; every line note is kept (trimmed by a

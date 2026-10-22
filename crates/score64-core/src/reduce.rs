@@ -2,8 +2,9 @@
 //! recorded as a [`Decision`] (provenance `rules`).
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
-//! skyline), overlaps trimmed, ties that lost their note restarted. [`fold_drums`] and [`interleave_drums`] (#43)
-//! put drum hits on a voice of their own or into another line.
+//! skyline), overlaps trimmed, ties that lost their note restarted. [`choose_lead`] (#39) picks the part that
+//! carries the melody, bar by bar. [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of
+//! their own or into another line.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +15,10 @@ use serde::{Deserialize, Serialize};
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
+mod lead;
+pub use lead::{
+    Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
+};
 mod drums;
 pub use drums::{
     DrumKind, DrumKit, DrumSound, FOLD_DRUMS, INTERLEAVE_DRUMS, InterleaveRules, OnClash,
