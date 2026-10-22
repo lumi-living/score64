@@ -134,12 +134,29 @@ A song may hold other subtunes before or after a set, such as a title tune.
 An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
 ### 3.2 Reduction
-Lead selection by salience (pitch, density, overrides) → monophonise (skyline) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → minimum note length and ghost-note removal → loop search on downbeats → timing marks at the switch points each adaptive set declares (every bar by default).
+Lead selection by salience (pitch, density, overrides) → monophonise (ghost-note removal, minimum note length, skyline, overlaps) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → loop search on downbeats → timing marks at the switch points each adaptive set declares (every bar by default).
+
+`score64_core::reduce` holds the rules. Each is a pure function from notes to notes plus the `Decision`s it made (provenance `Rules`, with the rule's name and version).
+
+**Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
+1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
+2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
+3. It resolves overlaps. A note that starts less than `min_rows` after or before a more confident one is dropped; the most confident notes are placed first. Then a note that runs into the next is trimmed to end where the next starts. This covers ends that round past the next start (#138). Every drop is caused by a note that stays, so drops never cascade, and a note that trimming can keep is kept.
+4. It restarts (`Fresh`) a tie whose predecessor no longer ends on its row.
+
+Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, 0.5 for a skyline pick, and for an overlap drop the confidence gap to the note that stays. Any order of the same notes gives the same line and the same decisions.
+
+Decision ids name what they're about, so they stay the same when notes elsewhere change:
+- `mono-trim-v<voice>-r<row>` for a trim;
+- `mono-tie-v<voice>-r<row>` for a restarted tie;
+- `mono-<reason>-v<voice>-r<row>-p<semitone>` for a drop, with `-2`, `-3` for further drops of one kind at one place. Those suffixes follow the drops' order, so another such drop can renumber them.
+
+They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
 Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
@@ -204,7 +221,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Layer | What |
 |---|---|
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
-| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Once the reduction exists, any note soup must reduce to lines with no errors (E6, #40) |
+| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Any note soup monophonises to a line with no errors, every note kept or dropped by a decision, whatever the input order (#40) |
 | Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
 | Differential | Ports against originals: `.sng` writer vs pygoattracker; Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |
