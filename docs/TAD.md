@@ -209,17 +209,18 @@ Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, 
 
 Manual decisions override LLM suggestions, which override rules. `score64_core::decide::resolve` (#45) applies that wherever decisions meet.
 - **Slots.** Two decisions compete when they are about the same thing, their `Slot`:
-  - a voice's role, a voice's octave, or the tempo, in a bar;
-  - the lead's source from a bar;
+  - a voice's role, the lead's source, or the tempo, from a bar on;
+  - a voice's octave in a bar;
   - the chord from a row;
   - the subtune's loop row;
-  - a note's trim, its drop, or its fresh start, by voice, row and pitch. These are three separate slots, since one note can have all three.
+  - a note's trim, its drop, or its fresh start, by voice, row and pitch. A drop also uses the note's length, which tells two repeats on one row apart. These are three separate slots, since one note can have all three.
 - **Ranks.** In each slot the strongest wins:
   1. a person's decision, or a model's that a person has accepted (`reviewed`);
   2. a model's, not yet reviewed;
   3. the rules'.
 
-  Within a rank, the lower id wins, so input order never matters.
+  Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
+- **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
 - **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
 
  A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
