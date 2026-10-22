@@ -25,7 +25,8 @@ fn folds(ranges: &RoleRanges, role: Role) -> bool {
 /// note playable, the rule picks the one that leaves the fewest notes outside the range of the role at their row. On
 /// a tie it moves nothing if that is as good, so a bar moves only when moving brings notes into range; otherwise it
 /// keeps the previous bar's shift (so the line does not jump an octave between bars), as long as the bars are next to
-/// each other and in the same role; then it takes the smallest shift. Notes that still don't fit stay out of range,
+/// each other and in the same role (a bar's role is that of its first folded note); then it takes the smallest shift,
+/// and of two equal ones the downward. Notes that still don't fit stay out of range,
 /// and the validator warns about them (rule 6). Notes whose role may use the whole range never move, and do not
 /// count.
 ///

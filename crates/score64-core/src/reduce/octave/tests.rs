@@ -118,12 +118,13 @@ fn each_bar_gets_its_own_shift_and_keeps_its_shape() {
 fn a_bar_moves_only_to_bring_notes_in_and_then_follows_the_bar_before() {
     let n = name();
     // Bar 0 (C-7, G#7) only fits two octaves down. Bar 1's C-7 fits one, two or three octaves down: it follows bar 0
-    // (two), keeping the line's shape across the bar line. Bar 2's E-4 already fits, so it stays, though bar 1 moved.
+    // (two), keeping the line's shape across the bar line. Bar 2's E-5 already fits, and would still fit two octaves
+    // down: it stays, because a bar moves only to bring notes in, not to follow the bar before.
     let line = vec![
         note(0, "C-7"),
         note(4, "G#7"),
         note(16, "C-7"),
-        note(32, "E-4"),
+        note(32, "E-5"),
     ];
     let r = fold_octaves(
         line,
@@ -131,7 +132,7 @@ fn a_bar_moves_only_to_bring_notes_in_and_then_follows_the_bar_before() {
         &Roles::constant(Role::Lead),
         &RoleRanges::default(),
     );
-    assert_eq!(pitches(&r), ["C-5", "G#5", "C-5", "E-4"]);
+    assert_eq!(pitches(&r), ["C-5", "G#5", "C-5", "E-5"]);
     assert_eq!(shifts(&r), [(0, -2), (1, -2)]);
     assert!(
         r.decisions
@@ -212,6 +213,57 @@ fn shifts_never_leave_goattrackers_range() {
     );
     assert_eq!(pitches(&r), ["G#2"]);
     assert!(r.notes.iter().all(|n| n.pitch <= Pitch::MAX));
+}
+
+#[test]
+fn continuity_holds_only_within_one_role() {
+    // Bar 0 is a lead that must come down two octaves. Bar 1 is a harmony part (C-2 to C-5) whose C-7 fits two or
+    // three octaves down; a new role does not follow the lead's shift, so it takes the smallest that fits.
+    let n = name();
+    let roles = Roles::new(vec![
+        RoleSpan {
+            row: 0,
+            role: Role::Lead,
+        },
+        RoleSpan {
+            row: 16,
+            role: Role::Harmony,
+        },
+    ])
+    .unwrap();
+    let line = vec![note(0, "C-7"), note(4, "G#7"), note(16, "C-7")];
+    let r = fold_octaves(line, &at(&n), &roles, &RoleRanges::default());
+    assert_eq!(shifts(&r), [(0, -2), (1, -2)]);
+    let same = fold_octaves(
+        vec![note(0, "C-7"), note(4, "G#7"), note(16, "C-6")],
+        &at(&n),
+        &roles,
+        &RoleRanges::default(),
+    );
+    // C-6 in harmony fits one or two octaves down (C-5, C-4): the smallest, one, not the lead's two.
+    assert_eq!(shifts(&same), [(0, -2), (1, -1)]);
+}
+
+#[test]
+fn of_two_equal_shifts_the_downward_one_is_taken() {
+    // C-2 and C-6 around a C-3 to C-5 range: up an octave fits C-3 only, down an octave fits C-5 only. A tie: the
+    // rule takes the lower shift.
+    let n = name();
+    let ranges = RoleRanges {
+        lead: crate::validate::PitchRange {
+            low: "C-3".parse().unwrap(),
+            high: "C-5".parse().unwrap(),
+        },
+        ..RoleRanges::default()
+    };
+    let r = fold_octaves(
+        vec![note(0, "C-2"), note(4, "C-6")],
+        &at(&n),
+        &Roles::constant(Role::Lead),
+        &ranges,
+    );
+    assert_eq!(shifts(&r), [(0, -1)]);
+    assert_eq!(pitches(&r), ["C-1", "C-5"]);
 }
 
 #[test]
