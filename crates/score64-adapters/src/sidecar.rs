@@ -295,9 +295,10 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
 /// Python it starts, so killing only `uv` would leave a hung script running (#126).
 ///
 /// Dropping it kills whatever is left of the tree and reaps `uv` (timeout, panic, the runner going away, and after a
-/// normal exit too, so a descendant can't outlive the run or hold the stderr pipe open). If Score64 itself is killed,
-/// nothing runs and the tree survives, as with any process group; and because the group is not the terminal's,
-/// Ctrl-C reaches Score64 but not the sidecar.
+/// normal exit too, so a descendant can't outlive the run or hold the stderr pipe open). Gaps (#154): if Score64
+/// itself is killed, or stopped with Ctrl-C (the group is not the terminal's, so Ctrl-C reaches Score64 but not the
+/// sidecar), nothing runs and the tree survives; and on Unix a descendant that starts a session or group of its own
+/// (`setsid`) leaves the group.
 struct Tree(Box<dyn ChildWrapper>);
 
 impl Tree {
@@ -315,8 +316,12 @@ impl Drop for Tree {
     fn drop(&mut self) {
         // Errors only mean there is nothing left to kill or reap.
         let _ = self.0.start_kill();
-        // Reap `uv` alone: on Windows process-wrap's own `wait` then blocks for a job notification, which an earlier
+        // Unix: process-wrap's `wait` reaps `uv`, or returns the status its `try_wait` already reaped and kept.
+        #[cfg(unix)]
+        let _ = self.0.wait();
+        // Windows: reap `uv` alone. process-wrap's own `wait` then blocks for a job notification, which an earlier
         // `try_wait` may already have taken, so it could wait forever after a normal exit.
+        #[cfg(windows)]
         let _ = self.0.inner_mut().wait();
     }
 }
@@ -505,12 +510,13 @@ mod tests {
                 std::fs::write(&part, grandchild.id().to_string()).unwrap();
                 std::fs::rename(&part, &pidfile).unwrap();
                 if role == "parent" {
-                    std::thread::sleep(Duration::from_secs(60));
+                    std::thread::sleep(Duration::from_secs(600));
                 }
                 true
             }
             Ok("grandchild") => {
-                std::thread::sleep(Duration::from_secs(60));
+                // Far longer than any test's deadline, so only a kill ends it in time.
+                std::thread::sleep(Duration::from_secs(600));
                 true
             }
             _ => false,
@@ -567,7 +573,14 @@ mod tests {
         if play_role(TEST) {
             return;
         }
+        let started = Instant::now();
         let result = run_tree(TEST, "orphaning-parent", Duration::from_secs(60));
         assert!(result.is_ok(), "{result:?}");
+        // Ended by the kill when the parent exited, not by waiting out the grandchild or the timeout.
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "{:?}",
+            started.elapsed()
+        );
     }
 }
