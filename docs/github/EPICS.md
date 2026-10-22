@@ -20,24 +20,25 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
   - ✓ CI: fmt, clippy, test matrix and licence-boundary job [#3](https://github.com/lumi-living/score64/issues/3)
   - ✓ Community files, issue templates, Dependabot [#4](https://github.com/lumi-living/score64/issues/4)
   - ✓ Branch protection on main with the CI contexts [#5](https://github.com/lumi-living/score64/issues/5)
-  - score64-app boots an empty eframe window (light/dark, Material Symbols) [#6](https://github.com/lumi-living/score64/issues/6)
-  - Command engine skeleton shared by CLI, MCP and app (ADR-005) [#7](https://github.com/lumi-living/score64/issues/7)
-  - score64-emu helper skeleton and versioned stdin/stdout protocol [#8](https://github.com/lumi-living/score64/issues/8)
+  - ✓ score64-app boots an empty eframe window (light/dark, Material Symbols) [#6](https://github.com/lumi-living/score64/issues/6)
+  - ✓ Command engine skeleton shared by CLI, MCP and app (ADR-005) [#7](https://github.com/lumi-living/score64/issues/7)
+  - ✓ score64-emu helper skeleton and versioned stdin/stdout protocol [#8](https://github.com/lumi-living/score64/issues/8)
   - Release tooling: cargo-dist configuration [#9](https://github.com/lumi-living/score64/issues/9)
+  - Supply-chain checks with cargo-deny: licences, advisories, bans [#148](https://github.com/lumi-living/score64/issues/148)
 - **E2 Score model & validator** ([#10](https://github.com/lumi-living/score64/issues/10)) — The tracker-grid score model (ADR-006), voice profiles, tempo grid and the validator for TAD §1.3, with property tests.
-  - Score model types: Note, VoiceLine, Role, Subtune, Song, Decision [#11](https://github.com/lumi-living/score64/issues/11)
-  - Voice profiles as data: built-in and project-defined, per subtune [#12](https://github.com/lumi-living/score64/issues/12)
-  - Validator for TAD §1.3 rules with per-bar, per-voice errors [#13](https://github.com/lumi-living/score64/issues/13)
-  - Property tests: any reduced song validates [#14](https://github.com/lumi-living/score64/issues/14)
-  - Tempo grid: frames-per-row, BPM snapping with error report [#15](https://github.com/lumi-living/score64/issues/15)
-  - Hard-restart lead-time check [#16](https://github.com/lumi-living/score64/issues/16)
+  - ✓ Score model types: Note, VoiceLine, Role, Subtune, Song, Decision [#11](https://github.com/lumi-living/score64/issues/11)
+  - ✓ Voice profiles as data: built-in and project-defined, per subtune [#12](https://github.com/lumi-living/score64/issues/12)
+  - ✓ Validator for TAD §1.3 rules with per-bar, per-voice errors [#13](https://github.com/lumi-living/score64/issues/13)
+  - ✓ Property tests: any reduced song validates [#14](https://github.com/lumi-living/score64/issues/14)
+  - ✓ Tempo grid: frames-per-row, BPM snapping with error report [#15](https://github.com/lumi-living/score64/issues/15)
+  - ✓ Hard-restart lead-time check [#16](https://github.com/lumi-living/score64/issues/16)
 - **E3 Fixtures & de-risking spike** ([#17](https://github.com/lumi-living/score64/issues/17)) — Rights-clear fixtures, golden-test harness, sidecar bootstrap, and a time-boxed spike on the two Rust-specific risks: running packed players in a 6502 core with SID emulation, and Basic Pitch through ONNX.
-  - Rights-clear audio and MIDI fixtures [#18](https://github.com/lumi-living/score64/issues/18)
+  - ✓ Rights-clear audio and MIDI fixtures [#18](https://github.com/lumi-living/score64/issues/18)
   - ✓ Spike: choose a 6502 core for score64-emu [#19](https://github.com/lumi-living/score64/issues/19)
   - ✓ Spike: run a gt2reloc-packed tune in 6502 core + resid-rs and compare with sidplayfp [#20](https://github.com/lumi-living/score64/issues/20)
   - ✓ Spike: Basic Pitch ONNX via ort vs the Python package [#21](https://github.com/lumi-living/score64/issues/21)
-  - Golden-test harness for .sng and effect bytes (insta) [#22](https://github.com/lumi-living/score64/issues/22)
-  - Python sidecar bootstrap (uv) with the manifest contract [#23](https://github.com/lumi-living/score64/issues/23)
+  - ✓ Golden-test harness for .sng and effect bytes (insta) [#22](https://github.com/lumi-living/score64/issues/22)
+  - ✓ Python sidecar bootstrap (uv) with the manifest contract [#23](https://github.com/lumi-living/score64/issues/23)
 
 ## M1 Pipeline MVP
 
@@ -57,6 +58,8 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - Beat This! beat and downbeat grid (ONNX) [#35](https://github.com/lumi-living/score64/issues/35)
   - Quantise notes to rows on the snapped tempo grid [#36](https://github.com/lumi-living/score64/issues/36)
   - Optional separation adapters (provider stems, ONNX models) [#37](https://github.com/lumi-living/score64/issues/37)
+  - Sidecar runner: kill the whole process tree on timeout, not just uv [#126](https://github.com/lumi-living/score64/issues/126)
+  - Target video standard: PAL by default, NTSC as an option, in snap_tempo and project settings [#139](https://github.com/lumi-living/score64/issues/139)
 - **E6 Reduction to SID voices** ([#38](https://github.com/lumi-living/score64/issues/38)) — Rules that turn transcribed parts into a valid song for a profile, with every judgement call recorded as a decision.
   - Lead selection by salience, with override [#39](https://github.com/lumi-living/score64/issues/39)
   - Monophonise, minimum note length, ghost-note removal [#40](https://github.com/lumi-living/score64/issues/40)
@@ -74,7 +77,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - Timing marks on every bar (alternating values) [#52](https://github.com/lumi-living/score64/issues/52)
   - docs: player.md - after a sound effect the voice stays silent until the music's next note [#119](https://github.com/lumi-living/score64/issues/119)
 - **E8 Render & score** ([#53](https://github.com/lumi-living/score64/issues/53)) — Render packed players on both chip models through the helper and score fidelity.
-  - Default SID engine: reSIDfp (libresidfp) via FFI behind a SidEngine trait (ADR-011) [#116](https://github.com/lumi-living/score64/issues/116)
+  - ✓ Default SID engine: reSIDfp (libresidfp) via FFI behind a SidEngine trait (ADR-011) [#116](https://github.com/lumi-living/score64/issues/116)
   - Helper renders packed players to PCM on 6581 and 8580 [#54](https://github.com/lumi-living/score64/issues/54)
   - Register log output [#55](https://github.com/lumi-living/score64/issues/55)
   - Features: mel, chroma, onsets with differential tests [#56](https://github.com/lumi-living/score64/issues/56)
@@ -101,6 +104,8 @@ Score64 Studio (library, listen, map, pipeline, history, approvals), LLM decider
   - Listen view: waveform, piano roll, tracker view, spectrogram [#70](https://github.com/lumi-living/score64/issues/70)
   - Pipeline view with job runner and progress (egui-snarl) [#71](https://github.com/lumi-living/score64/issues/71)
   - Command palette and score64:// deep links [#72](https://github.com/lumi-living/score64/issues/72)
+  - App hosts the command engine on a worker thread (ADR-012) [#146](https://github.com/lumi-living/score64/issues/146)
+  - Keep the family theme in step with Convert64 (xtask check) [#147](https://github.com/lumi-living/score64/issues/147)
 - **E11 Voice map & decisions** ([#73](https://github.com/lumi-living/score64/issues/73)) — Make every arrangement decision visible and overridable; optional LLM suggestions (ADR-008).
   - Voice map view [#74](https://github.com/lumi-living/score64/issues/74)
   - Decision panel: provenance, confidence, override → stale → re-run [#75](https://github.com/lumi-living/score64/issues/75)
@@ -128,7 +133,7 @@ Score64 Studio (library, listen, map, pipeline, history, approvals), LLM decider
 Adaptive sets and live audition, VICE harness, C64 Ultimate, DAWproject, release 0.1.
 
 - **E15 Adaptive sets & audition** ([#94](https://github.com/lumi-living/score64/issues/94)) — Layered adaptive sets and live audition over the real packed set.
-  - Adaptive set from one source: layers declared by the project, built up from one arrangement [#95](https://github.com/lumi-living/score64/issues/95)
+  - Adaptive set from one source: project-declared layers built from one arrangement [#95](https://github.com/lumi-living/score64/issues/95)
   - Audition driver (KickAssembler) with a request mailbox [#96](https://github.com/lumi-living/score64/issues/96)
   - Live audition in Studio via the helper [#97](https://github.com/lumi-living/score64/issues/97)
   - Scenario record → reference render [#98](https://github.com/lumi-living/score64/issues/98)
@@ -146,3 +151,4 @@ Adaptive sets and live audition, VICE harness, C64 Ultimate, DAWproject, release
   - README screenshots and documentation pass [#110](https://github.com/lumi-living/score64/issues/110)
   - Name clearance check before announcing [#111](https://github.com/lumi-living/score64/issues/111)
   - CSDb announcement draft [#112](https://github.com/lumi-living/score64/issues/112)
+  - Ship third-party licence notices with release binaries (Apache-2.0 icon font, OFL fonts, crates) [#143](https://github.com/lumi-living/score64/issues/143)
