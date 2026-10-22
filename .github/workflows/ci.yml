@@ -39,6 +39,10 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: cargo test
         run: cargo test --workspace
+      - name: score64-core with optional features (schema, proptest)
+        run: |
+          cargo clippy -p score64-core --all-targets --all-features -- -D warnings
+          cargo test -p score64-core --all-features
 
   # The optional Python sidecar (ADR-009): differential tests against the original Python packages. Ubuntu only; the
   # other jobs run the same tests and print SKIPPED, because SCORE64_SIDECAR is not set there.

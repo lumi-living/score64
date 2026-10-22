@@ -3,3 +3,28 @@
 //!
 //! This crate must stay free of `std::fs`, network access, threads-by-default and platform code.
 //! Everything that talks to the outside world lives in `score64-adapters`.
+//!
+//! The model serialises deterministically, so files diff cleanly in git (ADR-004): fields in declaration order,
+//! lists instead of maps, absent optional fields left out. Unknown fields are errors, so a typo in a file is caught
+//! instead of silently dropped.
+//!
+//! Features: `schema` derives JSON Schemas (for engine commands whose arguments embed model types); `proptest`
+//! exposes [`strategies`] for property tests.
+
+pub mod provenance;
+#[cfg(feature = "schema")]
+mod schema;
+pub mod score;
+#[cfg(any(test, feature = "proptest"))]
+pub mod strategies;
+
+pub use provenance::{
+    Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
+};
+pub use score::{
+    ArpEvent, Attack, Note, Pitch, PresetId, Profile, Role, SCHEMA_VERSION, Schema, Song, Subtune,
+    TempoChange, Voice, VoiceLine,
+};
+
+#[cfg(test)]
+mod tests;
