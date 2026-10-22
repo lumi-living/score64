@@ -268,3 +268,35 @@ fn whole_song_problems_have_no_location_and_schemas_are_checked() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn by_name_the_outcome_says_failed() {
+    let dir = scratch("outcome");
+    let bad = write_song(&dir, "bad.json", &song("A-1"));
+    let mut engine = Engine::new(EngineConfig::default());
+    let out = engine
+        .run_json("validate", serde_json::json!({ "song": bad }))
+        .unwrap();
+    assert!(out.failed, "errors without instrument facts");
+    let ctx = dir.join("context.toml");
+    std::fs::write(&ctx, CONTEXT).unwrap();
+    let out = engine
+        .run_json(
+            "validate",
+            serde_json::json!({ "song": bad, "context": ctx }),
+        )
+        .unwrap();
+    assert!(!out.failed);
+    // A profile defined twice in one context file is refused.
+    let twice = dir.join("twice.toml");
+    let p = "[[profile]]\nname = \"duo\"\nv1 = { usage = \"music\" }\nv2 = { usage = \"effects\" }\nv3 = { usage = \"effects\" }\n";
+    std::fs::write(&twice, format!("{p}{p}")).unwrap();
+    let e = engine
+        .run_json(
+            "validate",
+            serde_json::json!({ "song": bad, "context": twice }),
+        )
+        .unwrap_err();
+    assert!(e.message.contains("defined twice"), "{}", e.message);
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -198,11 +198,13 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 ### 5.2 The command engine
 `score64-engine` holds every user-visible action as a `Command` (ADR-005, ADR-012). A command has a stable snake_case name, a one-line summary, an effect (`read_only`, `writes_project` or `destructive`: MCP tool hints, and which changes get provenance and undo), `serde` arguments and output with JSON Schemas from `schemars`, and a `run` against the `Engine`. `REGISTRY` lists them, and `CommandError` carries a stable `kind` (`unknown_command`, `invalid_args`, `invalid_input`, `helper_missing`, `helper_failed`, `helper_timeout`, `helper_refused`, `internal`) and a message.
 
-- **Front-ends:** the CLI has typed subcommands for common commands and `score64 run <name> '<json>'` for any of them; `score64 commands --json` prints every name with both schemas. The MCP server (E14) will list the registry as tools. The app calls commands by type. CLI tests run every registry command through `score64 run`, so a command cannot exist in one front-end only. CLI exit codes:
-
-- 0 on success;
-- 1 when a command ran but its output is a failure. The command decides, through `Command::fails` (`validate` with errors), so the typed subcommand, `score64 run` and later the MCP server's error flag all agree;
-- 2 when a command failed (its JSON error goes to stderr) or the command line is wrong (clap's usage message, plain text).
+- **Front-ends:** the CLI has typed subcommands for common commands and `score64 run <name> '<json>'` for any of them; `score64 commands --json` prints every name with both schemas. The MCP server (E14) will list the registry as tools. The app calls commands by type. CLI tests run every registry command through `score64 run`, so a command cannot exist in one front-end only.
+- **CLI exit codes (ADR-013, Proposed):**
+  - 0 on success;
+  - 1 when a command ran but its output is a failure. The command decides, through `Command::fails` (`validate` with errors), so the typed subcommand, `score64 run` and later the MCP server's error flag all agree;
+  - 2 when a command failed (its JSON error goes to stderr) or the command line is wrong (clap's usage message, plain text).
+- **Numbering:** text output numbers bars 1-based and rules by their §1.3 number (`bar 1`, `rule 4`). JSON keeps the data as it is: `"bar": 0` and `"rule": "filter_and_expendable"`.
+- **Paths:** file arguments resolve against the process's working directory; a project root arrives with E4.
 - **Threading:** one command at a time (`run` takes `&mut Engine`). The engine is `Send`, which a compile-time assertion checks. The app owns it on a background thread behind a channel and never calls it on the UI thread. Long-running jobs with progress and cancellation (live audition, batch renders) are designed in #132 before the M1 render work.
 - **The helper belongs to the engine.** Commands hand it jobs and never hold the raw client. It starts on the first job, and runs on a worker thread. Each job, and the handshake, waits under a timeout (30 s by default; long renders pass their own); on timeout the engine kills the process. After a timeout, a `Malformed` reply, a broken pipe or a crash, the next job starts a fresh helper; a helper that refuses a request keeps running. The engine counts starts, so a command holding helper state (an audition session) knows when to load and init again.
 

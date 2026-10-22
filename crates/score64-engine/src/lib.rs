@@ -243,7 +243,8 @@ impl Engine {
         }
     }
 
-    /// Run a command by type.
+    /// Run a command by type. The caller checks `C::fails(&output)` to know whether a successful run is a failure
+    /// (ADR-013); [`Self::run_json`] reports it in its [`Outcome`].
     pub fn run<C: Command>(&mut self, args: C::Args) -> Result<C::Output, CommandError> {
         C::run(self, args)
     }

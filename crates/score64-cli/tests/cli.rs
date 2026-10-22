@@ -192,6 +192,8 @@ mod validate {
         let o = score64(&["validate", &s]);
         assert_eq!(o.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&o.stdout).contains("error, rule 4"));
+        // --json does not change the exit code.
+        assert_eq!(score64(&["validate", &s, "--json"]).status.code(), Some(1));
         // By name the command decides too: errors exit 1 through `score64 run` as well.
         let o = score64(&["run", "validate", &json!({ "song": s }).to_string()]);
         assert_eq!(o.status.code(), Some(1), "run validate with errors");

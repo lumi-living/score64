@@ -16,3 +16,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [010](ADR-010-6502-core.md) | `emulator_6502` as the 6502 core of score64-emu, behind a CPU trait | Accepted |
 | [011](ADR-011-residfp-sid-engine.md) | reSIDfp (libresidfp) via FFI as the default SID engine | Accepted |
 | [012](ADR-012-command-engine-crate.md) | The command engine is its own crate and owns the emulator helper | Accepted |
+| [013](ADR-013-command-outcomes-and-exit-codes.md) | Commands decide failure; CLI exit codes; a provisional validation context file | Proposed |
