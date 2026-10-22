@@ -138,6 +138,18 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 
 `score64_core::reduce` holds the rules. Each is a pure function from notes to notes plus the `Decision`s it made (provenance `Rules`, with the rule's name and version).
 
+**Choose the lead** (`reduce::choose_lead`, rule `choose-lead@1`, #39) decides which transcribed part (a `QuantisedPart`) carries the melody in each bar.
+- **Salience.** Every part gets a score per bar: a weighted mean (`LeadRules`) of four scores:
+  - **pitch:** C-3 to C-7;
+  - **density:** best at about one note a beat;
+  - **continuity:** a single line moving in steps, not repeating one pitch or leaping;
+  - **confidence.**
+
+  These are kept for review.
+- **Choosing.** A bar's best part becomes the lead only once it stays best for `min_run` bars, so one busy bar doesn't flip it. A silent bar keeps the lead.
+- **Overrides.** `LeadSource` decisions by a person or a model hold from their bar until the next. A person's wins over a model's on the same bar. Overrides naming a part that isn't there are reported.
+- **Decisions.** Each rules choice is a `LeadSource` decision (`lead-b<bar>`). Its confidence is the lead's salience margin over the next-best part.
+
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
 2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
