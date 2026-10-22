@@ -94,3 +94,10 @@ When it is, each entry here names the project, the commit or version, the files 
 | pygoattracker | Differential-test oracle for the `.sng` writer (test-only, via the sidecar) | Apache-2.0 | `sidecar/` (not linked) |
 | Basic Pitch model (`nmp.onnx`) | Local transcription | Apache-2.0 | Downloaded at first use, not committed |
 | gt2reloc (GoatTracker 2) | Packing; called as an external program | GoatTracker licence | Not vendored |
+
+## Inter and JetBrains Mono (fonts)
+
+- **What:** `crates/score64-app/assets/fonts/`: Inter 4.1 Regular and Medium, and JetBrains Mono 2.304 Regular, unmodified static TTFs. They are bundled into Score64 Studio, the same files as Convert64's. Sources and SHA-256 hashes are in that directory's `README.md`.
+- **Sources:** <https://github.com/rsms/inter>, <https://github.com/JetBrains/JetBrainsMono>
+- **Licence:** SIL Open Font License 1.1. The full texts are in `OFL-Inter.txt` and `OFL-JetBrainsMono.txt` next to the fonts.
+
