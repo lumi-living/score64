@@ -26,6 +26,8 @@ Expert users in long sessions. The jobs:
 5. **Hardware truth is always on screen**: budgets, chip warnings and validator results next to the thing they judge.
 6. **Every view is linkable** (`score64://asset/<id>/history?a=v7&b=v9&bar=33`).
 
+Window and view preferences (the theme, which section is on screen, panel sizes) are app-local chrome, kept by the app between runs. They are not engine commands. Everything that acts on a project is a command (ADR-005).
+
 ## 3. Information architecture
 
 ```

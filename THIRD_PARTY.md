@@ -82,7 +82,7 @@ https://zenodo.org/record/5578807#.YnRm5vPMKDU
 - **Source:** <https://github.com/libsidplayfp/libresidfp>
 - **Licence:** GPL-2.0-or-later; full text in `crates/residfp-sys/vendor/libresidfp/COPYING`. Copyright (c) 2000–2011 Dag Lem, (c) 2007–2010 Antti Lankila, (c) 2010–2026 Leandro Nini. `residfp-sys` carries the same licence, and only the GPL-3.0-or-later `score64-emu` may depend on it (ADR-002; CI job `licence-boundary`).
 
-No other third-party source code or data is vendored yet. Crate dependencies (for example `emulator_6502` and `resid-rs` in `score64-emu`, `ort` in `score64-adapters`) are pulled by Cargo, not copied.
+Apart from the entries in this file, no third-party source code or data is vendored. Crate dependencies (for example `emulator_6502` and `resid-rs` in `score64-emu`, `ort` in `score64-adapters`) are pulled by Cargo, not copied.
 
 When it is, each entry here names the project, the commit or version, the files ported or included, and the licence text. Planned items and their licences, for reference:
 
