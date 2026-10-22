@@ -3130,6 +3130,7 @@ name = "score64-formats"
 version = "0.0.0"
 dependencies = [
  "insta",
+ "proptest",
 ]
 
 [[package]]
