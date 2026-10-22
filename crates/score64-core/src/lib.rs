@@ -21,7 +21,7 @@ pub mod score;
 pub mod strategies;
 pub mod validate;
 
-pub use adaptive::{AdaptiveSet, LayerProblem};
+pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,

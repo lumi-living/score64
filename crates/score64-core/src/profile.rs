@@ -59,15 +59,17 @@ pub enum VoiceUse {
     /// Music.
     Music,
     /// Music that sound effects may interrupt. After an effect the voice stays silent until the music's next new
-    /// note (`docs/reference/player.md`), so it should carry short, frequent notes; its notes start with an explicit
-    /// pulse width and it never uses the filter (rule 4).
+    /// note (`docs/reference/player.md`), so short, frequent notes suit it best (the validator warns about long ones,
+    /// and about lead or bass there). Its notes start with an explicit pulse width and it never uses the filter
+    /// (rule 4).
     Expendable,
     /// Sound effects only; no music.
     Effects,
 }
 
 /// What a profile allows on one voice. Read from files through checks: an effects-only voice has no roles and no
-/// filter; an expendable voice names its roles, which may not be lead or bass, and has no filter.
+/// filter, and an expendable voice has no filter. Roles are a list of what the voice's music may play; empty means
+/// any. (Lead or bass on an expendable voice is allowed; the validator warns about it.)
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(try_from = "VoiceRuleFields", into = "VoiceRuleFields")]
@@ -105,14 +107,10 @@ impl VoiceRule {
         match usage {
             VoiceUse::Music => {}
             VoiceUse::Expendable => {
+                // Mechanical, not taste: the music's filter routing stays on during an effect, so the effect would
+                // play through the filter too.
                 if filter {
                     return Err("an expendable voice may not use the filter (rule 4)".into());
-                }
-                if roles.is_empty() {
-                    return Err("an expendable voice must list its roles".into());
-                }
-                if roles.iter().any(|r| matches!(r, Role::Lead | Role::Bass)) {
-                    return Err("an expendable voice may not carry lead or bass (rule 4)".into());
                 }
             }
             VoiceUse::Effects => {
@@ -280,7 +278,7 @@ impl From<Profile> for ProfileFields {
 pub mod builtin {
     /// All three voices are music, any role, filter allowed.
     pub const FULL: &str = "full";
-    /// Voices 1–2 are music; voice 3 is music that sound effects may interrupt (drums, arpeggio or texture only).
+    /// Voices 1–2 are music; voice 3 is music that sound effects may interrupt, any role, no filter.
     pub const SFX_SHARES_V3: &str = "sfx-shares-v3";
     /// Voices 1–2 are music; voice 3 is for sound effects only.
     pub const SFX_OWNS_V3: &str = "sfx-owns-v3";
@@ -293,15 +291,12 @@ pub mod builtin {
 pub struct Profiles(Vec<Profile>);
 
 impl Profiles {
-    /// The built-in profiles: `full`, `sfx-shares-v3`, `sfx-owns-v3` and `sfx-owns-v2-v3`.
+    /// The built-in profiles: `full`, `sfx-shares-v3`, `sfx-owns-v3` and `sfx-owns-v2-v3`. They allow any role on
+    /// every music voice; projects narrow roles in their own profiles.
     pub fn builtin() -> Self {
         let name = |s: &str| ProfileName::new(s).expect("valid built-in name");
-        let shared = VoiceRule::new(
-            VoiceUse::Expendable,
-            vec![Role::Drums, Role::Arp, Role::Texture],
-            false,
-        )
-        .expect("valid built-in rule");
+        let shared =
+            VoiceRule::new(VoiceUse::Expendable, vec![], false).expect("valid built-in rule");
         let p = |n: &str, voices| Profile::new(name(n), voices).expect("valid built-in profile");
         let (m, e) = (VoiceRule::music, VoiceRule::effects);
         Profiles(vec![

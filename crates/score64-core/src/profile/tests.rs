@@ -37,11 +37,9 @@ fn builtin_profiles() {
     let shares = get(&all, builtin::SFX_SHARES_V3);
     assert_eq!(music(shares), [1, 2, 3]);
     assert_eq!(shares.expendable_voices().collect::<Vec<_>>(), [v(3)]);
-    for r in [Role::Drums, Role::Arp, Role::Texture] {
+    // Any role on the expendable voice, lead and bass included (the validator warns about those); never the filter.
+    for r in [Role::Drums, Role::Arp, Role::Lead, Role::Bass] {
         assert!(shares.allows(v(3), r), "{r:?}");
-    }
-    for r in [Role::Lead, Role::Bass, Role::Drone] {
-        assert!(!shares.allows(v(3), r), "{r:?}");
     }
     assert!(!shares.may_filter(v(3)));
 
@@ -59,8 +57,14 @@ fn voice_rules_are_checked() {
     use VoiceUse::*;
     let err = |u, roles: Vec<Role>, filter| VoiceRule::new(u, roles, filter).unwrap_err();
     assert!(err(Expendable, vec![Role::Drums], true).contains("filter"));
-    assert!(err(Expendable, vec![], false).contains("list its roles"));
-    assert!(err(Expendable, vec![Role::Drums, Role::Bass], false).contains("lead or bass"));
+    assert!(err(Expendable, vec![], true).contains("filter"));
+    // Lead or bass on an expendable voice, and an empty list (any role), are allowed.
+    assert!(VoiceRule::new(Expendable, vec![Role::Lead, Role::Bass], false).is_ok());
+    assert!(
+        VoiceRule::new(Expendable, vec![], false)
+            .unwrap()
+            .allows(Role::Lead)
+    );
     assert!(err(Effects, vec![Role::Drums], false).contains("no roles"));
     assert!(err(Effects, vec![], true).contains("no filter"));
     assert!(err(Music, vec![Role::Bed, Role::Bed], true).contains("twice"));
@@ -132,7 +136,7 @@ fn projects_define_their_own_profiles() {
         ),
         format!(
             "{PROJECT}\n[[profile]]\nname = \"x\"\nv1 = {{ usage = \"music\" }}\nv2 = {{ usage = \"music\" }}\n\
-             v3 = {{ usage = \"expendable\", roles = [\"lead\"] }}\n"
+             v3 = {{ usage = \"expendable\", filter = true }}\n"
         ),
     ] {
         assert!(toml::from_str::<ProjectFile>(&bad).is_err(), "{bad}");

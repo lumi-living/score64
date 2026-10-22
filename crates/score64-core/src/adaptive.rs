@@ -1,11 +1,47 @@
 //! Adaptive sets (`docs/TAD.md` §3.1): a project declares which subtunes of a song are layers of one adaptive piece,
-//! in the order the game steps through them. The validator checks the song against it (rule 5): the layers sit at
-//! consecutive positions in that order, so the game can switch by subtune number, and every layer has a timing mark
-//! on every bar, so the switch can wait for a bar line.
+//! in the order the game steps through them, and where the game may switch between them. The validator checks the
+//! song against it (rule 5): the layers sit at consecutive positions in that order, so the game can switch by subtune
+//! number, and every layer has a timing mark at every declared switch point, so the game knows when it is there.
+
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
-use crate::score::{Song, SubtuneName};
+use crate::score::{Song, Subtune, SubtuneName};
+
+/// Where the game may switch between an adaptive set's layers. Each switch point needs a timing mark.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Switch {
+    /// On the first row of every bar.
+    #[default]
+    EveryBar,
+    /// On the first row of every N bars, counting from bar 1.
+    EveryBars(NonZeroU32),
+    /// On these rows only, in increasing order.
+    Rows(Vec<u32>),
+}
+
+impl Switch {
+    /// The switch rows in `subtune`, and any declared rows past its end.
+    fn points(&self, subtune: &Subtune) -> (Vec<u32>, Vec<u32>) {
+        let length = subtune.length.get();
+        let bar = u32::from(subtune.rows_per_bar.get());
+        match self {
+            Switch::EveryBar => ((0..length).step_by(bar as usize).collect(), vec![]),
+            Switch::EveryBars(n) => {
+                let step = bar.saturating_mul(n.get());
+                ((0..length).step_by(step as usize).collect(), vec![])
+            }
+            Switch::Rows(rows) => rows.iter().partition(|&&r| r < length),
+        }
+    }
+
+    fn is_every_bar(&self) -> bool {
+        *self == Switch::EveryBar
+    }
+}
 
 /// An ordered list of layers, each a subtune by name; for example `calm`, `tension`, `pulse`, `peak`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +50,7 @@ use crate::score::{Song, SubtuneName};
 pub struct AdaptiveSet {
     name: String,
     layers: Vec<SubtuneName>,
+    switch: Switch,
 }
 
 /// [`AdaptiveSet`] as written in files.
@@ -25,11 +62,24 @@ struct AdaptiveSetFields {
     name: String,
     /// Subtune names, in the order the game steps through them; at least one, each once.
     layers: Vec<SubtuneName>,
+    /// Where the game may switch layers: `"every_bar"` (the default), `{ every_bars = N }` or
+    /// `{ rows = [...] }`.
+    #[serde(default, skip_serializing_if = "Switch::is_every_bar")]
+    switch: Switch,
 }
 
 impl AdaptiveSet {
-    /// A set, if it has a name and at least one layer, with no layer twice.
+    /// A set switching on every bar, if it has a name and at least one layer, with no layer twice.
     pub fn new(name: impl Into<String>, layers: Vec<SubtuneName>) -> Result<Self, String> {
+        Self::with_switch(name, layers, Switch::EveryBar)
+    }
+
+    /// A set with its switch points; explicit rows must be non-empty and increasing.
+    pub fn with_switch(
+        name: impl Into<String>,
+        layers: Vec<SubtuneName>,
+        switch: Switch,
+    ) -> Result<Self, String> {
         let name = name.into();
         if name.trim().is_empty() {
             return Err("an adaptive set needs a name".into());
@@ -47,7 +97,18 @@ impl AdaptiveSet {
                 dup.1.as_str()
             ));
         }
-        Ok(AdaptiveSet { name, layers })
+        if let Switch::Rows(rows) = &switch
+            && (rows.is_empty() || rows.windows(2).any(|w| w[0] >= w[1]))
+        {
+            return Err(format!(
+                "adaptive set `{name}` must list its switch rows once each, in increasing order"
+            ));
+        }
+        Ok(AdaptiveSet {
+            name,
+            layers,
+            switch,
+        })
     }
 
     /// Its label.
@@ -60,7 +121,13 @@ impl AdaptiveSet {
         &self.layers
     }
 
-    /// Every way `song` breaks this set: a layer missing, a layer out of place, or a bar without a timing mark.
+    /// Where the game may switch layers.
+    pub fn switch(&self) -> &Switch {
+        &self.switch
+    }
+
+    /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, or a
+    /// declared switch row past a layer's end.
     pub fn check(&self, song: &Song) -> Vec<LayerProblem> {
         let mut out = Vec::new();
         let first = song.subtune(&self.layers[0]).map(|(i, _)| i);
@@ -80,14 +147,20 @@ impl AdaptiveSet {
                     found: index,
                 });
             }
-            let rows_per_bar = u32::from(subtune.rows_per_bar.get());
-            for row in (0..subtune.length.get()).step_by(rows_per_bar as usize) {
+            let (points, outside) = self.switch.points(subtune);
+            for row in points {
                 if !subtune.marks.contains(&row) {
                     out.push(LayerProblem::Mark {
                         layer: layer.clone(),
-                        bar: row / rows_per_bar,
+                        row,
                     });
                 }
+            }
+            for row in outside {
+                out.push(LayerProblem::PastEnd {
+                    layer: layer.clone(),
+                    row,
+                });
             }
         }
         out
@@ -112,19 +185,26 @@ pub enum LayerProblem {
         /// Where it is.
         found: usize,
     },
-    /// Bar `bar` (0-based) of `layer` has no timing mark on its first row.
+    /// The switch point at `row` of `layer` has no timing mark.
     Mark {
         /// The layer.
         layer: SubtuneName,
-        /// The bar.
-        bar: u32,
+        /// The row.
+        row: u32,
+    },
+    /// The declared switch row `row` is past the end of `layer`.
+    PastEnd {
+        /// The layer.
+        layer: SubtuneName,
+        /// The row.
+        row: u32,
     },
 }
 
 impl TryFrom<AdaptiveSetFields> for AdaptiveSet {
     type Error = String;
     fn try_from(f: AdaptiveSetFields) -> Result<Self, String> {
-        AdaptiveSet::new(f.name, f.layers)
+        AdaptiveSet::with_switch(f.name, f.layers, f.switch)
     }
 }
 
@@ -133,6 +213,7 @@ impl From<AdaptiveSet> for AdaptiveSetFields {
         AdaptiveSetFields {
             name: s.name,
             layers: s.layers,
+            switch: s.switch,
         }
     }
 }
@@ -218,8 +299,70 @@ mod tests {
             set().check(&s),
             [LayerProblem::Mark {
                 layer: n("pulse"),
-                bar: 1
+                row: 16
             }]
+        );
+    }
+
+    #[test]
+    fn sets_declare_their_switch_points() {
+        let layers = || vec![n("calm"), n("tension")];
+        let mut s = song(&["calm", "tension"]);
+        s.subtunes[0].length = NonZeroU32::new(64).unwrap(); // four bars
+        s.subtunes[0].marks = vec![0, 32];
+        s.subtunes[1].marks = vec![0];
+
+        let every_two = AdaptiveSet::with_switch(
+            "s",
+            layers(),
+            Switch::EveryBars(NonZeroU32::new(2).unwrap()),
+        );
+        assert_eq!(
+            every_two.unwrap().check(&s),
+            [],
+            "bars 1 and 3 of calm, bar 1 of tension"
+        );
+
+        let rows = AdaptiveSet::with_switch("s", layers(), Switch::Rows(vec![0, 40])).unwrap();
+        assert_eq!(
+            rows.check(&s),
+            [
+                LayerProblem::Mark {
+                    layer: n("calm"),
+                    row: 40
+                },
+                LayerProblem::PastEnd {
+                    layer: n("tension"),
+                    row: 40
+                },
+            ]
+        );
+        assert!(AdaptiveSet::with_switch("s", layers(), Switch::Rows(vec![16, 16])).is_err());
+        assert!(AdaptiveSet::with_switch("s", layers(), Switch::Rows(vec![])).is_err());
+
+        // The default switches on every bar: bar 2 of calm and of tension are unmarked.
+        assert_eq!(AdaptiveSet::new("s", layers()).unwrap().check(&s).len(), 3);
+
+        for (text, want) in [
+            ("", Switch::EveryBar),
+            ("switch = \"every_bar\"\n", Switch::EveryBar),
+            (
+                "switch = { every_bars = 4 }\n",
+                Switch::EveryBars(NonZeroU32::new(4).unwrap()),
+            ),
+            ("switch = { rows = [0, 64] }\n", Switch::Rows(vec![0, 64])),
+        ] {
+            let toml = format!("name = \"s\"\nlayers = [\"calm\"]\n{text}");
+            let set: AdaptiveSet = ::toml::from_str(&toml).unwrap();
+            assert_eq!(set.switch(), &want, "{text}");
+            let back: AdaptiveSet = ::toml::from_str(&::toml::to_string(&set).unwrap()).unwrap();
+            assert_eq!(back, set);
+        }
+        assert!(
+            ::toml::from_str::<AdaptiveSet>(
+                "name = \"s\"\nlayers = [\"a\"]\nswitch = { every_bars = 0 }\n"
+            )
+            .is_err()
         );
     }
 

@@ -15,8 +15,8 @@ The validator in `score64-core` rejects a song that:
 1. has more than one note sounding at a time on any voice,
 2. places a note off the row grid,
 3. exceeds the voice count of its profile,
-4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width (profiles already keep lead and bass off expendable voices, §3.1),
-5. breaks a declared adaptive set: a layer missing or out of order, or a layer's bar without a timing mark (§3.1),
+4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width,
+5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
 6. violates the role's pitch range after octave folding,
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
 8. packs larger than the configured budget, or uses zero page outside the configured pair.
@@ -72,7 +72,7 @@ pub struct Note { pub row: u32, pub length: NonZeroU32, pub pitch: Pitch /* C-0.
                   pub instrument: Option<PresetId> /* overrides the line's */, pub source: Option<SourceRef>,
                   pub confidence: Confidence, pub decision: Option<DecisionId> }
 pub enum Attack { Fresh /* new gate, hard restart before it */, Legato /* tied: gate stays on */ }
-pub enum Role { Lead, Bass, Arp, Drums, Drone, Ostinato, Bed, Texture }
+pub enum Role { Lead, Bass, Arp, Harmony, Drums, Drone, Ostinato, Bed, Texture }
 pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, start_us: u64, end_us: u64 }
 ```
 
@@ -87,8 +87,9 @@ pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, 
 ### 3.1 Profiles
 A profile says, for each SID voice, whether it carries **music**, **expendable** music (music that sound effects may interrupt), or **effects** only. It also says which roles the voice's music may have and whether it may use the filter. Profiles are validated data (`score64_core::profile`):
 
+- A voice's roles list what its music may play; an empty list means any role.
 - An effects-only voice has no roles and no filter.
-- An expendable voice lists its roles, which may not be lead or bass, and never uses the filter (rule 4).
+- An expendable voice never uses the filter (rule 4). That rule is mechanical: the music's filter routing stays on while an effect plays, so the effect would be filtered too. Lead or bass on an expendable voice is allowed. Plenty of games let effects cut the lead on purpose, so the validator only warns about it.
 - Every profile has at least one music voice.
 
 Score64 ships four built-in profiles:
@@ -96,7 +97,7 @@ Score64 ships four built-in profiles:
 | Profile | V1 | V2 | V3 |
 |---|---|---|---|
 | `full` | music, any role, filter | music, any role, filter | music, any role, filter |
-| `sfx-shares-v3` | music, any role, filter | music, any role, filter | **expendable**: drums, arp or texture; no filter |
+| `sfx-shares-v3` | music, any role, filter | music, any role, filter | **expendable**, any role, no filter |
 | `sfx-owns-v3` | music, any role, filter | music, any role, filter | effects only |
 | `sfx-owns-v2-v3` | music, any role, filter | effects only | effects only |
 
@@ -118,11 +119,11 @@ Roles can be narrowed per voice so the validator catches, say, a lead line in a 
 
 - every layer exists;
 - the layers sit at consecutive positions in the declared order, so the game can step through them by subtune number;
-- every bar of every layer starts with a timing mark, so a switch can wait for a bar line.
+- every **switch point** the set declares has a timing mark in every layer, so the game knows when it may switch. A set switches on every bar by default (`switch = "every_bar"`), or on every N bars (`switch = { every_bars = 4 }`), or on explicit rows only (`switch = { rows = [0, 64, 128] }`). Explicit rows past a layer's end are problems too.
 
 A song may hold other subtunes before or after a set, such as a title tune.
 
-An expendable voice comes back after an effect only at the music's next new note (#119), so it should carry short, frequent notes. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
+An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
 ### 3.2 Reduction
 Lead selection by salience (pitch, density, overrides) → monophonise (skyline) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → minimum note length and ghost-note removal → loop search on downbeats → timing marks on bar lines.

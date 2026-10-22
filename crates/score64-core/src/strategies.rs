@@ -32,6 +32,7 @@ pub fn role() -> impl Strategy<Value = Role> {
         Just(Role::Lead),
         Just(Role::Bass),
         Just(Role::Arp),
+        Just(Role::Harmony),
         Just(Role::Drums),
         Just(Role::Drone),
         Just(Role::Ostinato),

@@ -274,6 +274,8 @@ pub enum Role {
     Bass,
     /// Chords as wavetable arpeggios.
     Arp,
+    /// Supporting chord tones or a counter-line, held or moving (a pad).
+    Harmony,
     /// Drums.
     Drums,
     /// A held note.
