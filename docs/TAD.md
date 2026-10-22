@@ -51,15 +51,27 @@ Stages and ports:
 The core model is a **tracker grid**, not MIDI ticks (ADR-006):
 
 ```rust
-pub struct Note { pub row: u32, pub length: u32, pub pitch: u8, pub source: SourceRef, pub confidence: f32 }
+pub struct Song { pub schema: Schema /* = 1 */, pub profile: Profile, pub subtunes: Vec<Subtune> /* index = A at init */ }
+pub struct Subtune { pub name: SubtuneName /* unique, stable */, pub frames_per_row: FramesPerRow /* 3..=127 */,
+                     pub tempo: Vec<TempoChange>, pub rows_per_bar: NonZeroU8, pub length: NonZeroU32,
+                     pub loop_row: u32, pub marks: Vec<u32> /* rows with timing marks */, pub voices: Vec<VoiceLine> }
+pub struct VoiceLine { pub voice: Voice /* 1..=3 */, pub roles: Roles /* [{row, role}], first at row 0 */,
+                       pub instrument: PresetId /* default */, pub notes: Vec<Note>, pub arps: Vec<ArpEvent> }
+pub struct Note { pub row: u32, pub length: NonZeroU32, pub pitch: Pitch /* C-0..=G#7 */, pub attack: Attack,
+                  pub instrument: Option<PresetId> /* overrides the line's */, pub source: Option<SourceRef>,
+                  pub confidence: Confidence, pub decision: Option<DecisionId> }
+pub enum Attack { Fresh /* new gate, hard restart before it */, Legato /* tied: gate stays on */ }
 pub enum Role { Lead, Bass, Arp, Drums, Drone, Ostinato, Bed, Texture }
-pub struct VoiceLine { pub voice: Voice /* 1..=3 */, pub role: Role, pub notes: Vec<Note>, pub instrument: PresetId,
-                       pub arps: Vec<ArpEvent>, pub marks: Vec<u32> /* rows with timing marks */ }
-pub struct Subtune { pub index: u8, pub frames_per_row: u8, pub voices: Vec<VoiceLine>, pub loop_row: u32 }
-pub struct Song { pub subtunes: Vec<Subtune>, pub profile: Profile }
+pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, start_us: u64, end_us: u64 }
 ```
 
-Tempo is frames per row at 50 Hz (PAL). With four rows per beat, BPM = 750 / frames-per-row (see `reference/tempo-grid.md`).
+- **Time is rows.** Notes, arpeggios, marks, tempo changes and loop points are integer rows; a note's gate ends at `row + length` unless the next note is `Legato`. Wall-clock time appears only in `SourceRef`, as integer microseconds into the source file it names by content hash (ADR-004), so provenance survives renames.
+- **Tempo** is frames per row at 50 Hz (PAL), set per subtune and changed by `TempoChange` events on the grid. With four rows per beat, BPM = 750 / frames-per-row (see `reference/tempo-grid.md`). `FramesPerRow` is 3 to 127. GoatTracker tempo values below 3 select **funktempo** (alternating row lengths), which the score does **not** model yet, and a hard restart needs the frames anyway; tempo snapping (#15) chooses only from 3 upwards.
+- **Instruments and roles change within a line.** A voice line has a default instrument, and any note may name its own (a drum line's kick, snare and hi-hat). Its roles are spans from a row on, the first at row 0, so a voice can switch role at a bar line (for example, voice 3 from bass to drums in `combat`), as `voice_role` decisions do.
+- **Subtunes have stable names** (`bed`, `drone`, `climax`, …), unique in the song. The position in the list is the number the game passes to init; decisions and project files refer to the name, so adding or reordering subtunes cannot re-target them.
+- **Timing marks belong to the subtune.** The player has one mark byte (start+$3F with `-H1`), which the game reads per subtune.
+- **Pitch** is what GoatTracker patterns can play: C-0 to G#7 (note bytes `$60`–`$BC`), written as tracker names (`"A-4"`). Vibrato, slides and pulse modulation belong to instruments, not notes.
+- **Files** (ADR-004): fields serialise in declaration order, lists instead of maps, absent options left out, unknown fields and newer schema versions rejected. JSON and TOML round trips are byte-stable (property-tested). The crate's `schema` feature derives JSON Schemas for engine commands; its `proptest` feature exposes generators of structurally sound songs and decisions.
 
 ### 3.1 Profiles
 | Profile | Voices | Rules |
@@ -73,7 +85,12 @@ Tempo is frames per row at 50 Hz (PAL). With four rows per beat, BPM = 750 / fra
 Lead selection by salience (pitch, density, overrides) → monophonise (skyline) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → minimum note length and ghost-note removal → loop search on downbeats → timing marks on bar lines.
 
 ### 3.3 Decisions
-Every judgement call is a `Decision { subtune, bar, kind, value, provenance: Rules | Llm | Manual, confidence, reviewed }`. Manual decisions override LLM suggestions, which override rules. LLM output is structured, validated against the invariants, and never written straight into song data (ADR-008).
+Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
+
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row.
+- `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
+
+Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
 
 ## 4. Project and versions (`score64-project`)
 
