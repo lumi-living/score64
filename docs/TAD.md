@@ -156,12 +156,12 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 3. It resolves overlaps. A note that starts less than `min_rows` after or before a more confident one is dropped; the most confident notes are placed first. Then a note that runs into the next is trimmed to end where the next starts. This covers ends that round past the next start (#138). Every drop is caused by a note that stays, so drops never cascade, and a note that trimming can keep is kept.
 4. It restarts (`Fresh`) a tie whose predecessor no longer ends on its row.
 
-Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, and 0.5 for a skyline pick. Any order of the same notes gives the same line and the same decisions.
+Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, 0.5 for a skyline pick, and for an overlap drop the confidence gap to the note that stays. Any order of the same notes gives the same line and the same decisions.
 
 Decision ids name what they're about, so they stay the same when notes elsewhere change:
 - `mono-trim-v<voice>-r<row>` for a trim;
 - `mono-tie-v<voice>-r<row>` for a restarted tie;
-- `mono-<reason>-v<voice>-r<row>-p<semitone>` for a drop, with `-2`, `-3` for further drops of one kind at one place.
+- `mono-<reason>-v<voice>-r<row>-p<semitone>` for a drop, with `-2`, `-3` for further drops of one kind at one place. Those suffixes follow the drops' order, so another such drop can renumber them.
 
 They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 

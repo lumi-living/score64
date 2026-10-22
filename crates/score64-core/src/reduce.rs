@@ -85,7 +85,7 @@ const SKYLINE_CONFIDENCE: f32 = 0.5;
 /// 2. Of the notes starting on one row, the skyline keeps the highest (or lowest); another of the same pitch is a
 ///    repeat, merged into the longest of them; the rest are dropped.
 /// 3. A note starting less than `min_rows` after another, or before it, is dropped when the other is more confident
-///    (the more confident notes are placed first). Then a note running into the next is trimmed to end where the next
+///    (the more confident notes are placed first; the decision is as sure as the other note was surer). Then a note running into the next is trimmed to end where the next
 ///    starts. So every drop is caused by a note that stays, and a note that trimming can keep is kept.
 /// 4. A `Legato` note whose predecessor no longer ends on its row starts fresh.
 ///
@@ -94,7 +94,8 @@ const SKYLINE_CONFIDENCE: f32 = 0.5;
 /// span when it has one. Decision ids name what they are about, so they stay put when other notes change:
 /// `mono-trim-v<voice>-r<row>`, `mono-tie-v<voice>-r<row>`, and `mono-<reason>-v<voice>-r<row>-p<semitone>` for a
 /// drop (`ghost`, `short`, `repeat`, `skyline` or `overlap`), with `-2`, `-3`, ... for further drops of one kind on
-/// one row and pitch. They are unique within the subtune when it is monophonised once per voice, all its notes in one
+/// one row and pitch (those suffixes follow the drops' order, so another drop of the same kind at the same place can
+/// renumber them). They are unique within the subtune when it is monophonised once per voice, all its notes in one
 /// call. The result does not depend on the order of `notes`.
 pub fn monophonise(
     notes: impl IntoIterator<Item = Note>,
@@ -155,21 +156,37 @@ pub fn monophonise(
     let mut placed: BTreeMap<u32, Note> = BTreeMap::new();
     for note in by_confidence {
         let min = rules.min_rows.get();
-        let before = placed.range(..note.row).next_back().map(|(&r, _)| r);
-        let after = placed.range(note.row + 1..).next().map(|(&r, _)| r);
-        let fits =
-            before.is_none_or(|r| note.row - r >= min) && after.is_none_or(|r| r - note.row >= min);
-        if fits {
-            placed.insert(note.row, note);
-        } else {
-            log.drop(&note, DropReason::Overlap, Confidence::CERTAIN);
+        let before = placed
+            .range(..note.row)
+            .next_back()
+            .filter(|&(&r, _)| note.row - r < min);
+        let after = placed
+            .range(note.row.saturating_add(1)..)
+            .next()
+            .filter(|&(&r, _)| r - note.row < min);
+        // The confident neighbour it is too close to, if any: it stays, and this note goes.
+        match before
+            .into_iter()
+            .chain(after)
+            .map(|(_, n)| n.confidence.get())
+            .reduce(f32::max)
+        {
+            None => {
+                placed.insert(note.row, note);
+            }
+            Some(winner) => {
+                // As sure as the neighbour was surer: a tie is a coin toss, settled by order.
+                let sure = Confidence::new((winner - note.confidence.get()).clamp(0.0, 1.0))
+                    .expect("clamped");
+                log.drop(&note, DropReason::Overlap, sure);
+            }
         }
     }
     let mut line: Vec<Note> = placed.into_values().collect();
     for i in 1..line.len() {
         let next = line[i].row;
         let prev = &mut line[i - 1];
-        if prev.row + prev.length.get() > next {
+        if prev.row.saturating_add(prev.length.get()) > next {
             let length = NonZeroU32::new(next - prev.row).expect("rows are distinct and in order");
             let id = log.record(
                 format!("mono-trim-v{}-r{}", at.voice.get(), prev.row),
@@ -206,7 +223,7 @@ pub fn monophonise(
             note.attack = Attack::Fresh;
             note.decision.get_or_insert(id);
         }
-        end = Some(note.row + note.length.get());
+        end = Some(note.row.saturating_add(note.length.get()));
     }
 
     Reduced {
