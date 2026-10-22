@@ -204,3 +204,12 @@ fn the_real_helper_is_killed_on_timeout_and_restarted() {
     assert_eq!(e.kind, ErrorKind::HelperRefused);
     assert_eq!(slot.starts(), 2);
 }
+
+/// The helper renders at the core's PAL timing: the protocol's clock and frame are `VideoStandard::Pal`'s, so tempo
+/// snapping and rendering can't drift apart (#139). The helper is PAL only, so there is no NTSC pair yet.
+#[test]
+fn the_helper_runs_at_the_core_pal_timing() {
+    let pal = score64_core::VideoStandard::Pal;
+    assert_eq!(proto::PAL_CLOCK_HZ, pal.clock_hz());
+    assert_eq!(proto::PAL_CYCLES_PER_FRAME, pal.cycles_per_frame());
+}

@@ -6,6 +6,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::profile::{ProfileName, builtin};
+use crate::provenance::{ContentHash, SourceRef};
 use crate::score::{FramesPerRow, Pitch, PresetId, Role, Roles, Schema, Song, Subtune, VoiceLine};
 use crate::strategies;
 use crate::validate::{Context, InstrumentFacts, validate};
@@ -110,7 +111,7 @@ fn the_skyline_keeps_the_top_or_the_bottom_of_a_chord() {
     let top = monophonise(chord(), &at(&n), &MonoRules::default());
     assert_eq!(shape(&top.notes), [(0, 4, "G-4".into())]);
     assert_eq!(reasons(&top), [DropReason::Skyline, DropReason::Skyline]);
-    assert_eq!(top.decisions[0].confidence.get(), SKYLINE_CONFIDENCE);
+    assert_eq!(top.decisions[0].confidence.get(), 0.5);
     let bass = MonoRules {
         skyline: Skyline::Lowest,
         ..MonoRules::default()
@@ -160,7 +161,7 @@ fn overlaps_are_trimmed_and_recorded() {
         }
     );
     assert_eq!(r.notes[0].decision.as_ref(), Some(&d.id));
-    assert_eq!(d.id.as_str(), "mono-v1-0");
+    assert_eq!(d.id.as_str(), "mono-trim-v1-r0");
     assert_eq!((d.subtune.as_str(), d.bar), ("main", 0));
     assert_eq!(
         d.provenance,
@@ -196,14 +197,14 @@ fn an_overlap_too_close_to_trim_drops_the_less_confident_note() {
 }
 
 #[test]
-fn a_trimmed_note_that_is_dropped_later_keeps_only_its_drop() {
+fn a_dropped_note_gives_back_the_trim_it_caused() {
     let n = name();
     let rules = MonoRules {
         min_rows: NonZeroU32::new(2).unwrap(),
         ..MonoRules::default()
     };
-    // C is trimmed to meet E at row 4; then G, one row after E and more confident, drops E. C (ending at 4) no longer
-    // overlaps anything, so its trim stays; E's drop is the only decision about E.
+    // C is trimmed to meet E at row 4; then G, one row after E and more confident, drops E. The trim was only for E,
+    // so C is trimmed again to meet G instead: no silent row before G, and one decision about C.
     let r = monophonise(
         [
             note(0, 8, "C-4", 0.9),
@@ -215,25 +216,87 @@ fn a_trimmed_note_that_is_dropped_later_keeps_only_its_drop() {
     );
     assert_eq!(
         shape(&r.notes),
-        [(0, 4, "C-4".into()), (5, 4, "G-4".into())]
+        [(0, 5, "C-4".into()), (5, 4, "G-4".into())]
     );
-    let about_e: Vec<_> = proposals(&r)
-        .into_iter()
-        .filter(|p| {
-            matches!(
-                p,
-                Proposal::TrimNote { row: 4, .. } | Proposal::DropNote { row: 4, .. }
-            )
-        })
-        .collect();
-    assert_eq!(about_e.len(), 1);
+    let ids: Vec<_> = r.decisions.iter().map(|d| d.id.as_str()).collect();
+    assert_eq!(ids, ["mono-drop-v1-r4-p52", "mono-trim-v1-r0"]);
     assert!(matches!(
-        about_e[0],
-        Proposal::DropNote {
-            reason: DropReason::Overlap,
-            ..
-        }
+        r.decisions[1].proposal,
+        Proposal::TrimNote { row: 0, length, .. } if length.get() == 5
     ));
+    assert_eq!(r.notes[0].decision.as_ref(), Some(&r.decisions[1].id));
+    // Had C ended before G on its own, it would have got its whole length back and no decision.
+    let r = monophonise(
+        [
+            note(0, 5, "C-4", 0.9),
+            note(4, 8, "E-4", 0.3),
+            note(5, 4, "G-4", 0.9),
+        ],
+        &at(&n),
+        &rules,
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 5, "C-4".into()), (5, 4, "G-4".into())]
+    );
+    assert_eq!(r.notes[0].decision, None);
+    assert_eq!(reasons(&r), [DropReason::Overlap]);
+    assert_eq!(r.decisions.len(), 1);
+}
+
+#[test]
+fn a_gap_of_exactly_the_minimum_is_trimmed_not_dropped() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let r = monophonise(
+        [note(0, 4, "C-4", 0.5), note(2, 4, "E-4", 0.9)],
+        &at(&n),
+        &rules,
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 2, "C-4".into()), (2, 4, "E-4".into())]
+    );
+    assert!(reasons(&r).is_empty());
+}
+
+#[test]
+fn decision_ids_name_what_they_are_about() {
+    // Ids depend on the voice, row and pitch, not on how many decisions came before: adding a note elsewhere leaves
+    // them alone. Repeats of a drop on one row and pitch get -2, -3.
+    let n = name();
+    let base = vec![
+        note(0, 5, "C-4", 0.9),
+        note(4, 4, "E-4", 0.9),
+        note(8, 2, "G-4", 0.9),
+        note(8, 2, "G-4", 0.8),
+        note(8, 1, "G-4", 0.7),
+    ];
+    let ids = |notes: Vec<Note>| -> Vec<String> {
+        let mut v: Vec<_> = monophonise(notes, &at(&n), &MonoRules::default())
+            .decisions
+            .into_iter()
+            .map(|d| d.id.as_str().to_owned())
+            .collect();
+        v.sort();
+        v
+    };
+    let before = ids(base.clone());
+    assert_eq!(
+        before,
+        [
+            "mono-drop-v1-r8-p55",
+            "mono-drop-v1-r8-p55-2",
+            "mono-trim-v1-r0"
+        ]
+    );
+    let mut more = base;
+    more.insert(0, note(64, 2, "A-4", 0.1)); // a ghost far away
+    let after = ids(more);
+    assert!(before.iter().all(|id| after.contains(id)), "{after:?}");
 }
 
 #[test]
@@ -260,6 +323,16 @@ fn ties_that_lost_their_note_start_fresh() {
         })
         .collect();
     assert_eq!(restarted, [4, 10]);
+    // The restarted notes record their decisions.
+    let recorded: Vec<_> = r
+        .notes
+        .iter()
+        .map(|n| n.decision.as_ref().map(|d| d.as_str()))
+        .collect();
+    assert_eq!(
+        recorded,
+        [Some("mono-tie-v1-r4"), Some("mono-tie-v1-r10"), None]
+    );
 }
 
 #[test]
@@ -306,8 +379,8 @@ fn decisions_round_trip_through_json() {
     assert_eq!(
         json,
         [
-            r#"{"change":"drop_note","voice":1,"row":8,"pitch":"F-4","reason":"ghost"}"#,
-            r#"{"change":"drop_note","voice":1,"row":0,"pitch":"C-4","reason":"skyline"}"#,
+            r#"{"change":"drop_note","voice":1,"row":8,"pitch":"F-4","length":2,"reason":"ghost"}"#,
+            r#"{"change":"drop_note","voice":1,"row":0,"pitch":"C-4","length":5,"reason":"skyline"}"#,
             r#"{"change":"trim_note","voice":1,"row":0,"pitch":"E-4","length":4}"#,
         ]
     );
@@ -351,6 +424,30 @@ fn checked(notes: Vec<Note>) -> (Song, Context) {
     (song, ctx)
 }
 
+/// A note soup as a transcription gives it: every note from a source span, some with their own instrument.
+fn transcribed_soup() -> impl Strategy<Value = Vec<Note>> {
+    strategies::note_soup().prop_flat_map(|soup| {
+        let n = soup.len();
+        (
+            Just(soup),
+            proptest::collection::vec(
+                (
+                    strategies::source_ref(),
+                    proptest::option::weighted(0.3, strategies::preset()),
+                ),
+                n,
+            ),
+        )
+            .prop_map(|(mut soup, extra)| {
+                for (note, (source, instrument)) in soup.iter_mut().zip(extra) {
+                    note.source = Some(source);
+                    note.instrument = instrument;
+                }
+                soup
+            })
+    })
+}
+
 fn any_rules() -> impl Strategy<Value = MonoRules> {
     (any::<bool>(), 0.0f32..0.6, 1u32..4).prop_map(|(low, ghost, min)| MonoRules {
         skyline: if low {
@@ -377,7 +474,10 @@ proptest! {
     /// Every input note is accounted for: kept (same row and pitch, no longer than it was) or dropped by a decision;
     /// every change is a decision, and every decision id a note records is one of them.
     #[test]
-    fn every_note_is_kept_or_dropped_by_a_decision(soup in strategies::note_soup(), rules in any_rules()) {
+    fn every_note_is_kept_or_dropped_by_a_decision(
+        soup in prop_oneof![strategies::note_soup(), transcribed_soup()],
+        rules in any_rules(),
+    ) {
         let n = name();
         let r = monophonise(soup.clone(), &at(&n), &rules);
         let dropped = reasons(&r).len();
@@ -421,7 +521,7 @@ proptest! {
     /// The input order does not matter.
     #[test]
     fn the_result_does_not_depend_on_the_input_order(
-        soup in strategies::note_soup(),
+        soup in prop_oneof![strategies::note_soup(), transcribed_soup()],
         rules in any_rules(),
         seed in any::<u64>(),
     ) {
@@ -443,4 +543,26 @@ proptest! {
 fn pitch_is_a_goattracker_pitch() {
     // The helpers above lean on GoatTracker names.
     assert_eq!("G#7".parse::<Pitch>().unwrap(), Pitch::MAX);
+}
+
+#[test]
+fn notes_that_differ_only_in_source_or_instrument_reduce_the_same_in_any_order() {
+    // Two transcriptions of one note: everything equal but where they came from, or their instrument. Whichever
+    // order they come in, the same one is kept.
+    let n = name();
+    let source = |start| SourceRef::new(ContentHash([1; 32]), start, start + 100);
+    let mut a = note(0, 4, "C-4", 0.9);
+    let mut b = a.clone();
+    a.source = source(0);
+    b.source = source(50);
+    let one = monophonise([a.clone(), b.clone()], &at(&n), &MonoRules::default());
+    let two = monophonise([b, a], &at(&n), &MonoRules::default());
+    assert_eq!(one, two);
+    let mut c = note(0, 4, "C-4", 0.9);
+    let mut d = c.clone();
+    c.instrument = Some(PresetId("kick".into()));
+    d.instrument = Some(PresetId("snare".into()));
+    let one = monophonise([c.clone(), d.clone()], &at(&n), &MonoRules::default());
+    let two = monophonise([d, c], &at(&n), &MonoRules::default());
+    assert_eq!(one, two);
 }

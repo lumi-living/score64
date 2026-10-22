@@ -318,6 +318,8 @@ pub enum Proposal {
         row: u32,
         /// Its pitch.
         pitch: Pitch,
+        /// Its length, in rows, which tells it from a repeat on the same row that was kept.
+        length: NonZeroU32,
         /// Where in the source it came from, if it did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<SourceRef>,
@@ -332,6 +334,9 @@ pub enum Proposal {
         row: u32,
         /// Its pitch.
         pitch: Pitch,
+        /// Where in the source it came from, if it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SourceRef>,
     },
 }
 

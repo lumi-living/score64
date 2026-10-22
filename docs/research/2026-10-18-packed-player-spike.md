@@ -93,7 +93,7 @@ What voice 3 does around one shot (frame 37):
 - frames 43–65: the effect's tail, gate off, noise waveform, pitch sweeping down from 10,004 to 702 over about half a second. Low-pitched SID noise sounds like a run of random tones, which is the "weird notes between shots" heard in the first listening test.
 - frames 66–73: silence (`$D412 = $00`). The GoatTracker player gives the voice back to the music only at the music's next new note on it. This bass holds long notes, so at a shot every 37 frames it never returns.
 
-That is the player's behaviour and this effect's design, not a helper problem. For a game it means two things: a resident effect should be short, and a voice the music relies on for sustained notes is a poor choice for frequent effects (the `combat` profile's rule).
+That is the player's behaviour and this effect's design, not a helper problem. For a game it means two things: a resident effect should be short, and a voice the music relies on for sustained notes is a poor choice for frequent effects (the rule for expendable voices, TAD §3.1 and `docs/reference/player.md`; this pointer was updated on 2026-10-23, after profiles were renamed).
 
 ## Opcodes the player runs
 
