@@ -35,4 +35,6 @@ pub use score::{
 pub use validate::{Context, InstrumentFacts, Problem, Rule, check_pack, validate};
 
 #[cfg(test)]
+mod properties;
+#[cfg(test)]
 mod tests;
