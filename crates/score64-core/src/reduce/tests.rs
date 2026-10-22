@@ -187,6 +187,8 @@ fn an_overlap_too_close_to_trim_drops_the_less_confident_note() {
     );
     assert_eq!(shape(&r.notes), [(1, 4, "E-4".into())]);
     assert_eq!(reasons(&r), [DropReason::Overlap]);
+    // As sure as E was surer than C.
+    assert!((r.decisions[0].confidence.get() - 0.4).abs() < 1e-6);
     // On a tie the earlier note stays.
     let r = monophonise(
         [note(0, 4, "C-4", 0.9), note(1, 4, "E-4", 0.9)],
@@ -197,14 +199,14 @@ fn an_overlap_too_close_to_trim_drops_the_less_confident_note() {
 }
 
 #[test]
-fn a_dropped_note_gives_back_the_trim_it_caused() {
+fn a_drop_never_leaves_a_note_cut_short() {
     let n = name();
     let rules = MonoRules {
         min_rows: NonZeroU32::new(2).unwrap(),
         ..MonoRules::default()
     };
-    // C is trimmed to meet E at row 4; then G, one row after E and more confident, drops E. The trim was only for E,
-    // so C is trimmed again to meet G instead: no silent row before G, and one decision about C.
+    // G, one row after E and more confident, drops E; C is trimmed to meet G, not E: no silent row before G, and one
+    // decision about C.
     let r = monophonise(
         [
             note(0, 8, "C-4", 0.9),
@@ -219,7 +221,7 @@ fn a_dropped_note_gives_back_the_trim_it_caused() {
         [(0, 5, "C-4".into()), (5, 4, "G-4".into())]
     );
     let ids: Vec<_> = r.decisions.iter().map(|d| d.id.as_str()).collect();
-    assert_eq!(ids, ["mono-drop-v1-r4-p52", "mono-trim-v1-r0"]);
+    assert_eq!(ids, ["mono-overlap-v1-r4-p52", "mono-trim-v1-r0"]);
     assert!(matches!(
         r.decisions[1].proposal,
         Proposal::TrimNote { row: 0, length, .. } if length.get() == 5
@@ -261,6 +263,17 @@ fn a_gap_of_exactly_the_minimum_is_trimmed_not_dropped() {
         [(0, 2, "C-4".into()), (2, 4, "E-4".into())]
     );
     assert!(reasons(&r).is_empty());
+    // And with the more confident note first, so the later one is checked against the note before it.
+    let r = monophonise(
+        [note(0, 4, "C-4", 0.9), note(2, 4, "E-4", 0.5)],
+        &at(&n),
+        &rules,
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 2, "C-4".into()), (2, 4, "E-4".into())]
+    );
+    assert!(reasons(&r).is_empty());
 }
 
 #[test]
@@ -288,8 +301,8 @@ fn decision_ids_name_what_they_are_about() {
     assert_eq!(
         before,
         [
-            "mono-drop-v1-r8-p55",
-            "mono-drop-v1-r8-p55-2",
+            "mono-repeat-v1-r8-p55",
+            "mono-repeat-v1-r8-p55-2",
             "mono-trim-v1-r0"
         ]
     );
@@ -502,6 +515,24 @@ proptest! {
             prop_assert_eq!(restarted, restarts);
             prop_assert!(!restarted || kept.attack == Attack::Fresh);
         }
+        // Step 3's promises: kept notes are at least the minimum long, and an overlap drop sits too close to a kept
+        // note at least as confident.
+        for kept in &r.notes {
+            prop_assert!(kept.length >= rules.min_rows, "{kept:?}");
+        }
+        for d in &r.decisions {
+            if let Proposal::DropNote { row, pitch, length, reason: DropReason::Overlap, .. } = d.proposal {
+                let conf = soup
+                    .iter()
+                    .filter(|o| o.row == row && o.pitch == pitch && o.length == length)
+                    .map(|o| o.confidence.get())
+                    .fold(f32::INFINITY, f32::min);
+                let near = r.notes.iter().any(|k| {
+                    k.row.abs_diff(row) < rules.min_rows.get() && k.confidence.get() >= conf
+                });
+                prop_assert!(near, "overlap drop at {row} has no confident neighbour");
+            }
+        }
         for d in &r.decisions {
             prop_assert_eq!(&d.provenance, &Provenance::Rules { rule: MONOPHONISE.into() });
             prop_assert_eq!(d.subtune.as_str(), "main");
@@ -565,4 +596,145 @@ fn notes_that_differ_only_in_source_or_instrument_reduce_the_same_in_any_order()
     let one = monophonise([c.clone(), d.clone()], &at(&n), &MonoRules::default());
     let two = monophonise([d, c], &at(&n), &MonoRules::default());
     assert_eq!(one, two);
+}
+
+#[test]
+fn drops_do_not_cascade() {
+    // E would drop C, and G would drop E; C must survive, trimmed to meet G, because only G stays.
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let r = monophonise(
+        [
+            note(0, 10, "C-4", 0.5),
+            note(1, 10, "E-4", 0.6),
+            note(2, 4, "G-4", 0.9),
+        ],
+        &at(&n),
+        &rules,
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 2, "C-4".into()), (2, 4, "G-4".into())]
+    );
+    assert_eq!(reasons(&r), [DropReason::Overlap]);
+}
+
+#[test]
+fn proposals_carry_the_notes_source() {
+    let n = name();
+    let src = |start| SourceRef::new(ContentHash([3; 32]), start, start + 10);
+    let with = |mut nt: Note, start| {
+        nt.source = src(start);
+        nt
+    };
+    let r = monophonise(
+        [
+            with(note(0, 6, "C-4", 0.9), 0),            // trimmed by D
+            with(note(4, 4, "D-4", 0.1), 40),           // a ghost
+            with(note(4, 4, "E-4", 0.9), 41),           // trims C
+            with(legato(note(10, 2, "F-4", 0.9)), 100), // a tie after a gap
+        ],
+        &at(&n),
+        &MonoRules::default(),
+    );
+    for d in &r.decisions {
+        let source = match &d.proposal {
+            Proposal::TrimNote { source, .. }
+            | Proposal::DropNote { source, .. }
+            | Proposal::Retrigger { source, .. } => *source,
+            p => panic!("{p:?}"),
+        };
+        assert!(source.is_some(), "{:?} lost its source", d.proposal);
+    }
+    assert_eq!(r.decisions.len(), 3);
+}
+
+#[test]
+fn a_restarted_note_keeps_an_earlier_rules_id() {
+    let n = name();
+    let mut tie = legato(note(8, 2, "C-4", 0.9));
+    tie.decision = Some(DecisionId::new("octave-v1-b0").unwrap());
+    let r = monophonise([tie], &at(&n), &MonoRules::default());
+    assert_eq!(r.notes[0].attack, Attack::Fresh);
+    assert_eq!(
+        r.notes[0].decision.as_ref().unwrap().as_str(),
+        "octave-v1-b0"
+    );
+}
+
+#[test]
+fn every_tie_break_makes_the_order_irrelevant() {
+    // Pairs of notes equal in all but one field: confidence, attack or an earlier decision. Either order, one result.
+    let n = name();
+    let base = note(0, 4, "C-4", 0.9);
+    let mut pairs = Vec::new();
+    let mut other = base.clone();
+    other.confidence = Confidence::new(0.5).unwrap();
+    pairs.push(other);
+    pairs.push(legato(base.clone()));
+    let mut other = base.clone();
+    other.decision = Some(DecisionId::new("octave-v1-b0").unwrap());
+    pairs.push(other);
+    for other in pairs {
+        let one = monophonise(
+            [base.clone(), other.clone()],
+            &at(&n),
+            &MonoRules::default(),
+        );
+        let two = monophonise(
+            [other.clone(), base.clone()],
+            &at(&n),
+            &MonoRules::default(),
+        );
+        assert_eq!(one, two, "{other:?}");
+    }
+}
+
+#[test]
+fn notes_at_the_thresholds_are_kept() {
+    // Exactly as confident as the ghost threshold, and exactly the minimum length.
+    let n = name();
+    let rules = MonoRules {
+        ghost_below: Confidence::new(0.5).unwrap(),
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let r = monophonise(
+        [note(0, 2, "C-4", 0.5), note(4, 2, "D-4", 0.9)],
+        &at(&n),
+        &rules,
+    );
+    assert_eq!(r.notes.len(), 2);
+    assert!(r.decisions.is_empty());
+}
+
+#[test]
+fn rules_read_with_defaults() {
+    let rules: MonoRules = serde_json::from_str(r#"{"skyline":"lowest"}"#).unwrap();
+    assert_eq!(rules.skyline, Skyline::Lowest);
+    assert_eq!(rules.min_rows, MonoRules::default().min_rows);
+}
+
+#[test]
+fn ids_and_bars_name_the_voice_and_the_bar_edges() {
+    // Voice 3, a tie on row 16 (the first row of bar 1) and a too-short note on row 15 (the last of bar 0).
+    let n = name();
+    let place = Placement {
+        voice: Voice::new(3).unwrap(),
+        ..at(&n)
+    };
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let r = monophonise(
+        [note(15, 1, "C-4", 0.9), legato(note(16, 4, "D-4", 0.9))],
+        &place,
+        &rules,
+    );
+    let got: Vec<_> = r.decisions.iter().map(|d| (d.id.as_str(), d.bar)).collect();
+    assert_eq!(got, [("mono-short-v3-r15-p48", 0), ("mono-tie-v3-r16", 1)]);
 }

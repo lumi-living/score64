@@ -6,7 +6,7 @@
 //! whole octaves into its roles' ranges.
 
 use std::cmp::Ordering;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU8, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
@@ -35,7 +35,7 @@ pub enum Skyline {
 /// The settings of [`monophonise`].
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct MonoRules {
     /// Which note of a chord to keep.
     pub skyline: Skyline,
@@ -84,16 +84,19 @@ const SKYLINE_CONFIDENCE: f32 = 0.5;
 /// 1. Notes less confident than `ghost_below` are dropped as ghosts, and notes shorter than `min_rows` as too short.
 /// 2. Of the notes starting on one row, the skyline keeps the highest (or lowest); another of the same pitch is a
 ///    repeat, merged into the longest of them; the rest are dropped.
-/// 3. A note running into the next is trimmed to end where the next starts. If that would leave it shorter than
-///    `min_rows`, the less confident of the two is dropped instead (the later one on a tie).
+/// 3. A note starting less than `min_rows` after another, or before it, is dropped when the other is more confident
+///    (the more confident notes are placed first; the decision is as sure as the other note was surer). Then a note running into the next is trimmed to end where the next
+///    starts. So every drop is caused by a note that stays, and a note that trimming can keep is kept.
 /// 4. A `Legato` note whose predecessor no longer ends on its row starts fresh.
 ///
 /// Every drop, trim and restart is a decision. A trimmed or restarted note records its decision's id unless it
 /// already records one (an earlier rule's); the decision names the note by row and pitch either way, and by source
 /// span when it has one. Decision ids name what they are about, so they stay put when other notes change:
-/// `mono-trim-v<voice>-r<row>`, `mono-tie-v<voice>-r<row>` and `mono-drop-v<voice>-r<row>-p<semitone>`, with `-2`,
-/// `-3`, ... for further drops of the same pitch on the same row. They are unique within the subtune for one call
-/// per voice. The result does not depend on the order of `notes`.
+/// `mono-trim-v<voice>-r<row>`, `mono-tie-v<voice>-r<row>`, and `mono-<reason>-v<voice>-r<row>-p<semitone>` for a
+/// drop (`ghost`, `short`, `repeat`, `skyline` or `overlap`), with `-2`, `-3`, ... for further drops of one kind on
+/// one row and pitch (those suffixes follow the drops' order, so another drop of the same kind at the same place can
+/// renumber them). They are unique within the subtune when it is monophonised once per voice, all its notes in one
+/// call. The result does not depend on the order of `notes`.
 pub fn monophonise(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
@@ -139,55 +142,68 @@ pub fn monophonise(
         }
     }
 
-    // 3. Overlaps. Each note on the line keeps its length from before trimming, and this rule's trim of it, so that
-    // the trim can be undone when the note after it is dropped: the trim was only for that note.
-    let mut line: Vec<OnLine> = Vec::with_capacity(heads.len());
-    'notes: for note in heads {
-        while let Some(prev) = line.last_mut() {
-            if prev.note.row + prev.note.length.get() <= note.row {
-                break;
+    // 3. Overlaps. Notes closer than `min_rows` to a more confident one are dropped: the most confident are placed
+    // first, and a note joins the line only if it starts at least `min_rows` after the note before it and before the
+    // note after it. Then each note is trimmed to end where the next starts. A drop is only ever caused by a note that
+    // stays, and every note that can be kept by trimming is.
+    let mut by_confidence = heads;
+    by_confidence.sort_by(|a, b| {
+        b.confidence
+            .get()
+            .total_cmp(&a.confidence.get())
+            .then_with(|| canonical(a, b, rules.skyline))
+    });
+    let mut placed: BTreeMap<u32, Note> = BTreeMap::new();
+    for note in by_confidence {
+        let min = rules.min_rows.get();
+        let before = placed
+            .range(..note.row)
+            .next_back()
+            .filter(|&(&r, _)| note.row - r < min);
+        let after = placed
+            .range(note.row.saturating_add(1)..)
+            .next()
+            .filter(|&(&r, _)| r - note.row < min);
+        // The confident neighbour it is too close to, if any: it stays, and this note goes.
+        match before
+            .into_iter()
+            .chain(after)
+            .map(|(_, n)| n.confidence.get())
+            .reduce(f32::max)
+        {
+            None => {
+                placed.insert(note.row, note);
             }
-            let gap = note.row - prev.note.row; // at least 1: rows are distinct and in order
-            if gap >= rules.min_rows.get() {
-                let length = NonZeroU32::new(gap).expect("at least one row");
-                let id = log.record(
-                    format!("mono-trim-v{}-r{}", at.voice.get(), prev.note.row),
-                    prev.note.row,
-                    Proposal::TrimNote {
-                        voice: at.voice,
-                        row: prev.note.row,
-                        pitch: prev.note.pitch,
-                        source: prev.note.source,
-                        length,
-                    },
-                    Confidence::CERTAIN,
-                );
-                prev.note.length = length;
-                if prev.note.decision.is_none() {
-                    prev.note.decision = Some(id.clone());
-                }
-                prev.trim = Some(id);
-                break;
-            }
-            if prev.note.confidence < note.confidence {
-                // The note on top was never trimmed: only a note pushed after it could have done that.
-                let gone = line.pop().expect("just looked");
-                log.drop(&gone.note, DropReason::Overlap, Confidence::CERTAIN);
-                if let Some(below) = line.last_mut() {
-                    below.untrim(&mut log);
-                }
-            } else {
-                log.drop(&note, DropReason::Overlap, Confidence::CERTAIN);
-                continue 'notes;
+            Some(winner) => {
+                // As sure as the neighbour was surer: a tie is a coin toss, settled by order.
+                let sure = Confidence::new((winner - note.confidence.get()).clamp(0.0, 1.0))
+                    .expect("clamped");
+                log.drop(&note, DropReason::Overlap, sure);
             }
         }
-        line.push(OnLine {
-            length: note.length,
-            note,
-            trim: None,
-        });
     }
-    let mut line: Vec<Note> = line.into_iter().map(|l| l.note).collect();
+    let mut line: Vec<Note> = placed.into_values().collect();
+    for i in 1..line.len() {
+        let next = line[i].row;
+        let prev = &mut line[i - 1];
+        if prev.row.saturating_add(prev.length.get()) > next {
+            let length = NonZeroU32::new(next - prev.row).expect("rows are distinct and in order");
+            let id = log.record(
+                format!("mono-trim-v{}-r{}", at.voice.get(), prev.row),
+                prev.row,
+                Proposal::TrimNote {
+                    voice: at.voice,
+                    row: prev.row,
+                    pitch: prev.pitch,
+                    length,
+                    source: prev.source,
+                },
+                Confidence::CERTAIN,
+            );
+            prev.length = length;
+            prev.decision.get_or_insert(id);
+        }
+    }
 
     // 4. Ties that lost the note they were tied to.
     let mut end = None;
@@ -207,7 +223,7 @@ pub fn monophonise(
             note.attack = Attack::Fresh;
             note.decision.get_or_insert(id);
         }
-        end = Some(note.row + note.length.get());
+        end = Some(note.row.saturating_add(note.length.get()));
     }
 
     Reduced {
@@ -233,26 +249,6 @@ fn canonical(a: &Note, b: &Note, skyline: Skyline) -> Ordering {
         .then_with(|| source(a).cmp(&source(b)))
         .then_with(|| a.instrument.cmp(&b.instrument))
         .then_with(|| a.decision.cmp(&b.decision))
-}
-
-/// A note on the line being built, with its length before this rule trimmed it and the trim's decision.
-struct OnLine {
-    note: Note,
-    length: NonZeroU32,
-    trim: Option<DecisionId>,
-}
-
-impl OnLine {
-    /// Undo this rule's trim, if any: back to the note's own length, without the decision.
-    fn untrim(&mut self, log: &mut Log) {
-        if let Some(id) = self.trim.take() {
-            log.forget(&id);
-            self.note.length = self.length;
-            if self.note.decision.as_ref() == Some(&id) {
-                self.note.decision = None;
-            }
-        }
-    }
 }
 
 /// The decisions one call makes.
@@ -300,7 +296,14 @@ impl Log<'_> {
     fn drop(&mut self, note: &Note, reason: DropReason, confidence: Confidence) {
         self.record(
             format!(
-                "mono-drop-v{}-r{}-p{}",
+                "mono-{}-v{}-r{}-p{}",
+                match reason {
+                    DropReason::Ghost => "ghost",
+                    DropReason::TooShort => "short",
+                    DropReason::Repeat => "repeat",
+                    DropReason::Skyline => "skyline",
+                    DropReason::Overlap => "overlap",
+                },
                 self.at.voice.get(),
                 note.row,
                 note.pitch.semitone()
@@ -316,12 +319,6 @@ impl Log<'_> {
             },
             confidence,
         );
-    }
-
-    /// Take back the decision `id`.
-    fn forget(&mut self, id: &DecisionId) {
-        self.decisions.retain(|d| &d.id != id);
-        self.ids.remove(id);
     }
 }
 

@@ -83,6 +83,9 @@ pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, 
 - **The grid** (`score64_core::grid`) joins the two clocks:
   - `snap_tempo` picks the row length whose real tempo on the target's video standard is nearest a detected tempo, choosing only from 3 upwards. It reports the nominal and real tempo, the relative error and the drift per minute.
   - `BeatGrid` turns source times (µs) into rows from the beat tracker's beats, spreading rows evenly between beats so rubato never accumulates. `quantise` gives a note's row and length, and how far its start moved (at most half a row).
+  - `BeatGrid::quantise_part` (`score64_core::transcription`) puts a `TranscribedPart` on the grid: one stem's or instrument's `SourceNote`s in µs and MIDI pitch, with the source's content hash.
+    - **Notes:** each comes back as a fresh-attack grid note with the transcriber's confidence and a `SourceRef` to its span, in row then pitch order. Overlaps stay; the reduction resolves them (#40).
+    - **Report (`QuantiseReport`):** per part, the mean and largest start error in rows, how many starts moved more than a quarter row, how many notes were shorter than half a row and stretched to one, and every note left out, with why: a pitch GoatTracker can't play, a start before row 0 (or past the last row a song can have), or an empty span (#36). The notes come out in one canonical order whatever order the transcriber gave them in.
 - **Instruments and roles change within a line.** A voice line has a default instrument, and any note may name its own (a drum line's kick, snare and hi-hat). Its roles are spans from a row on, the first at row 0, so a voice can switch role at a bar line (for example, voice 3 from bass to drums under `sfx-shares-v3`), as `voice_role` decisions do.
 - **Subtunes have stable names** (`title`, `calm`, `peak`, …), unique in the song. The position in the list is the number the game passes to init; decisions and project files refer to the name, so adding or reordering subtunes cannot re-target them.
 - **Timing marks belong to the subtune.** The player has one mark byte (start+$3F with `-H1`), which the game reads per subtune.
@@ -138,14 +141,17 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
 2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
-3. It trims a note that runs into the next, so it ends where the next starts. This covers ends that round past the next start (#138). If trimming would leave less than `min_rows`, the less confident note of the two is dropped instead.
+3. It resolves overlaps. A note that starts less than `min_rows` after or before a more confident one is dropped; the most confident notes are placed first. Then a note that runs into the next is trimmed to end where the next starts. This covers ends that round past the next start (#138). Every drop is caused by a note that stays, so drops never cascade, and a note that trimming can keep is kept.
 4. It restarts (`Fresh`) a tie whose predecessor no longer ends on its row.
 
-Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, and 0.5 for a skyline pick. Any order of the same notes gives the same line and the same decisions.
+Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, 0.5 for a skyline pick, and for an overlap drop the confidence gap to the note that stays. Any order of the same notes gives the same line and the same decisions.
 
-A trim is only for the note that follows. If that note is dropped later, the trim is undone and the earlier note is trimmed against the new next note instead.
+Decision ids name what they're about, so they stay the same when notes elsewhere change:
+- `mono-trim-v<voice>-r<row>` for a trim;
+- `mono-tie-v<voice>-r<row>` for a restarted tie;
+- `mono-<reason>-v<voice>-r<row>-p<semitone>` for a drop, with `-2`, `-3` for further drops of one kind at one place. Those suffixes follow the drops' order, so another such drop can renumber them.
 
-Decision ids name what they're about: `mono-trim-v<voice>-r<row>`, `mono-tie-v<voice>-r<row>` and `mono-drop-v<voice>-r<row>-p<semitone>` (with `-2`, `-3` for a second or third drop at the same place). So they stay the same when notes elsewhere change.
+They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
 **Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
 - **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
