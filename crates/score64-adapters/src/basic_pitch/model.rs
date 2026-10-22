@@ -6,10 +6,10 @@
 //! Running `nmp.onnx`: a port of `basic_pitch.inference.run_inference` (windowing, model call, unwrapping).
 
 use std::path::Path;
-use std::sync::OnceLock;
 
 use ort::environment::Environment;
 use ort::session::Session;
+use ort::session::builder::AutoDevicePolicy;
 use ort::value::Tensor;
 
 use super::{ANNOTATIONS_FPS, AUDIO_N_SAMPLES, AUDIO_SAMPLE_RATE, FFT_HOP, N_CONTOURS, N_NOTES};
@@ -37,27 +37,24 @@ pub struct ModelOutput {
     pub contour: Vec<f32>,
 }
 
-/// The process-wide ONNX Runtime environment, created on first use (`ort` 2.0.0-rc.14 needs one for every session).
-fn environment() -> ort::Result<&'static Environment> {
-    static ENV: OnceLock<Environment> = OnceLock::new();
-    if let Some(env) = ENV.get() {
-        return Ok(env);
-    }
-    let env = ort::environment::init().build()?;
-    Ok(ENV.get_or_init(|| env))
-}
-
 /// A loaded Basic Pitch model.
 pub struct BasicPitch {
     session: Session,
 }
 
 impl BasicPitch {
-    /// Load `nmp.onnx`.
-    pub fn load(model: &Path) -> ort::Result<Self> {
-        Ok(Self {
-            session: Session::builder(environment()?)?.commit_from_file(model)?,
-        })
+    /// Load `nmp.onnx` in `env` (create one with `ort::environment::init().build()`; share it between sessions).
+    ///
+    /// The model runs on the CPU. From `ort` 2.0.0-rc.14 a new session picks its device by ONNX Runtime's "max
+    /// efficiency" policy, which prefers an NPU: on Apple Silicon that is the Neural Engine, at reduced precision, with
+    /// activations up to 0.16 away from the Python package and different notes. Registering the CPU execution provider
+    /// does not override that policy; `PreferCPU` does, and then the output matches the Python package bit for bit.
+    pub fn load(env: &Environment, model: &Path) -> ort::Result<Self> {
+        let session = Session::builder(env)?
+            .with_auto_device(AutoDevicePolicy::PreferCPU)
+            .map_err(ort::Error::<()>::from)?
+            .commit_from_file(model)?;
+        Ok(Self { session })
     }
 
     /// Run the model over mono 22,050 Hz audio.
