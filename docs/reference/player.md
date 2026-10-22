@@ -39,14 +39,16 @@ What the GoatTracker 2.77 packed player does when a sound effect plays on a voic
 - the #20 spike ran the player on x64sc with effects on voice 3 and matched `score64-emu` on all 3,007 frames and 60,828 SID writes, each on the same cycle (`docs/research/2026-10-18-packed-player-spike.md`, "Sound effects on a real 6510");
 - the fixture song's verification matched x64sc on 1,554 frames and 34,681 writes per subtune, with the footstep, gunshot and clink on voice 3 every 37 frames (`fixtures/gt2-original/README.md`, Verification).
 
-The register values below are from that verified fixture case.
+The register values below are from that verified case (subtune 1, `-D1 -H1`). The helper's writes are identical to x64sc's there, so they are x64sc's values.
 
-- **The voice stays silent until the music's next new note.** When the effect ends, the player writes `$00` to that voice's control register and gives the voice back to the music only at the music's next new note on it. A note that was sustaining when the effect started does not come back. In the fixture's subtune 1, with the gunshot on voice 3 every 37 frames:
-  - the effect starts at frame 37 and ends with `$80` at frame 57;
-  - voice 3 is then held at `$00` until the next effect at frame 74;
-  - its long bass notes never return between effects.
-- **An effect plays through the music's filter.** Effect data has no filter settings at all: the converter discards them (`goattracker-sfx.md`, Conversion rules). The music keeps writing its own routing every frame. In the same case, `$D417` stays `$84` (resonance 8, voice 3 routed to the filter) on every frame of the effect, so the effect is filtered and muffled along with the music's sweeps. This is the mechanical reason for TAD §1.3 rule 4: a voice that effects may interrupt must not use the filter.
-- **The SID has no per-voice volume** (`sid.md`). A voice's envelope rises to full level during its attack, whatever its sustain level, as long as the gate stays on until the attack ends. To make an effect stand out, keep the music quieter rather than the effect louder: the filter on other voices, lower sustain levels and thinner pulse widths for the music, and wide pulses and noise for the effects. In the fixture's second subtune, on reSIDfp 6581 and A-weighted, this puts the effects 4.8 to 9.7 dB above the music's loud moments (90th percentile) (`fixtures/gt2-original/README.md`).
+- **The voice stays silent until the music's next new note.** When the effect ends, the player writes `$00` to that voice's control register and gives the voice back to the music only at the music's next new note on it. A note that was sustaining when the effect started does not come back. In the verified case:
+  - the footstep starts at frame 37 and ends with `$80` at frame 43;
+  - voice 3 is held at `$00` from frame 44 to 54;
+  - it plays again at frame 55, the music's next new note (`$09`, then `$41`);
+  - the note that was sounding when the effect started never resumes;
+  - the gunshot at frame 74 does the same: it ends at frame 94, the voice is silent from 96 to 102 and returns at 103.
+- **An effect plays through the music's filter.** Effect data has no filter settings at all: the converter discards them (`goattracker-sfx.md`, Conversion rules). The music keeps writing its own routing every frame. In the verified case, `$D417` stays `$84` (resonance 8, voice 3 routed to the filter) on every frame of every effect, so the effects are filtered along with the music's sweeps. This is why a voice that effects may interrupt must not use the filter (TAD §3.1, and rule 4 in §1.3).
+- **The SID has no per-voice volume** (`sid.md`), so to make an effect stand out, keep the music quieter rather than the effect louder: the filter on other voices, lower sustain levels and thinner pulse widths for the music, and wide pulses and noise for the effects. The fixture's second subtune is arranged this way. Measured on reSIDfp (6581), A-weighted, against the music's voices 1 and 2, its effects are 4.8 to 9.7 dB above the music's loud moments (90th percentile) (`fixtures/gt2-original/README.md`).
 
 What this means when arranging, for any voice a profile marks expendable (for example voice 3 in the built-in `sfx-shares-v3`):
 
