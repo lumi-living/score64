@@ -20,7 +20,7 @@ pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
 
-pub use adaptive::{AdaptiveSet, LayerProblem};
+pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
