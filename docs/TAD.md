@@ -136,7 +136,7 @@ An expendable voice comes back after an effect only at the music's next new note
 ### 3.2 Reduction
 Lead selection by salience (pitch, density, overrides) → monophonise (ghost-note removal, minimum note length, skyline, overlaps) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → loop search on downbeats → timing marks at the switch points each adaptive set declares (every bar by default).
 
-`score64_core::reduce` holds the rules. Each is a pure function from notes to notes plus the `Decision`s it made (provenance `Rules`, with the rule's name and version).
+`score64_core::reduce` holds the rules. Each is a pure function. Most map notes to notes plus the `Decision`s they made (provenance `Rules`, with the rule's name and version); some, such as the loop finder, only propose decisions.
 
 **Choose the lead** (`reduce::choose_lead`, rule `choose-lead@1`, #39) decides which transcribed part (a `QuantisedPart`) carries the melody in each bar of a subtune.
 
@@ -168,6 +168,12 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
   - A line note after a drum hit always starts fresh (`Retrigger`).
   - The drums keep their own instruments.
 - **Decision ids.** `drums-…` and `inter-…` ids follow monophonise's scheme (`<prefix>-<kind>-v<voice>-r<row>`, plus `-p<semitone>` for drops). A clash between kinds is certain, because priority is fixed. A clash within one kind is as sure as the winner was more confident.
+
+**Find the loop** (`reduce::find_loop`, rule `find-loop@1`, #44) proposes where a subtune jumps back to at its end.
+- **Score.** A subtune plays to its end and carries on from `loop_row`, so a good loop row is a bar start after which the music once went the way the ending goes. The `context` bars just before it (default 2) should sound like the ending: the last `context` whole bars, up to the last bar with music in it. A part bar at the end and any trailing silence are left out. Because transcriptions often end in silence, many proposals come out half sure; trimming the subtune to its music is a separate decision for #167.
+- **Comparison.** Bars are compared by chroma: each pitch class weighted by rows sounding times confidence, across all voices. Arpeggios count by their chord tones. The measure is cosine similarity.
+- **Choice.** Candidates are the bars from 1 on whose context ends before the ending's starts; bars with silent context are skipped. The best candidate at or above `min_similarity` (0.8) wins, and the earliest on a tie, which gives the longest loop. With none, the loop row is 0, at confidence 0.
+- **Decision.** One `LoopRow` decision (`loop`), as sure as the similarity. It's half as sure when the subtune ends inside a bar or after silence, because the jump then comes from music the comparison didn't see. Every candidate's score is returned for review. Tempo isn't compared: a loop row whose tempo differs from the ending's is not penalised.
 
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
