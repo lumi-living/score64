@@ -3,8 +3,9 @@
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
 //! skyline), overlaps trimmed, ties that lost their note restarted. [`choose_lead`] (#39) picks the part that
-//! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles' ranges.
-//! [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of their own or into another line.
+//! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles'
+//! ranges. [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of their own or into another line.
+//! [`find_loop`] (#44) proposes where a subtune loops back to.
 //! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios.
 
 use std::cmp::Ordering;
@@ -18,6 +19,8 @@ use crate::score::{Attack, Note, SubtuneName, Voice};
 
 mod chords;
 mod lead;
+mod looping;
+pub use looping::{Candidate, FIND_LOOP, LoopChoice, LoopRules, find_loop};
 mod octave;
 pub use chords::{
     Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, MIN_SCORE, arpeggiate, detect_chords,
