@@ -147,6 +147,60 @@ proptest! {
         prop_assert!(reports(&song, &ctx, Rule::TimingMarks, Severity::Error));
     }
 
+    /// Rule 5: a declared layer removed from the song, or two layers swapped.
+    #[test]
+    fn a_missing_or_misplaced_layer_is_an_error((mut song, ctx) in strategies::checked_song(), swap in any::<bool>()) {
+        prop_assume!(!ctx.adaptive.is_empty());
+        if swap && song.subtunes.len() >= 2 {
+            song.subtunes.swap(0, 1);
+        } else {
+            song.subtunes.remove(song.subtunes.len() - 1);
+        }
+        prop_assert!(reports(&song, &ctx, Rule::TimingMarks, Severity::Error));
+    }
+
+    /// Rule 9's warnings: a note left with one gated frame, and a fresh note on a gate-off-disabled (`$40`)
+    /// instrument straight after another. Each is a warning and adds no error.
+    #[test]
+    fn hard_restart_warnings_are_not_errors((mut song, mut ctx) in strategies::checked_song(), legato_instrument in any::<bool>()) {
+        let found = find_line(&song, &ctx, |_, _| true);
+        prop_assume!(found.is_some());
+        let (i, j) = found.unwrap();
+        prop_assume!(song.subtunes[i].length.get() >= 2);
+        // One steady tempo up to 64 frames, so a gate timer of tempo - 1 (at most 63) is legal everywhere.
+        let subtune = &mut song.subtunes[i];
+        subtune.tempo.clear();
+        let fpr = subtune.frames_per_row.get().min(64);
+        subtune.frames_per_row = crate::score::FramesPerRow::new(fpr).unwrap();
+        let line = &mut subtune.voices[j];
+        line.notes = vec![note(0, 1), note(1, 1)];
+        let facts = ctx.instruments.get_mut(&line.instrument).unwrap();
+        facts.gate_timer = fpr - 1;
+        facts.gate_off = !legato_instrument;
+        let p = validate(&song, &ctx);
+        let warned = p.iter().any(|p| {
+            p.rule == Rule::HardRestart
+                && p.severity == Severity::Warning
+                && p.message.contains(if legato_instrument { "won't retrigger" } else { "only 1 gated frame" })
+        });
+        prop_assert!(warned, "{p:#?}");
+        let e: Vec<_> = p.iter().filter(|p| p.is_error()).collect();
+        prop_assert!(e.is_empty(), "{e:#?}");
+    }
+
+    /// Files are the source of truth (ADR-004): a JSON round trip changes nothing the validator sees.
+    #[test]
+    fn validation_survives_a_json_round_trip((song, ctx) in strategies::checked_song(), soup in strategies::note_soup()) {
+        let mut song = song;
+        // Add some problems too, so the comparison is not only of empty lists.
+        if let Some(line) = song.subtunes.first_mut().and_then(|s| s.voices.first_mut()) {
+            line.notes.extend(soup);
+        }
+        let json = serde_json::to_string(&song).unwrap();
+        let back: Song = serde_json::from_str(&json).unwrap();
+        prop_assert_eq!(validate(&back, &ctx), validate(&song, &ctx));
+    }
+
     /// Rule 6: a note outside its role's range is a warning, never an error.
     #[test]
     fn out_of_range_pitches_are_warnings((mut song, ctx) in strategies::checked_song()) {
