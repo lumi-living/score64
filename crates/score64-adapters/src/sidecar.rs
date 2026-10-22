@@ -12,8 +12,10 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
+
+use process_wrap::std::{ChildWrapper, CommandWrap};
 
 /// The manifest schema this runner understands.
 pub const MANIFEST_SCHEMA: u64 = 1;
@@ -288,51 +290,35 @@ fn find_on_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Kills the child and everything it started if it is still running when dropped (timeout, panic, or the runner
-/// going away).
-struct Guard(Child);
+/// The sidecar and every process it starts: on Unix a process group of its own, on Windows a Job object, so
+/// descendants are found even after the process that started them has exited. `uv` does not pass a kill on to the
+/// Python it starts, so killing only `uv` would leave a hung script running (#126).
+///
+/// Dropping it kills whatever is left of the tree and reaps `uv` (timeout, panic, the runner going away, and after a
+/// normal exit too, so a descendant can't outlive the run or hold the stderr pipe open). If Score64 itself is killed,
+/// nothing runs and the tree survives, as with any process group; and because the group is not the terminal's,
+/// Ctrl-C reaches Score64 but not the sidecar.
+struct Tree(Box<dyn ChildWrapper>);
 
-impl Drop for Guard {
+impl Tree {
+    fn spawn(cmd: Command) -> std::io::Result<Self> {
+        let mut cmd = CommandWrap::from(cmd);
+        #[cfg(unix)]
+        cmd.wrap(process_wrap::std::ProcessGroup::leader());
+        #[cfg(windows)]
+        cmd.wrap(process_wrap::std::JobObject);
+        cmd.spawn().map(Tree)
+    }
+}
+
+impl Drop for Tree {
     fn drop(&mut self) {
-        if let Ok(None) = self.0.try_wait() {
-            kill_tree(&mut self.0);
-        }
+        // Errors only mean there is nothing left to kill or reap.
+        let _ = self.0.start_kill();
+        // Reap `uv` alone: on Windows process-wrap's own `wait` then blocks for a job notification, which an earlier
+        // `try_wait` may already have taken, so it could wait forever after a normal exit.
+        let _ = self.0.inner_mut().wait();
     }
-}
-
-/// Start `cmd` so that [`kill_tree`] can end it and every process it starts: on Unix in a process group of its own.
-fn spawn_tree(cmd: &mut Command) -> std::io::Result<Child> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    cmd.spawn()
-}
-
-/// Kill `child` and its descendants, then reap it. `uv` does not pass a kill on to the Python it starts, so killing
-/// only `uv` would leave a hung script running (#126). Unix: `kill -s KILL -- -<pgid>` on the group [`spawn_tree`]
-/// made.
-/// Windows: `taskkill /T /F`, which follows the process tree. Both are standard system commands; `Child::kill`
-/// stays as a fallback if they fail.
-fn kill_tree(child: &mut Child) {
-    let pid = child.id().to_string();
-    #[cfg(unix)]
-    let mut tree = {
-        // `--` before the negative id: procps' kill (Linux) would otherwise read `-<pgid>` as an option.
-        let mut c = Command::new("kill");
-        c.args(["-s", "KILL", "--", &format!("-{pid}")]);
-        c
-    };
-    #[cfg(windows)]
-    let mut tree = {
-        let mut c = Command::new("taskkill");
-        c.args(["/PID", &pid, "/T", "/F"]);
-        c
-    };
-    let _ = tree.stdout(Stdio::null()).stderr(Stdio::null()).status();
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 const STDERR_TAIL: usize = 4000;
@@ -349,40 +335,32 @@ fn tail(bytes: &[u8]) -> String {
 /// Run `cmd` (stdout discarded, stderr captured) for at most `timeout`.
 pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<(), SidecarError> {
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
-    let mut guard = Guard(spawn_tree(&mut cmd).map_err(SidecarError::Spawn)?);
+    let mut tree = Tree::spawn(cmd).map_err(SidecarError::Spawn)?;
     // Drain stderr on a thread so a chatty process can't block on a full pipe.
-    let mut pipe = guard.0.stderr.take().expect("stderr is piped");
+    let mut pipe = tree.0.stderr().take().expect("stderr is piped");
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = pipe.read_to_end(&mut buf);
         buf
     });
     let started = Instant::now();
-    let status = loop {
-        if let Some(status) = guard.0.try_wait().map_err(SidecarError::Spawn)? {
-            break Some(status);
-        }
-        if started.elapsed() >= timeout {
-            break None;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    match status {
-        Some(status) => {
-            let stderr = tail(&reader.join().unwrap_or_default());
-            if status.success() {
-                Ok(())
-            } else {
-                Err(SidecarError::Failed { status, stderr })
+    let waited = loop {
+        match tree.0.try_wait() {
+            Ok(None) if started.elapsed() < timeout => {
+                std::thread::sleep(Duration::from_millis(20))
             }
+            done => break done,
         }
-        None => {
-            drop(guard); // kill and reap, which also closes the pipe
-            Err(SidecarError::Timeout {
-                after: timeout,
-                stderr: tail(&reader.join().unwrap_or_default()),
-            })
-        }
+    };
+    drop(tree); // kill and reap what is left, which also closes the pipe
+    let stderr = tail(&reader.join().unwrap_or_default());
+    match waited.map_err(SidecarError::Spawn)? {
+        Some(status) if status.success() => Ok(()),
+        Some(status) => Err(SidecarError::Failed { status, stderr }),
+        None => Err(SidecarError::Timeout {
+            after: timeout,
+            stderr,
+        }),
     }
 }
 
@@ -479,15 +457,14 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 
-    /// The roles the test binary plays when it runs itself for [`timeout_kills_the_whole_process_tree`].
+    /// The roles the test binary plays when it runs itself for the process-tree tests.
     const ROLE: &str = "SCORE64_TREE_ROLE";
     const PIDFILE: &str = "SCORE64_TREE_PIDFILE";
-    const TREE_TEST: &str = "sidecar::tests::timeout_kills_the_whole_process_tree";
 
-    /// This test binary, running only the tree test, in `role`.
-    fn myself(role: &str, pidfile: &Path) -> Command {
+    /// This test binary, running only `test`, in `role`.
+    fn myself(test: &str, role: &str, pidfile: &Path) -> Command {
         let mut c = Command::new(std::env::current_exe().unwrap());
-        c.args([TREE_TEST, "--exact", "--nocapture", "--test-threads=1"])
+        c.args([test, "--exact", "--nocapture", "--test-threads=1"])
             .env(ROLE, role)
             .env(PIDFILE, pidfile);
         c
@@ -497,7 +474,7 @@ mod tests {
     fn alive(pid: u32) -> bool {
         #[cfg(unix)]
         {
-            Command::new("kill")
+            Command::new("/bin/kill")
                 .args(["-0", &pid.to_string()])
                 .stderr(Stdio::null())
                 .status()
@@ -513,44 +490,48 @@ mod tests {
         }
     }
 
-    /// The runner kills the process it started and every process that one started, as `uv` starting Python would
-    /// (#126). Run as a test it plays the runner; run by itself with SCORE64_TREE_ROLE it plays the "parent", which
-    /// starts a sleeping "grandchild", records its PID and sleeps.
-    #[test]
-    fn timeout_kills_the_whole_process_tree() {
-        match std::env::var(ROLE).as_deref() {
-            Ok("parent") => {
+    /// Plays a role if this process was started as one, and returns true; otherwise returns false. A "parent" starts a
+    /// sleeping "grandchild" and records its PID, then sleeps ("parent") or exits at once ("orphaning-parent"), as
+    /// `uv` starting Python would and as a launcher that exits after starting its child would.
+    fn play_role(test: &str) -> bool {
+        let role = std::env::var(ROLE);
+        match role.as_deref() {
+            Ok(role @ ("parent" | "orphaning-parent")) => {
                 let pidfile = PathBuf::from(std::env::var_os(PIDFILE).unwrap());
-                let mut grandchild = myself("grandchild", &pidfile).spawn().unwrap();
-                std::fs::write(&pidfile, grandchild.id().to_string()).unwrap();
-                std::thread::sleep(Duration::from_secs(60));
-                // Only reached if nobody killed this tree; tidy up rather than leave a zombie.
-                let _ = grandchild.kill();
-                let _ = grandchild.wait();
-                return;
+                #[expect(clippy::zombie_processes, reason = "the runner under test kills it")]
+                let grandchild = myself(test, "grandchild", &pidfile).spawn().unwrap();
+                // Written whole, then renamed, so the runner never reads a half-written file.
+                let part = pidfile.with_extension("part");
+                std::fs::write(&part, grandchild.id().to_string()).unwrap();
+                std::fs::rename(&part, &pidfile).unwrap();
+                if role == "parent" {
+                    std::thread::sleep(Duration::from_secs(60));
+                }
+                true
             }
             Ok("grandchild") => {
                 std::thread::sleep(Duration::from_secs(60));
-                return;
+                true
             }
-            _ => {}
+            _ => false,
         }
-        let d = temp_dir("tree");
+    }
+
+    /// Runs `role` as a sidecar with `timeout` and returns the runner's result once the grandchild is gone; panics if
+    /// it survives.
+    fn run_tree(test: &str, role: &str, timeout: Duration) -> Result<(), SidecarError> {
+        let d = temp_dir(role);
         let pidfile = d.join("grandchild.pid");
-        let cmd = myself("parent", &pidfile);
+        let cmd = myself(test, role, &pidfile);
         // On a thread with a deadline: a surviving grandchild holds the stderr pipe open, which would block the
         // runner's reader and hang the test instead of failing it.
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(run_with_timeout(cmd, Duration::from_secs(3)));
+            let _ = tx.send(run_with_timeout(cmd, timeout));
         });
         let result = rx
-            .recv_timeout(Duration::from_secs(30))
+            .recv_timeout(timeout + Duration::from_secs(30))
             .expect("the runner returns: nothing holds its stderr pipe open");
-        assert!(
-            matches!(result, Err(SidecarError::Timeout { .. })),
-            "{result:?}"
-        );
         let pid: u32 = std::fs::read_to_string(&pidfile)
             .expect("the parent recorded its child")
             .trim()
@@ -560,7 +541,33 @@ mod tests {
         while alive(pid) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        assert!(!alive(pid), "grandchild {pid} survived the timeout");
         let _ = std::fs::remove_dir_all(&d);
+        assert!(!alive(pid), "grandchild {pid} survived");
+        result
+    }
+
+    /// On a timeout the runner kills the process it started and every process that one started (#126).
+    #[test]
+    fn timeout_kills_the_whole_process_tree() {
+        const TEST: &str = "sidecar::tests::timeout_kills_the_whole_process_tree";
+        if play_role(TEST) {
+            return;
+        }
+        let result = run_tree(TEST, "parent", Duration::from_secs(10));
+        assert!(
+            matches!(result, Err(SidecarError::Timeout { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// A descendant left running by a process that has already exited is killed too, when the run ends.
+    #[test]
+    fn an_orphaned_descendant_is_killed_when_the_run_ends() {
+        const TEST: &str = "sidecar::tests::an_orphaned_descendant_is_killed_when_the_run_ends";
+        if play_role(TEST) {
+            return;
+        }
+        let result = run_tree(TEST, "orphaning-parent", Duration::from_secs(60));
+        assert!(result.is_ok(), "{result:?}");
     }
 }
