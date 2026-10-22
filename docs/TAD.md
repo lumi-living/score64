@@ -142,7 +142,13 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 - **Kinds.** A hit's General MIDI note gives its `DrumKind`: kick, snare, hat (and cymbals) or other.
 - **Kit.** A project's `DrumKit` maps each kind to a `DrumSound`: an instrument preset, a pitch and a length in rows. The sounds themselves, such as a noise snare or a triangle kick, are presets, which Score64 doesn't name.
 - **A voice of their own.** The highest-priority hit on a row wins (kick, snare, hat, other), and each note lasts its sound's rows or until the next hit. Clashing hits and kinds missing from the kit are dropped as decisions (`clash`, `unmapped`).
-- **Interleaving.** Where no voice is free, the folded drums are interleaved with another monophonic line, such as a bass. A hit cuts the line note sounding over it (a `TrimNote` decision), and that note doesn't resume. `on_clash` decides a row both start on. Hi-hats are dropped unless allowed (`interleave`). A tie broken by a hit restarts (`Retrigger`). The drums keep their own instruments.
+- **Interleaving.** Where no voice is free, `interleave_drums` takes the hits and another monophonic line, such as a bass, and folds the hits itself. That way it always knows which notes are drums, even when several kinds share one preset or the line plays a kit preset.
+  - A hit cuts the line note sounding over it (a `TrimNote` decision), and that note doesn't resume.
+  - `on_clash` decides a row that both start on, at confidence 0.5.
+  - Hi-hats are dropped before lengths are set (`interleave`) unless allowed.
+  - A line note after a drum hit always starts fresh (`Retrigger`).
+  - The drums keep their own instruments.
+- **Decision ids.** `drums-…` and `inter-…` ids follow monophonise's scheme (`<prefix>-<kind>-v<voice>-r<row>`, plus `-p<semitone>` for drops). A clash between kinds is certain, because priority is fixed. A clash within one kind is as sure as the winner was more confident.
 
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.

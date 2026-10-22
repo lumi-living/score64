@@ -7,6 +7,7 @@ use proptest::prelude::*;
 
 use super::*;
 use crate::profile::{ProfileName, builtin};
+use crate::provenance::{ContentHash, Provenance, SourceRef};
 use crate::score::{
     FramesPerRow, Role, Roles, Schema, Song, Subtune, SubtuneName, Voice, VoiceLine,
 };
@@ -149,7 +150,7 @@ fn one_hit_a_row_by_priority_and_unmapped_kinds_go() {
 fn interleaving_cuts_the_line_and_drops_hats() {
     // A bass note over rows 0–8 and another from 8; a snare on 4 and a hat on 10.
     let n = name();
-    let drums = fold_drums([hit(4, 38), hit(10, 42)], &at(&n), &kit()).notes;
+    let drums = vec![hit(4, 38), hit(10, 42)];
     let bass = vec![line_note(0, 8, "C-2"), line_note(8, 8, "G-1")];
     let r = interleave_drums(bass, drums, &at(&n), &kit(), &InterleaveRules::default());
     assert_eq!(
@@ -169,7 +170,7 @@ fn interleaving_cuts_the_line_and_drops_hats() {
     assert_eq!(trim.id.as_str(), "inter-trim-v3-r0");
     assert_eq!(r.notes[0].decision.as_ref(), Some(&trim.id));
     // With hats allowed, the hat cuts the second bass note too.
-    let drums = fold_drums([hit(4, 38), hit(10, 42)], &at(&n), &kit()).notes;
+    let drums = vec![hit(4, 38), hit(10, 42)];
     let bass = vec![line_note(0, 8, "C-2"), line_note(8, 8, "G-1")];
     let rules = InterleaveRules {
         hats: true,
@@ -190,7 +191,7 @@ fn interleaving_cuts_the_line_and_drops_hats() {
 #[test]
 fn a_clash_on_one_row_goes_to_the_drum_or_the_line() {
     let n = name();
-    let drums = || fold_drums([hit(0, 36)], &at(&n), &kit()).notes;
+    let drums = || vec![hit(0, 36)];
     let bass = || vec![line_note(0, 4, "C-2")];
     let r = interleave_drums(
         bass(),
@@ -202,7 +203,7 @@ fn a_clash_on_one_row_goes_to_the_drum_or_the_line() {
     assert_eq!(shape(&r.notes), [(0, 2, "kick".into())]);
     assert_eq!(reasons(&r), [DropReason::Clash]);
     let rules = InterleaveRules {
-        on_clash: Clash::Line,
+        on_clash: OnClash::Line,
         ..InterleaveRules::default()
     };
     let r = interleave_drums(bass(), drums(), &at(&n), &kit(), &rules);
@@ -213,7 +214,7 @@ fn a_clash_on_one_row_goes_to_the_drum_or_the_line() {
 #[test]
 fn a_tie_after_a_hit_starts_fresh() {
     let n = name();
-    let drums = fold_drums([hit(4, 38)], &at(&n), &kit()).notes;
+    let drums = vec![hit(4, 38)];
     let mut tied = line_note(4, 4, "D-2");
     tied.attack = Attack::Legato;
     // The tie on 4 loses its row to the snare; the tie on 8 follows the snare, not its own line, so it restarts.
@@ -231,14 +232,162 @@ fn a_tie_after_a_hit_starts_fresh() {
 }
 
 #[test]
-fn kits_round_trip_and_name_their_kinds() {
+fn kits_round_trip() {
     let k = kit();
     let json = serde_json::to_string(&k).unwrap();
     assert!(!json.contains("other"), "{json}");
     assert_eq!(serde_json::from_str::<DrumKit>(&json).unwrap(), k);
-    let snare = fold_drums([hit(0, 38)], &at(&name()), &k).notes.remove(0);
-    assert_eq!(k.kind_of(&snare), Some(DrumKind::Snare));
-    assert_eq!(k.kind_of(&line_note(0, 1, "C-4")), None);
+}
+
+#[test]
+fn every_general_midi_class_member_has_its_kind() {
+    use DrumKind::*;
+    for gm in [35, 36] {
+        assert_eq!(DrumKind::from_midi(gm), Kick, "{gm}");
+    }
+    for gm in 37..=40 {
+        assert_eq!(DrumKind::from_midi(gm), Snare, "{gm}");
+    }
+    for gm in [42, 44, 46, 49, 51, 52, 53, 55, 57, 59] {
+        assert_eq!(DrumKind::from_midi(gm), Hat, "{gm}");
+    }
+    for gm in [41, 43, 45, 47, 48, 50, 54, 56, 58, 60, 81] {
+        assert_eq!(DrumKind::from_midi(gm), Other, "{gm}");
+    }
+}
+
+#[test]
+fn priority_not_key_number_decides_a_row() {
+    // A tom (GM 41) and a hat (GM 42) on one row: the hat wins by priority, though its key number is higher.
+    let n = name();
+    let mut k = kit();
+    k.other = Some(sound("tom", "C-4", 2));
+    let r = fold_drums([hit(0, 41), hit(0, 42)], &at(&n), &k);
+    assert_eq!(shape(&r.notes), [(0, 1, "hat".into())]);
+    assert_eq!(r.decisions[0].confidence, Confidence::CERTAIN);
+}
+
+#[test]
+fn the_more_confident_of_one_kind_wins_in_any_order() {
+    let n = name();
+    let mut sure = hit(0, 38);
+    sure.source = SourceRef::new(ContentHash([5; 32]), 0, 10);
+    let mut unsure = hit(0, 40);
+    unsure.confidence = Confidence::new(0.3).unwrap();
+    for hits in [
+        [sure.clone(), unsure.clone()],
+        [unsure.clone(), sure.clone()],
+    ] {
+        let r = fold_drums(hits, &at(&n), &kit());
+        assert_eq!(r.notes[0].source, sure.source, "the sure one stays");
+        assert!((r.decisions[0].confidence.get() - 0.6).abs() < 1e-6);
+    }
+}
+
+#[test]
+fn hits_keep_their_source_and_decision() {
+    let n = name();
+    let mut h = hit(0, 36);
+    h.source = SourceRef::new(ContentHash([5; 32]), 0, 10);
+    h.decision = Some(crate::provenance::DecisionId::new("earlier").unwrap());
+    let r = fold_drums([h.clone()], &at(&n), &kit());
+    assert_eq!(
+        (r.notes[0].source, &r.notes[0].decision),
+        (h.source, &h.decision)
+    );
+}
+
+#[test]
+fn a_tie_after_a_long_drum_hit_starts_fresh() {
+    // An eight-row snare on 4 runs to the next note on 8, which is tied: it must not tie onto the snare.
+    let n = name();
+    let mut k = kit();
+    k.snare = Some(sound("snare", "C-5", 8));
+    let mut tied = line_note(8, 4, "E-2");
+    tied.attack = Attack::Legato;
+    let r = interleave_drums(
+        [line_note(0, 8, "C-2"), tied],
+        [hit(4, 38)],
+        &at(&n),
+        &k,
+        &InterleaveRules::default(),
+    );
+    assert_eq!(r.notes[2].attack, Attack::Fresh);
+    let id = r.notes[2].decision.as_ref().unwrap();
+    assert_eq!(id.as_str(), "inter-tie-v3-r8");
+}
+
+#[test]
+fn kinds_sharing_a_preset_are_told_apart() {
+    // One noise preset for snare and hat, at different pitches: hats still go when they are not allowed.
+    let n = name();
+    let mut k = kit();
+    k.hat = Some(sound("snare", "C-7", 1));
+    let r = interleave_drums(
+        [line_note(0, 16, "C-2")],
+        [hit(4, 38), hit(8, 42)],
+        &at(&n),
+        &k,
+        &InterleaveRules::default(),
+    );
+    assert_eq!(shape(&r.notes)[1..], [(4, 3, "snare".into())]);
+    assert!(reasons(&r).contains(&DropReason::Interleave));
+}
+
+#[test]
+fn a_line_note_with_a_kit_instrument_is_still_the_lines() {
+    // The bass plays the kick preset itself: a hit still cuts it with a decision.
+    let n = name();
+    let mut bass = line_note(0, 8, "C-2");
+    bass.instrument = Some(PresetId("kick".into()));
+    let r = interleave_drums(
+        [bass],
+        [hit(4, 38)],
+        &at(&n),
+        &kit(),
+        &InterleaveRules::default(),
+    );
+    assert_eq!(r.notes[0].length.get(), 4);
+    assert!(
+        r.decisions
+            .iter()
+            .any(|d| d.id.as_str() == "inter-trim-v3-r0")
+    );
+}
+
+#[test]
+fn a_dropped_hat_does_not_cut_the_hit_before_it() {
+    // A six-row kick on 0, a hat on 2 (dropped when interleaving): the kick keeps its six rows.
+    let n = name();
+    let mut k = kit();
+    k.kick = Some(sound("kick", "C-3", 6));
+    let r = interleave_drums(
+        [line_note(8, 4, "C-2")],
+        [hit(0, 36), hit(2, 42)],
+        &at(&n),
+        &k,
+        &InterleaveRules::default(),
+    );
+    assert_eq!(shape(&r.notes)[0], (0, 6, "kick".into()));
+}
+
+#[test]
+fn clashes_with_the_line_are_coin_tosses_and_doubled_rows_go() {
+    let n = name();
+    let r = interleave_drums(
+        [line_note(0, 4, "C-2"), line_note(0, 4, "D-2")],
+        [hit(0, 36)],
+        &at(&n),
+        &kit(),
+        &InterleaveRules::default(),
+    );
+    assert_eq!(shape(&r.notes), [(0, 2, "kick".into())]);
+    let confidences: Vec<f32> = r.decisions.iter().map(|d| d.confidence.get()).collect();
+    assert_eq!(
+        confidences,
+        [1.0, 0.5],
+        "the doubled line row, then the clash"
+    );
 }
 
 /// The song a drum or interleaved line is checked in: a 1024-row subtune under `full`, the line on voice 3, every
@@ -332,16 +481,16 @@ proptest! {
         line_wins in any::<bool>(),
     ) {
         let n = name();
-        let drums = fold_drums(soup, &at(&n), &kit()).notes;
-        let rules = InterleaveRules { hats, on_clash: if line_wins { Clash::Line } else { Clash::Drum } };
+        let rules = InterleaveRules { hats, on_clash: if line_wins { OnClash::Line } else { OnClash::Drum } };
         // The line's own instruments are left to the voice line's; notes() may give some their own.
         let line: Vec<Note> = line.into_iter().map(|mut n| { n.instrument = None; n }).collect();
-        let r = interleave_drums(line.clone(), drums.clone(), &at(&n), &kit(), &rules);
+        let r = interleave_drums(line.clone(), soup, &at(&n), &kit(), &rules);
         let (song, ctx) = checked(r.notes.clone(), Role::Bass);
         let e = errors(&song, &ctx);
         prop_assert!(e.is_empty(), "{e:#?}");
         for original in &line {
-            let kept = r.notes.iter().find(|k| k.row == original.row && kit().kind_of(k).is_none());
+            // Line notes have no instrument of their own here; drum hits have their kit preset.
+            let kept = r.notes.iter().find(|k| k.row == original.row && k.instrument.is_none());
             match kept {
                 Some(k) => {
                     prop_assert!(k.length <= original.length);
@@ -357,11 +506,16 @@ proptest! {
                 }
             }
         }
-        // Drums never sound longer than their kit says.
-        for d in r.notes.iter().filter(|n| kit().kind_of(n).is_some()) {
-            let kind = kit().kind_of(d).unwrap();
-            prop_assert!(d.length <= kit().sound(kind).unwrap().rows);
+        // Drums last their sound's rows, or until the next note.
+        let kind_of = |n: &Note| [DrumKind::Kick, DrumKind::Snare, DrumKind::Hat]
+            .into_iter()
+            .find(|&k| kit().sound(k).is_some_and(|s| Some(&s.instrument) == n.instrument.as_ref()));
+        for (i, d) in r.notes.iter().enumerate() {
+            let Some(kind) = kind_of(d) else { continue };
             prop_assert!(hats || kind != DrumKind::Hat);
+            let rows = kit().sound(kind).unwrap().rows.get();
+            let gap = r.notes.get(i + 1).map_or(u32::MAX, |next| next.row - d.row);
+            prop_assert_eq!(d.length.get(), rows.min(gap));
         }
     }
 }
