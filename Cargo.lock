@@ -3095,6 +3095,7 @@ version = "0.0.0"
 dependencies = [
  "schemars",
  "score64-adapters",
+ "score64-core",
  "score64-formats",
  "serde",
  "serde_json",

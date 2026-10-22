@@ -40,8 +40,8 @@ Typical needs range from a single title tune to gameplay audio of ambience and f
 - ✅ Audio (WAV, MP3, FLAC, OGG, AAC) and MIDI input
 - ✅ Transcription via provider adapters: hosted multi-instrument transcription, local Basic Pitch (ONNX) per stem
 - ✅ Optional stem separation (provider stems, ONNX models; PyTorch-only models via the optional sidecar)
-- ✅ Beat and downbeat grid; tempo snapping to PAL frame-exact row lengths
-- ✅ Target machine: **PAL by default.** An NTSC C64 plays an unadjusted song about 19 % faster. Tempo snapping already handles both standards (PAL 50.1246 Hz, NTSC 59.826 Hz). Rendering and the emulator helper are PAL only, and NTSC as a project option is #139.
+- ✅ Beat and downbeat grid; tempo snapping to frame-exact row lengths
+- ✅ Target machine: **PAL only** for now. An NTSC C64 plays an unadjusted song about 19 % faster. Tempo snapping is ready for NTSC (59.826 Hz) as well as PAL (50.1246 Hz), but rendering and the emulator helper are PAL only, and choosing NTSC in a project is #139.
 
 ### Arrangement (reduction)
 - ✅ Voice profiles per subtune, as validated data: built-in `full`, `sfx-shares-v3`, `sfx-owns-v3` and `sfx-owns-v2-v3`, plus profiles a project defines for its own voice plan

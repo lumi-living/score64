@@ -3,8 +3,8 @@
 //!
 //! Two clocks meet here. The source has a beat grid in wall-clock time (from the beat tracker), which places notes on
 //! rows. The C64 plays rows at a whole number of frames each, at the frame rate of its video standard
-//! ([`VideoStandard`]: PAL or NTSC), which fixes the tempo the music is heard at. [`snap_tempo`] chooses the row length and reports how far the C64's tempo is from the source's;
-//! [`BeatGrid`] turns source times into rows.
+//! ([`VideoStandard`]: PAL or NTSC), which fixes the tempo the music is heard at. [`snap_tempo`] chooses the row
+//! length and reports how far the C64's tempo is from the source's; [`BeatGrid`] turns source times into rows.
 
 use std::num::{NonZeroU8, NonZeroU32};
 
@@ -21,7 +21,7 @@ pub enum VideoStandard {
     /// PAL (VIC-II 6569): 312 lines of 63 cycles, 985,248 Hz, about 50.1246 frames a second.
     #[default]
     Pal,
-    /// NTSC (VIC-II 6567R8): 263 lines of 65 cycles, 1,022,727 Hz, about 59.826 frames a second.
+    /// NTSC (VIC-II 6567R8): 263 lines of 65 cycles, 1,022,727 Hz (14.31818 MHz / 14), about 59.826 frames a second.
     Ntsc,
 }
 
@@ -47,8 +47,8 @@ impl VideoStandard {
         self.clock_hz() as f64 / self.cycles_per_frame() as f64
     }
 
-    /// The rounded frame rate trackers quote tempos at: 50 Hz for PAL (GoatTracker: BPM = 750 / frames per row at
-    /// four rows per beat), 60 Hz for NTSC.
+    /// The rounded frame rate tempos are quoted at: 50 Hz for PAL, as trackers do (GoatTracker: BPM = 750 / frames
+    /// per row at four rows per beat), and by the same rule 60 Hz for NTSC (Score64's convention).
     pub const fn nominal_frame_rate(self) -> f64 {
         match self {
             VideoStandard::Pal => 50.0,
@@ -65,7 +65,7 @@ pub const NTSC_FRAME_RATE: f64 = VideoStandard::Ntsc.frame_rate();
 
 /// The rounded frame rate PAL trackers quote tempos at (GoatTracker: BPM = 750 / frames per row at four rows per
 /// beat).
-pub const NOMINAL_FRAME_RATE: f64 = VideoStandard::Pal.nominal_frame_rate();
+pub const PAL_NOMINAL_FRAME_RATE: f64 = VideoStandard::Pal.nominal_frame_rate();
 
 /// The tempo, in beats per minute, of `frames_per_row` at `rows_per_beat` and `frame_rate`.
 pub fn bpm_at(frames_per_row: FramesPerRow, rows_per_beat: NonZeroU8, frame_rate: f64) -> f64 {
@@ -96,8 +96,8 @@ pub struct TempoSnap {
 }
 
 /// Snap `detected_bpm` to the row length (3–127 frames) whose real tempo on a `standard` C64 is nearest, at
-/// `rows_per_beat` rows per beat. `None` when the tempo is not a positive, finite number. A tempo outside what 3–127 frames per row can play
-/// snaps to the nearest end, and the error says how far off that is.
+/// `rows_per_beat` rows per beat. `None` when the tempo is not a positive, finite number. A tempo outside what 3–127
+/// frames per row can play snaps to the nearest end, and the error says how far off that is.
 pub fn snap_tempo(
     detected_bpm: f64,
     rows_per_beat: NonZeroU8,

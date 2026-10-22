@@ -30,7 +30,7 @@ fn nominal_tempos_match_the_reference_table() {
         (4, 187.5),
     ] {
         assert_eq!(
-            bpm_at(fpr(frames), rpb(4), NOMINAL_FRAME_RATE),
+            bpm_at(fpr(frames), rpb(4), PAL_NOMINAL_FRAME_RATE),
             bpm,
             "{frames}"
         );
@@ -72,8 +72,8 @@ fn snapping_reports_error_and_drift_against_the_real_pal_rate() {
 
 #[test]
 fn the_standards_match_the_reference() {
-    // docs/reference/tempo-grid.md: PAL 312 × 63 cycles at 985,248 Hz; NTSC 263 × 65 at 1,022,727 Hz (both measured
-    // in VICE). PAL is the default.
+    // docs/reference/tempo-grid.md: PAL 312 × 63 cycles at 985,248 Hz; NTSC 263 × 65 at 1,022,727 Hz (the cycles per
+    // frame measured in VICE, the NTSC clock derived from its crystal). PAL is the default.
     assert_eq!(VideoStandard::default(), PAL);
     assert_eq!((PAL.clock_hz(), PAL.cycles_per_frame()), (985_248, 19_656));
     assert_eq!(
@@ -81,7 +81,6 @@ fn the_standards_match_the_reference() {
         (1_022_727, 17_095)
     );
     assert!(close(NTSC_FRAME_RATE, 59.826, 1e-3), "{NTSC_FRAME_RATE}");
-    assert_eq!(PAL.frame_rate(), PAL_FRAME_RATE);
     // NTSC runs about 19 % more frames a second than PAL, and 0.29 % fewer than its nominal 60.
     assert!(close(NTSC_FRAME_RATE / PAL_FRAME_RATE, 1.1935, 1e-4));
     assert!(close(NTSC_FRAME_RATE / 60.0 - 1.0, -0.002_90, 1e-5));
@@ -132,6 +131,12 @@ fn snapping_follows_the_target_standard() {
     let s = snap_tempo(150.0, rpb(4), NTSC).unwrap();
     assert_eq!((s.frames_per_row, s.nominal_bpm), (fpr(6), 150.0));
     assert!(close(s.error, -0.002_90, 1e-5), "{}", s.error);
+    // About 174 ms per minute behind.
+    assert!(
+        close(s.drift_ms_per_minute, -174.4, 0.1),
+        "{}",
+        s.drift_ms_per_minute
+    );
 }
 
 #[test]
@@ -139,8 +144,10 @@ fn tempos_out_of_reach_snap_to_the_ends_with_their_error() {
     let fast = snap_tempo(1000.0, rpb(4), PAL).unwrap();
     assert_eq!(fast.frames_per_row, FramesPerRow::MIN);
     assert!(fast.error < -0.7, "{}", fast.error);
-    let slow = snap_tempo(5.0, rpb(4), NTSC).unwrap();
-    assert_eq!(slow.frames_per_row, FramesPerRow::MAX);
+    for standard in [PAL, NTSC] {
+        let slow = snap_tempo(5.0, rpb(4), standard).unwrap();
+        assert_eq!(slow.frames_per_row, FramesPerRow::MAX, "{standard:?}");
+    }
     for bad in [0.0, -60.0, f64::NAN, f64::INFINITY] {
         for standard in [PAL, NTSC] {
             assert_eq!(snap_tempo(bad, rpb(4), standard), None, "{bad}");

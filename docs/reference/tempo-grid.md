@@ -24,8 +24,11 @@ The frame rate depends on the target machine's video standard (`score64_core::Vi
 
 ## NTSC
 
-- **Nominal, 60 Hz.** The rounded rate NTSC tempos are quoted at: `900 / frames_per_row` BPM at four rows per beat.
-- **Real NTSC, 59.826 Hz.** An NTSC frame (VIC-II 6567R8) is 17,095 cycles of the 1,022,727 Hz CPU clock: 263 raster lines of 65 cycles. An NTSC C64 therefore plays every tempo **0.290 % slower** than its 60 Hz nominal value, and a song timed for PAL plays **19.4 % faster** (59.826 / 50.1246).
+- **Nominal, 60 Hz.** GoatTracker shows frames per row, not BPM, and its `750 / frames_per_row` is PAL's convention. For NTSC, Score64 quotes nominal tempos at the rounded 60 Hz by the same rule, `900 / frames_per_row` BPM at four rows per beat. That's a project convention, not a tracker's.
+- **Real NTSC, 59.826 Hz.** An NTSC frame (VIC-II 6567R8) is 17,095 cycles: 263 raster lines of 65 cycles, which VICE measures (below) and which VICE's `c64.h` also gives (`C64_NTSC_SCREEN_LINES` 263, `C64_NTSC_CYCLES_PER_LINE` 65). The 1,022,727 Hz clock isn't measured; it's derived:
+  - The NTSC master crystal is 14.31818 MHz, four times the 3.579545 MHz colour subcarrier. Divided by 14, that gives the CPU clock.
+  - VICE rounds it to 1,022,730 Hz (`C64_NTSC_CYCLES_PER_SEC`). The difference is in the sixth significant figure, 0.0003 %.
+  - The early 6567R56A (VICE's `C64_NTSCOLD`, 262 lines of 64 cycles) isn't supported. An NTSC C64 therefore plays every tempo **0.290 % slower** than its 60 Hz nominal value, and a song timed for PAL plays **19.4 % faster** (59.826 / 50.1246).
 
 | Frames / row | Nominal BPM (4 rows per beat) | Real NTSC BPM |
 |---|---|---|
@@ -38,10 +41,21 @@ The frame rate depends on the target machine's video standard (`score64_core::Vi
 | 5 | 180 | 179.48 |
 | 4 | 225 | 224.35 |
 
-**Evidence (VICE 3.10, 2026-10-23).** The same packed GoatTracker tune was played with `vsid -pal -keepenv` and `vsid -ntsc -keepenv` and `-sounddev dump`, and the cycle gaps between the bursts of SID writes (one burst per play call) were measured. `-keepenv` is needed: without it, the PSID header puts the machine back to PAL.
-- **Mean gap:** 19,656.2 cycles over 147 PAL frames, and 17,095.1 over 170 NTSC frames.
-- **Most common gaps:** 19,655–19,657 on PAL, and 17,094–17,096 on NTSC.
-- **Spread:** single gaps vary by a few tens of cycles, because a play call's first write doesn't always land at the same point.
+**Evidence (VICE 3.10, 2026-10-23), for the cycles per frame.**
+
+What was run:
+- The tune was `fixtures/gt2-original/sixteen-steps.sng`, packed as a PSID.
+- It was played under `vsid -pal -keepenv` and under `vsid -ntsc -keepenv`, with `-sounddev dump -limitcycles 3000000 -tune 1`.
+- `-keepenv` is needed: without it, the PSID header puts the machine back to PAL.
+
+The dump gives the cycle count of every SID write. We counted the cycles between successive bursts of writes; a burst starts after a pause of more than 2,000 cycles, and there's one per play call. The first gap, which follows init, is left out.
+
+| | Median gap | Frames measured | Most common gaps |
+|---|---|---|---|
+| PAL | 19,656 cycles | 151 | 19,655–19,657 |
+| NTSC | 17,095 cycles | 174 | 17,094–17,096 |
+
+Single gaps vary by a few tens of cycles, and a few by several hundred. A play call's first write doesn't always land at the same point in the call, which is why the median is quoted.
 
 The emulator helper (`score64-emu`) runs PAL only, so an NTSC target can't be rendered or auditioned yet (#139).
 

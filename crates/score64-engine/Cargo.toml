@@ -16,5 +16,9 @@ schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+# Only to check that the helper's timing is the core's PAL timing (#139).
+score64-core = { workspace = true }
+
 [lints]
 workspace = true
