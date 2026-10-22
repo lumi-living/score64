@@ -311,15 +311,17 @@ fn spawn_tree(cmd: &mut Command) -> std::io::Result<Child> {
 }
 
 /// Kill `child` and its descendants, then reap it. `uv` does not pass a kill on to the Python it starts, so killing
-/// only `uv` would leave a hung script running (#126). Unix: `kill -9 -<pgid>` on the group [`spawn_tree`] made.
+/// only `uv` would leave a hung script running (#126). Unix: `kill -s KILL -- -<pgid>` on the group [`spawn_tree`]
+/// made.
 /// Windows: `taskkill /T /F`, which follows the process tree. Both are standard system commands; `Child::kill`
 /// stays as a fallback if they fail.
 fn kill_tree(child: &mut Child) {
     let pid = child.id().to_string();
     #[cfg(unix)]
     let mut tree = {
+        // `--` before the negative id: procps' kill (Linux) would otherwise read `-<pgid>` as an option.
         let mut c = Command::new("kill");
-        c.args(["-9", &format!("-{pid}")]);
+        c.args(["-s", "KILL", "--", &format!("-{pid}")]);
         c
     };
     #[cfg(windows)]
