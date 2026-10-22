@@ -213,6 +213,11 @@ Manual decisions override LLM suggestions, which override rules. A decision neve
 | Artifacts: stems, MIDI, `.sng`, renders, `.prg` / `.sid`, metrics | content-addressed cache `.score64/cache/<stage>/<hash>/` |
 | Index for the app: versions, metrics, search | SQLite `.score64/index.db`, rebuildable from manifests and git |
 
+**`decisions.toml`** (`score64_project::DecisionsFile`, #25) holds a track's decisions: `schema = 1`, then one `[[decision]]` table per decision, in the shape of §3.3. Each one carries `id`, `subtune`, `bar`, `confidence` and `reviewed`, a `[decision.proposal]` table tagged by `change`, and a `[decision.provenance]` table tagged by `by`.
+- **Writing.** Decisions are sorted by subtune and then id, with fields in declaration order, so the same decisions always give the same bytes. A file is written to a temporary file beside it and then renamed into place.
+- **Reading.** A missing `schema` means 1, and any other version is refused. An unknown field, a bad value or a TOML error is reported with its file, line and column. So are two decisions with one id in one subtune.
+- **Not yet.** `track.toml`, the track's own intent (sources, profile, video standard, rule settings), needs its own ADR first.
+
 A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
 
 ## 5. Repository layout and dependencies
