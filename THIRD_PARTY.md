@@ -82,7 +82,7 @@ https://zenodo.org/record/5578807#.YnRm5vPMKDU
 - **Source:** <https://github.com/libsidplayfp/libresidfp>
 - **Licence:** GPL-2.0-or-later; full text in `crates/residfp-sys/vendor/libresidfp/COPYING`. Copyright (c) 2000–2011 Dag Lem, (c) 2007–2010 Antti Lankila, (c) 2010–2026 Leandro Nini. `residfp-sys` carries the same licence, and only the GPL-3.0-or-later `score64-emu` may depend on it (ADR-002; CI job `licence-boundary`).
 
-No other third-party source code or data is vendored yet. Crate dependencies (for example `emulator_6502` and `resid-rs` in `score64-emu`, `ort` in `score64-adapters`) are pulled by Cargo, not copied.
+Apart from the entries in this file, no third-party source code or data is vendored. Crate dependencies (for example `emulator_6502` and `resid-rs` in `score64-emu`, `ort` in `score64-adapters`) are pulled by Cargo, not copied.
 
 When it is, each entry here names the project, the commit or version, the files ported or included, and the licence text. Planned items and their licences, for reference:
 
@@ -94,3 +94,16 @@ When it is, each entry here names the project, the commit or version, the files 
 | pygoattracker | Differential-test oracle for the `.sng` writer (test-only, via the sidecar) | Apache-2.0 | `sidecar/` (not linked) |
 | Basic Pitch model (`nmp.onnx`) | Local transcription | Apache-2.0 | Downloaded at first use, not committed |
 | gt2reloc (GoatTracker 2) | Packing; called as an external program | GoatTracker licence | Not vendored |
+
+## Inter and JetBrains Mono (fonts)
+
+- **What:** `crates/score64-app/assets/fonts/`: Inter 4.1 Regular and Medium, and JetBrains Mono 2.304 Regular, unmodified static TTFs. They are bundled into Score64 Studio, the same files as Convert64's. Sources and SHA-256 hashes are in that directory's `README.md`.
+- **Sources:** <https://github.com/rsms/inter>, <https://github.com/JetBrains/JetBrainsMono>
+- **Licence:** SIL Open Font License 1.1. The full texts are in `OFL-Inter.txt` and `OFL-JetBrainsMono.txt` next to the fonts.
+
+## Material Symbols (icon font)
+
+- **What:** the Material Symbols icon font, bundled into Score64 Studio through the `egui_material_icons` crate, version 0.8.0 (MIT), with only its `outline` feature. That embeds `MaterialSymbolsRounded-Regular.ttf`: the unfilled cut of Material Symbols **Rounded**, which the crate calls its outline variant. The crate's filled cut is not included.
+- **Source:** Google, <https://github.com/google/material-design-icons>; the crate at <https://github.com/lucasmerlin/hello_egui/tree/main/crates/egui_material_icons>.
+- **Licence:** Apache License 2.0 (the font); MIT (the crate).
+
