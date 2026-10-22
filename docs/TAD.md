@@ -141,14 +141,17 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
 2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
-3. It trims a note that runs into the next, so it ends where the next starts. This covers ends that round past the next start (#138). If trimming would leave less than `min_rows`, the less confident note of the two is dropped instead.
+3. It resolves overlaps. A note that starts less than `min_rows` after or before a more confident one is dropped; the most confident notes are placed first. Then a note that runs into the next is trimmed to end where the next starts. This covers ends that round past the next start (#138). Every drop is caused by a note that stays, so drops never cascade, and a note that trimming can keep is kept.
 4. It restarts (`Fresh`) a tie whose predecessor no longer ends on its row.
 
 Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, and 0.5 for a skyline pick. Any order of the same notes gives the same line and the same decisions.
 
-A trim is only for the note that follows. If that note is dropped later, the trim is undone and the earlier note is trimmed against the new next note instead.
+Decision ids name what they're about, so they stay the same when notes elsewhere change:
+- `mono-trim-v<voice>-r<row>` for a trim;
+- `mono-tie-v<voice>-r<row>` for a restarted tie;
+- `mono-<reason>-v<voice>-r<row>-p<semitone>` for a drop, with `-2`, `-3` for further drops of one kind at one place.
 
-Decision ids name what they're about: `mono-trim-v<voice>-r<row>`, `mono-tie-v<voice>-r<row>` and `mono-drop-v<voice>-r<row>-p<semitone>` (with `-2`, `-3` for a second or third drop at the same place). So they stay the same when notes elsewhere change.
+They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:

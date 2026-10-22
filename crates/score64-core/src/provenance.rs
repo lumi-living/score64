@@ -162,7 +162,8 @@ impl From<Confidence> for f64 {
 }
 
 /// A decision's stable name, as notes and `decisions.toml` refer to it: 1–64 characters of `a`–`z`, `0`–`9`, `-`
-/// and `_`, starting with a letter or digit.
+/// and `_`, starting with a letter or digit. Unique within its subtune: a note refers to a decision of its own
+/// subtune.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DecisionId(String);
@@ -303,11 +304,11 @@ pub enum Proposal {
         row: u32,
         /// Its pitch.
         pitch: Pitch,
+        /// Its new length, in rows.
+        length: NonZeroU32,
         /// Where in the source it came from, if it did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<SourceRef>,
-        /// Its new length, in rows.
-        length: NonZeroU32,
     },
     /// Leave a note out of a voice (monophonise).
     DropNote {
