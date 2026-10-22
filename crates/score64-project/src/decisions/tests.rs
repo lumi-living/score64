@@ -91,36 +91,107 @@ fn a_missing_schema_is_1_and_a_newer_one_is_refused() {
 }
 
 #[test]
-fn errors_name_the_line() {
+fn errors_name_the_line_and_column() {
+    // confidence = 3 on line 7, its value at column 14.
     let text =
         "schema = 1\n\n[[decision]]\nid = \"x\"\nsubtune = \"main\"\nbar = 0\nconfidence = 3\n";
     let err = DecisionsFile::parse(text).unwrap_err();
-    match &err {
-        Error::Invalid {
-            at: Some((line, _)),
-            message,
-            ..
-        } => {
-            assert!(*line >= 3, "{err}");
-            assert!(!message.is_empty());
-        }
-        other => panic!("{other:?}"),
-    }
-    let shown = err.to_string();
-    assert!(shown.starts_with("decisions:"), "{shown}");
+    assert!(
+        matches!(
+            &err,
+            Error::Invalid {
+                at: Some((7, 14)),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(err.to_string().starts_with("decisions:7:14: "), "{err}");
     // An unknown field, with its line.
-    let text = "schema = 1\nextra = true\n";
-    let err = DecisionsFile::parse(text).unwrap_err();
+    let err = DecisionsFile::parse("schema = 1\nextra = true\n").unwrap_err();
     assert!(
         matches!(
             err,
             Error::Invalid {
-                at: Some((2, _)),
+                at: Some((2, 1)),
                 ..
             }
         ),
-        "{err}"
+        "{err:?}"
     );
+    // Read from a file, the error names it.
+    let dir = std::env::temp_dir().join(format!("score64-decisions-err-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("decisions.toml");
+    std::fs::write(&path, text).unwrap();
+    let shown = DecisionsFile::read(&path).unwrap_err().to_string();
+    assert!(
+        shown.starts_with(&format!("{}:7:14: ", path.display())),
+        "{shown}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_manual_provenance_takes_no_other_fields() {
+    let text = r#"[[decision]]
+id = "loop"
+subtune = "main"
+bar = 5
+confidence = 0.9
+reviewed = true
+
+[decision.proposal]
+change = "loop_row"
+row = 80
+
+[decision.provenance]
+by = "manual"
+rule = "stray"
+"#;
+    let err = DecisionsFile::parse(text).unwrap_err();
+    assert!(err.to_string().contains("unknown field `rule`"), "{err}");
+    assert!(
+        matches!(
+            err,
+            Error::Invalid {
+                at: Some((1, 1)),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+}
+
+#[test]
+fn a_duplicate_read_from_a_file_names_both_lines() {
+    let one = r#"[[decision]]
+id = "same"
+subtune = "main"
+bar = 0
+confidence = 1.0
+reviewed = true
+
+[decision.proposal]
+change = "loop_row"
+row = 0
+
+[decision.provenance]
+by = "manual"
+"#;
+    let text = format!("schema = 1\n\n{one}\n{one}");
+    let err = DecisionsFile::parse(&text).unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::DuplicateId {
+                lines: Some((3, 17)),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert!(err.to_string().ends_with("(lines 3 and 17)"), "{err}");
 }
 
 #[test]
@@ -176,7 +247,12 @@ fn files_are_written_whole_and_read_back() {
         },
     )]);
     file.write(&path).unwrap();
-    assert!(!dir.join("decisions.toml.part").exists());
+    // No temporary file is left beside it.
+    let left: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(left, ["decisions.toml"]);
     assert_eq!(DecisionsFile::read(&path).unwrap(), file);
     let missing = DecisionsFile::read(&dir.join("nope.toml")).unwrap_err();
     assert!(matches!(missing, Error::Io { .. }));
