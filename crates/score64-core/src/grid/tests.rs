@@ -1,4 +1,4 @@
-//! Tempo snapping against the real PAL frame rate, and quantising source times onto rows.
+//! Tempo snapping against the real PAL and NTSC frame rates, and quantising source times onto rows.
 
 use proptest::prelude::*;
 
@@ -11,6 +11,9 @@ fn rpb(n: u8) -> NonZeroU8 {
 fn fpr(n: u8) -> FramesPerRow {
     FramesPerRow::new(n).unwrap()
 }
+
+const PAL: VideoStandard = VideoStandard::Pal;
+const NTSC: VideoStandard = VideoStandard::Ntsc;
 
 fn close(a: f64, b: f64, tol: f64) -> bool {
     (a - b).abs() <= tol
@@ -40,7 +43,7 @@ fn nominal_tempos_match_the_reference_table() {
 #[test]
 fn snapping_reports_error_and_drift_against_the_real_pal_rate() {
     // Made at a tracker tempo: snaps to it, but the real PAL rate runs 0.25 % fast, about 149 ms per minute.
-    let s = snap_tempo(125.0, rpb(4)).unwrap();
+    let s = snap_tempo(125.0, rpb(4), PAL).unwrap();
     assert_eq!((s.frames_per_row, s.nominal_bpm), (fpr(6), 125.0));
     assert!(close(s.error, 0.002_49, 1e-5), "{}", s.error);
     assert!(
@@ -50,29 +53,98 @@ fn snapping_reports_error_and_drift_against_the_real_pal_rate() {
     );
 
     // 120 BPM sits between 6 (125.3, +4.4 %) and 7 (107.4, -10.5 %) frames per row: 6 is nearer.
-    let s = snap_tempo(120.0, rpb(4)).unwrap();
+    let s = snap_tempo(120.0, rpb(4), PAL).unwrap();
     assert_eq!(s.frames_per_row, fpr(6));
     assert!(close(s.error, 0.0443, 1e-3), "{}", s.error);
     assert!(s.drift_ms_per_minute > 0.0, "the C64 runs ahead");
 
     // Slower than the source gives a negative error and drift.
-    let s = snap_tempo(110.0, rpb(4)).unwrap();
+    let s = snap_tempo(110.0, rpb(4), PAL).unwrap();
     assert_eq!(s.frames_per_row, fpr(7));
     assert!(s.error < 0.0 && s.drift_ms_per_minute < 0.0);
 
     // Three rows per beat (triplet feel) at 125 BPM wants 8 frames per row.
-    assert_eq!(snap_tempo(125.0, rpb(3)).unwrap().frames_per_row, fpr(8));
+    assert_eq!(
+        snap_tempo(125.0, rpb(3), PAL).unwrap().frames_per_row,
+        fpr(8)
+    );
+}
+
+#[test]
+fn the_standards_match_the_reference() {
+    // docs/reference/tempo-grid.md: PAL 312 × 63 cycles at 985,248 Hz; NTSC 263 × 65 at 1,022,727 Hz (both measured
+    // in VICE). PAL is the default.
+    assert_eq!(VideoStandard::default(), PAL);
+    assert_eq!((PAL.clock_hz(), PAL.cycles_per_frame()), (985_248, 19_656));
+    assert_eq!(
+        (NTSC.clock_hz(), NTSC.cycles_per_frame()),
+        (1_022_727, 17_095)
+    );
+    assert!(close(NTSC_FRAME_RATE, 59.826, 1e-3), "{NTSC_FRAME_RATE}");
+    assert_eq!(PAL.frame_rate(), PAL_FRAME_RATE);
+    // NTSC runs about 19 % more frames a second than PAL, and 0.29 % fewer than its nominal 60.
+    assert!(close(NTSC_FRAME_RATE / PAL_FRAME_RATE, 1.1935, 1e-4));
+    assert!(close(NTSC_FRAME_RATE / 60.0 - 1.0, -0.002_90, 1e-5));
+    for (frames, nominal, real) in [
+        (12, 75.0, 74.78),
+        (8, 112.5, 112.17),
+        (6, 150.0, 149.57),
+        (4, 225.0, 224.35),
+    ] {
+        assert_eq!(
+            bpm_at(fpr(frames), rpb(4), NTSC.nominal_frame_rate()),
+            nominal,
+            "{frames}"
+        );
+        assert!(
+            close(bpm_at(fpr(frames), rpb(4), NTSC_FRAME_RATE), real, 0.005),
+            "{frames}"
+        );
+    }
+    assert_eq!(
+        serde_json::to_string(&[PAL, NTSC]).unwrap(),
+        r#"["pal","ntsc"]"#
+    );
+}
+
+#[test]
+fn snapping_follows_the_target_standard() {
+    // The same 125 BPM: 6 frames per row on PAL (125.31), 7 on NTSC (128.20, +2.6 %).
+    let pal = snap_tempo(125.0, rpb(4), PAL).unwrap();
+    let ntsc = snap_tempo(125.0, rpb(4), NTSC).unwrap();
+    assert_eq!((pal.standard, pal.frames_per_row), (PAL, fpr(6)));
+    assert_eq!((ntsc.standard, ntsc.frames_per_row), (NTSC, fpr(7)));
+    assert!(close(ntsc.real_bpm, 128.20, 0.005), "{}", ntsc.real_bpm);
+    assert!(
+        close(ntsc.nominal_bpm, 128.57, 0.005),
+        "{}",
+        ntsc.nominal_bpm
+    );
+    assert!(close(ntsc.error, 0.025_59, 1e-5), "{}", ntsc.error);
+
+    // 120 BPM on NTSC sits between 7 (128.20, +6.8 %) and 8 (112.17, -6.5 %) frames per row: 8 is nearer, so the
+    // C64 plays slower than the source and falls behind.
+    let s = snap_tempo(120.0, rpb(4), NTSC).unwrap();
+    assert_eq!(s.frames_per_row, fpr(8));
+    assert!(s.error < 0.0 && s.drift_ms_per_minute < 0.0);
+
+    // Made at NTSC's nominal 150 BPM (6 frames per row): snaps to it, and the real rate runs 0.29 % slow.
+    let s = snap_tempo(150.0, rpb(4), NTSC).unwrap();
+    assert_eq!((s.frames_per_row, s.nominal_bpm), (fpr(6), 150.0));
+    assert!(close(s.error, -0.002_90, 1e-5), "{}", s.error);
 }
 
 #[test]
 fn tempos_out_of_reach_snap_to_the_ends_with_their_error() {
-    let fast = snap_tempo(1000.0, rpb(4)).unwrap();
+    let fast = snap_tempo(1000.0, rpb(4), PAL).unwrap();
     assert_eq!(fast.frames_per_row, FramesPerRow::MIN);
     assert!(fast.error < -0.7, "{}", fast.error);
-    let slow = snap_tempo(5.0, rpb(4)).unwrap();
+    let slow = snap_tempo(5.0, rpb(4), NTSC).unwrap();
     assert_eq!(slow.frames_per_row, FramesPerRow::MAX);
     for bad in [0.0, -60.0, f64::NAN, f64::INFINITY] {
-        assert_eq!(snap_tempo(bad, rpb(4)), None, "{bad}");
+        for standard in [PAL, NTSC] {
+            assert_eq!(snap_tempo(bad, rpb(4), standard), None, "{bad}");
+        }
     }
 }
 
@@ -131,12 +203,14 @@ fn grids_are_checked_on_read() {
 }
 
 proptest! {
-    /// Snapping always picks a legal row length, and no other row length is nearer.
+    /// On either standard, snapping always picks a legal row length, and no other row length is nearer.
     #[test]
-    fn snap_is_nearest(bpm in 1.0f64..2000.0, rows in 1u8..=8) {
-        let s = snap_tempo(bpm, rpb(rows)).unwrap();
+    fn snap_is_nearest(bpm in 1.0f64..2000.0, rows in 1u8..=8, ntsc in any::<bool>()) {
+        let standard = if ntsc { NTSC } else { PAL };
+        let s = snap_tempo(bpm, rpb(rows), standard).unwrap();
+        prop_assert_eq!(s.standard, standard);
         for f in FramesPerRow::MIN.get()..=FramesPerRow::MAX.get() {
-            let e = bpm_at(fpr(f), rpb(rows), PAL_FRAME_RATE) / bpm - 1.0;
+            let e = bpm_at(fpr(f), rpb(rows), standard.frame_rate()) / bpm - 1.0;
             prop_assert!(s.error.abs() <= e.abs() + 1e-12, "{f} is nearer than {}", s.frames_per_row.get());
         }
     }

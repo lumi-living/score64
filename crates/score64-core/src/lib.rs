@@ -23,7 +23,7 @@ pub mod strategies;
 pub mod validate;
 
 pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
-pub use grid::{BeatGrid, Quantised, TempoSnap, snap_tempo};
+pub use grid::{BeatGrid, Quantised, TempoSnap, VideoStandard, snap_tempo};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
