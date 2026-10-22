@@ -47,6 +47,21 @@ serde_json = "1.0.154"
 schemars = "1.2.3"
 proptest = "1.12.0"
 toml = "1.1.8"
+# score64-app (ADR-001): the same egui, eframe and icon versions and features as Convert64, so the two apps stay one
+# family. glow (OpenGL) instead of the default wgpu, and `persistence` for the View › Theme choice.
+eframe = { version = "0.36.2", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+    "persistence",
+    "wayland",
+    "x11",
+] }
+egui = "0.36.2"
+# Material Symbols icon font: the `outline` feature only, which is the unfilled cut of Material Symbols Rounded.
+egui_material_icons = { version = "0.8.0", default-features = false, features = ["outline"] }
+# PNG output for the app's --screenshot mode (PR screenshots, as in Convert64).
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 insta = "1.49.0"
 blake3 = "1.8.7"
 
