@@ -101,3 +101,9 @@ When it is, each entry here names the project, the commit or version, the files 
 - **Sources:** <https://github.com/rsms/inter>, <https://github.com/JetBrains/JetBrainsMono>
 - **Licence:** SIL Open Font License 1.1. The full texts are in `OFL-Inter.txt` and `OFL-JetBrainsMono.txt` next to the fonts.
 
+## Material Symbols (icon font)
+
+- **What:** the Material Symbols icon font, bundled into Score64 Studio through the `egui_material_icons` crate, version 0.8.0 (MIT), with only its `outline` feature. That embeds `MaterialSymbolsRounded-Regular.ttf`: the unfilled cut of Material Symbols **Rounded**, which the crate calls its outline variant. The crate's filled cut is not included.
+- **Source:** Google, <https://github.com/google/material-design-icons>; the crate at <https://github.com/lucasmerlin/hello_egui/tree/main/crates/egui_material_icons>.
+- **Licence:** Apache License 2.0 (the font); MIT (the crate).
+

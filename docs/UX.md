@@ -1,6 +1,6 @@
 # Score64 — UX foundations
 
-**Status:** draft for M0. Same family conventions as Convert64: desktop-first, light and dark themes, Material Symbols (Outlined), keyboard-first, commercial-editor polish.
+**Status:** draft for M0. Same family conventions as Convert64: desktop-first, light and dark themes, Material Symbols (the unfilled Rounded cut, via `egui_material_icons`' `outline` feature), keyboard-first, commercial-editor polish.
 
 ## 1. Who it is for and what they do
 

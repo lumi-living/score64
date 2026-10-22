@@ -10,6 +10,6 @@ The app's text fonts, the same files as Convert64's (`crates/convert64-app/asset
 | `OFL-Inter.txt` | Inter's `LICENSE.txt` from the same archive | | | |
 | `OFL-JetBrainsMono.txt` | JetBrains Mono's `OFL.txt` from the same archive | | | |
 
-The icon font comes from the `egui_material_icons` crate (Material Symbols Outlined, Apache-2.0), not from here. Inter has glyphs of its own in the private-use range the icons use, so icons are drawn in the icon font explicitly (`Icon::rich_text`), never as plain text in Inter.
+The icon font comes from the `egui_material_icons` crate (0.8.0, `outline` feature: Material Symbols Rounded, unfilled; Apache-2.0), not from here. Inter has glyphs of its own in the private-use range the icons use, so icons are drawn in the icon font explicitly (`Icon::rich_text`), never as plain text in Inter.
 
 To update: copy the files from Convert64 (or from the upstream releases above), update this table, and keep both apps on the same files.
