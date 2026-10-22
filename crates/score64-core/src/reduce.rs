@@ -3,7 +3,8 @@
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
 //! skyline), overlaps trimmed, ties that lost their note restarted. [`choose_lead`] (#39) picks the part that
-//! carries the melody, bar by bar.
+//! carries the melody, bar by bar. [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as
+//! arpeggios.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
+mod chords;
 mod lead;
+pub use chords::{Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, arpeggiate, detect_chords};
 pub use lead::{
     Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
 };

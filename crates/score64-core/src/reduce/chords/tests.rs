@@ -1,0 +1,256 @@
+//! Detecting chords beat by beat, and playing them as arpeggios.
+
+use std::collections::BTreeMap;
+
+use proptest::prelude::*;
+
+use super::*;
+use crate::profile::{ProfileName, builtin};
+use crate::score::{
+    FramesPerRow, PresetId, Role, Roles, Schema, Song, Subtune, SubtuneName, Voice, VoiceLine,
+};
+use crate::strategies;
+use crate::validate::{Context, InstrumentFacts, RoleRanges, validate};
+
+fn name() -> SubtuneName {
+    SubtuneName::new("main").unwrap()
+}
+
+fn at(subtune: &SubtuneName) -> Placement<'_> {
+    Placement {
+        subtune,
+        voice: Voice::new(2).unwrap(),
+        rows_per_bar: NonZeroU8::new(16).unwrap(),
+    }
+}
+
+fn beat() -> NonZeroU8 {
+    NonZeroU8::new(4).unwrap()
+}
+
+fn rows(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).unwrap()
+}
+
+fn note(row: u32, length: u32, pitch: &str) -> Note {
+    Note {
+        row,
+        length: rows(length),
+        pitch: pitch.parse().unwrap(),
+        attack: Attack::Fresh,
+        instrument: None,
+        source: None,
+        confidence: Confidence::new(0.9).unwrap(),
+        decision: None,
+    }
+}
+
+/// A chord's notes over rows `row..row + length`.
+fn chord(row: u32, length: u32, pitches: &[&str]) -> Vec<Note> {
+    pitches.iter().map(|p| note(row, length, p)).collect()
+}
+
+fn found(spans: &[ChordSpan]) -> Vec<(u32, u32, u8, ChordQuality)> {
+    spans
+        .iter()
+        .map(|s| (s.row, s.length.get(), s.chord.root, s.chord.quality))
+        .collect()
+}
+
+#[test]
+fn triads_and_sevenths_are_named() {
+    use ChordQuality::*;
+    let cases: [(&[&str], u8, ChordQuality); 7] = [
+        (&["C-4", "E-4", "G-4"], 0, Major),
+        (&["A-3", "C-4", "E-4"], 9, Minor),
+        (&["D-4", "G-4", "A-4"], 2, Sus4),
+        (&["D-4", "E-4", "A-4"], 2, Sus2),
+        (&["G-3", "B-3", "D-4", "F-4"], 7, Dominant7),
+        (&["D-4", "F-4", "A-4", "C-5"], 2, Minor7),
+        (&["F-3", "A-3", "C-4", "E-4"], 5, Major7),
+    ];
+    for (pitches, root, quality) in cases {
+        let spans = detect_chords(&chord(0, 4, pitches), beat(), rows(4));
+        assert_eq!(found(&spans), [(0, 4, root, quality)], "{pitches:?}");
+        assert!(
+            spans[0].confidence.get() > 0.8,
+            "{pitches:?}: {:?}",
+            spans[0].confidence
+        );
+    }
+}
+
+#[test]
+fn an_inversion_has_its_real_root() {
+    // E G C: a C major triad in first inversion.
+    let spans = detect_chords(&chord(0, 4, &["E-3", "G-3", "C-4"]), beat(), rows(4));
+    assert_eq!(found(&spans), [(0, 4, 0, ChordQuality::Major)]);
+}
+
+#[test]
+fn a_bare_fifth_reads_as_the_simplest_chord() {
+    // C and G only: major and minor (and sus) fit equally; the tie goes to major.
+    let spans = detect_chords(&chord(0, 4, &["C-4", "G-4"]), beat(), rows(4));
+    assert_eq!(found(&spans), [(0, 4, 0, ChordQuality::Major)]);
+}
+
+#[test]
+fn a_passing_tone_lowers_the_confidence_but_not_the_chord() {
+    let clean = detect_chords(&chord(0, 4, &["C-4", "E-4", "G-4"]), beat(), rows(4));
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.push(note(0, 1, "D-4"));
+    let passing = detect_chords(&notes, beat(), rows(4));
+    assert_eq!(found(&passing), found(&clean));
+    assert!(passing[0].confidence < clean[0].confidence);
+}
+
+#[test]
+fn beats_with_the_same_chord_merge_and_silence_has_none() {
+    // Bar of four beats: C major, C major, silence, A minor (as 3 + 1 rows, the last beat cut by the subtune's end).
+    let mut notes = chord(0, 8, &["C-4", "E-4", "G-4"]);
+    notes.extend(chord(12, 4, &["A-3", "C-4", "E-4"]));
+    let spans = detect_chords(&notes, beat(), rows(15));
+    assert_eq!(
+        found(&spans),
+        [
+            (0, 8, 0, ChordQuality::Major),
+            (12, 3, 9, ChordQuality::Minor)
+        ]
+    );
+}
+
+#[test]
+fn a_note_counts_where_it_sounds() {
+    // A held C under an E-G that starts a beat later: the first beat is a bare C (major by the tie rule), the second
+    // a C major triad, so the two merge.
+    let mut notes = vec![note(0, 8, "C-4")];
+    notes.extend(chord(4, 4, &["E-4", "G-4"]));
+    let spans = detect_chords(&notes, beat(), rows(8));
+    assert_eq!(found(&spans), [(0, 8, 0, ChordQuality::Major)]);
+}
+
+#[test]
+fn arpeggios_sit_in_range_and_record_their_decisions() {
+    let n = name();
+    let range = RoleRanges::default().arp; // C-3 to C-6
+    let spans = detect_chords(&chord(0, 4, &["G-1", "B-1", "D-2"]), beat(), rows(4));
+    let a = arpeggiate(&spans, &at(&n), range);
+    assert_eq!(a.notes.len(), 1);
+    let root = a.notes[0].pitch;
+    assert!(range.contains(root), "{root}");
+    assert_eq!(root.semitone() % 12, 7, "a G");
+    assert_eq!(a.arps[0].intervals, [0, 4, 7]);
+    assert_eq!((a.arps[0].row, a.arps[0].length.get()), (0, 4));
+    let d = &a.decisions[0];
+    assert_eq!(d.id.as_str(), "chord-v2-r0");
+    assert_eq!(
+        d.proposal,
+        Proposal::Chord {
+            row: 0,
+            root: 7,
+            intervals: vec![0, 4, 7]
+        }
+    );
+    assert_eq!(
+        d.provenance,
+        Provenance::Rules {
+            rule: "chords@1".into()
+        }
+    );
+    assert_eq!(a.notes[0].decision.as_ref(), Some(&d.id));
+    assert_eq!(a.arps[0].decision.as_ref(), Some(&d.id));
+    assert_eq!(d.confidence, spans[0].confidence);
+}
+
+#[test]
+fn every_chord_tone_stays_playable() {
+    // A range at the very top: a B major 7th's root must sit low enough for its seventh (11 semitones up).
+    let n = name();
+    let top = PitchRange {
+        low: "G-7".parse().unwrap(),
+        high: Pitch::MAX,
+    };
+    let spans = [ChordSpan {
+        row: 0,
+        length: rows(4),
+        chord: Chord {
+            root: 11,
+            quality: ChordQuality::Major7,
+        },
+        confidence: Confidence::CERTAIN,
+    }];
+    let a = arpeggiate(&spans, &at(&n), top);
+    let root = a.notes[0].pitch.semitone();
+    assert_eq!(root % 12, 11);
+    assert!(root + 11 <= Pitch::MAX.semitone());
+}
+
+/// The arp line checked in a 512-row subtune under `full`, on voice 2 as an arp.
+fn checked(a: Arpeggio) -> (Song, Context) {
+    let song = Song {
+        schema: Schema::default(),
+        profile: ProfileName::new(builtin::FULL).unwrap(),
+        subtunes: vec![Subtune {
+            name: name(),
+            profile: None,
+            frames_per_row: FramesPerRow::new(6).unwrap(),
+            tempo: vec![],
+            rows_per_bar: NonZeroU8::new(16).unwrap(),
+            length: rows(512),
+            loop_row: 0,
+            marks: vec![],
+            voices: vec![VoiceLine {
+                voice: Voice::new(2).unwrap(),
+                roles: Roles::constant(Role::Arp),
+                instrument: PresetId("arp".into()),
+                notes: a.notes,
+                arps: a.arps,
+            }],
+        }],
+    };
+    let facts = InstrumentFacts {
+        filter: false,
+        pulse_at_start: true,
+        gate_timer: 2,
+        hard_restart: true,
+        gate_off: true,
+    };
+    let ctx = Context {
+        instruments: BTreeMap::from([(PresetId("arp".into()), facts)]),
+        ..Context::default()
+    };
+    (song, ctx)
+}
+
+proptest! {
+    /// On any note soup: spans are in order, apart, inside the subtune and on beat boundaries; the arpeggios they give
+    /// validate with no errors (pitch-range warnings allowed); and the order of the notes does not matter.
+    #[test]
+    fn any_soup_gives_ordered_spans_and_a_valid_arp_line(soup in strategies::note_soup(), reverse in any::<bool>()) {
+        let length = rows(300);
+        let spans = detect_chords(&soup, beat(), length);
+        let mut end = 0;
+        for s in &spans {
+            prop_assert!(s.row >= end, "{s:?} overlaps");
+            prop_assert_eq!(s.row % 4, 0);
+            end = s.row + s.length.get();
+            prop_assert!(end <= length.get());
+            prop_assert!(s.chord.root < 12);
+        }
+        let n = name();
+        let a = arpeggiate(&spans, &at(&n), RoleRanges::default().arp);
+        prop_assert_eq!(a.notes.len(), spans.len());
+        for (note, arp) in a.notes.iter().zip(&a.arps) {
+            let top = *arp.intervals.last().unwrap();
+            prop_assert!(note.pitch.semitone() + top <= Pitch::MAX.semitone());
+        }
+        let (song, ctx) = checked(a);
+        let errors: Vec<_> = validate(&song, &ctx).into_iter().filter(|p| p.is_error()).collect();
+        prop_assert!(errors.is_empty(), "{errors:#?}");
+        let mut flipped = soup;
+        if reverse {
+            flipped.reverse();
+        }
+        prop_assert_eq!(detect_chords(&flipped, beat(), length), spans);
+    }
+}

@@ -245,8 +245,16 @@ pub fn proposal() -> impl Strategy<Value = Proposal> {
         (voice(), role()).prop_map(|(voice, role)| Proposal::VoiceRole { voice, role }),
         content_hash().prop_map(|source| Proposal::LeadSource { source }),
         (voice(), -3i8..=3).prop_map(|(voice, shift)| Proposal::Octave { voice, shift }),
-        (0u8..12, proptest::collection::vec(0u8..24, 1..5))
-            .prop_map(|(root, intervals)| Proposal::Chord { root, intervals }),
+        (
+            0u32..1024,
+            0u8..12,
+            proptest::collection::vec(0u8..24, 1..5)
+        )
+            .prop_map(|(row, root, intervals)| Proposal::Chord {
+                row,
+                root,
+                intervals
+            }),
         (0u32..1024).prop_map(|row| Proposal::LoopRow { row }),
         frames_per_row().prop_map(|frames_per_row| Proposal::FramesPerRow { frames_per_row }),
         (
