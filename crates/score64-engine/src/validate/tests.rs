@@ -226,3 +226,45 @@ fn bad_files_are_invalid_input() {
     assert!(e.message.contains("built-in"), "{}", e.message);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn whole_song_problems_have_no_location_and_schemas_are_checked() {
+    let dir = scratch("edges");
+    let song = write_song(&dir, "SONG.JSON", &song("A-1"));
+    // An upper-case extension reads.
+    let ctx = dir.join("context.toml");
+    // An adaptive set naming a layer the song lacks: a whole-song problem.
+    std::fs::write(
+        &ctx,
+        format!("{CONTEXT}\n[[adaptive]]\nname = \"score\"\nlayers = [\"calm\"]\n"),
+    )
+    .unwrap();
+    let out = run(ValidateArgs {
+        song: song.clone(),
+        context: Some(ctx),
+    })
+    .unwrap();
+    assert_eq!(out.errors, 1);
+    assert!(Validate::fails(&out));
+    let p = serde_json::to_value(&out.problems[0]).unwrap();
+    for absent in ["subtune", "bar", "row", "voice"] {
+        assert!(p.get(absent).is_none(), "{absent} absent: {p}");
+    }
+    for present in ["rule", "severity", "message", "hint"] {
+        assert!(p.get(present).is_some(), "{present} present: {p}");
+    }
+    // A context file from a newer Score64 is refused, not read in part.
+    let newer = dir.join("newer.toml");
+    std::fs::write(&newer, "schema = 2\n").unwrap();
+    let e = run(ValidateArgs {
+        song,
+        context: Some(newer),
+    })
+    .unwrap_err();
+    assert!(
+        e.message.contains("schema 2 is not supported"),
+        "{}",
+        e.message
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

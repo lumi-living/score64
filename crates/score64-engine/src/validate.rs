@@ -31,7 +31,8 @@ pub struct ValidateArgs {
 /// Output of [`Validate`].
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ValidateOutput {
-    /// Every problem, in subtune, bar and voice order (the fields of `score64_core::validate::Problem`).
+    /// Every problem, in subtune, bar and voice order (the fields of `score64_core::validate::Problem`; `subtune`,
+    /// `bar`, `row` and `voice` appear only when the problem has that location, as for a whole-song problem).
     pub problems: Vec<Problem>,
     /// How many are errors. A front-end fails when this is not zero.
     pub errors: usize,
@@ -43,6 +44,7 @@ pub struct ValidateOutput {
 /// the same shapes the project will use (TAD §3.1), so nothing here becomes a second format.
 ///
 /// ```toml
+/// schema = 1
 /// expendable_long_rows = 4
 ///
 /// [[profile]]
@@ -65,6 +67,9 @@ pub struct ValidateOutput {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContextFile {
+    /// Layout version; only 1 reads, so a file from a newer Score64 is an error rather than a partial read.
+    #[serde(default)]
+    pub schema: ContextSchema,
     /// Profiles the project defines, besides the built-in ones.
     #[serde(default, rename = "profile")]
     pub profiles: Vec<Profile>,
@@ -80,6 +85,30 @@ pub struct ContextFile {
     /// The long-note warning threshold on expendable voices, in rows, if not the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expendable_long_rows: Option<u32>,
+}
+
+/// The context file's layout version: 1. Written as `schema = 1`; absent means 1.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(try_from = "u32", into = "u32")]
+pub struct ContextSchema;
+
+impl TryFrom<u32> for ContextSchema {
+    type Error = String;
+    fn try_from(v: u32) -> Result<Self, String> {
+        if v == 1 {
+            Ok(ContextSchema)
+        } else {
+            Err(format!(
+                "validation context schema {v} is not supported; this build reads 1"
+            ))
+        }
+    }
+}
+
+impl From<ContextSchema> for u32 {
+    fn from(_: ContextSchema) -> u32 {
+        1
+    }
 }
 
 impl ContextFile {
@@ -107,7 +136,11 @@ fn read<T: DeserializeOwned>(path: &Path, what: &str) -> Result<T, CommandError>
         )
     };
     let text = std::fs::read_to_string(path).map_err(|e| invalid(e.to_string()))?;
-    match path.extension().and_then(|e| e.to_str()) {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
         Some("json") => serde_json::from_str(&text).map_err(|e| invalid(e.to_string())),
         Some("toml") => toml::from_str(&text).map_err(|e| invalid(e.to_string())),
         _ => Err(invalid("expected a .json or .toml file".into())),
@@ -120,6 +153,11 @@ impl Command for Validate {
     const EFFECT: Effect = Effect::ReadOnly;
     type Args = ValidateArgs;
     type Output = ValidateOutput;
+
+    /// A song with errors fails; warnings never do.
+    fn fails(output: &ValidateOutput) -> bool {
+        output.errors > 0
+    }
 
     fn run(_: &mut Engine, args: ValidateArgs) -> Result<ValidateOutput, CommandError> {
         let song: Song = read(&args.song, "song")?;

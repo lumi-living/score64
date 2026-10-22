@@ -2,16 +2,18 @@
 //! the CLI, the MCP server and the app are thin front-ends over it. Typed subcommands give the common commands
 //! friendly flags; `score64 run` runs any registry command by name with JSON arguments.
 //!
-//! Exit codes: 0 when the command succeeded (for `validate`: no errors, though there may be warnings), 1 when
-//! `validate` found errors, 2 when a command failed (bad arguments, an unreadable file, a helper failure).
+//! Exit codes: 0 when the command succeeded (for `validate`: no errors, though there may be warnings); 1 when the
+//! command ran but its output is a failure (`Command::fails`: `validate` found errors), by its typed subcommand and by
+//! `score64 run` alike; 2 when a command failed (bad arguments, an unreadable file, a helper failure; JSON error on
+//! stderr) or the command line itself is wrong (clap's usage message, plain text).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use score64_engine::{
-    CommandError, Engine, EngineConfig, NoArgs, REGISTRY, Validate, ValidateArgs, ValidateOutput,
-    Version,
+    Command, CommandError, Engine, EngineConfig, NoArgs, REGISTRY, Validate, ValidateArgs,
+    ValidateOutput, Version,
 };
 use serde_json::{Value, json};
 
@@ -108,7 +110,7 @@ fn main() -> ExitCode {
                 } else {
                     print_problems(&out);
                 }
-                if out.errors > 0 {
+                if Validate::fails(&out) {
                     ExitCode::from(1)
                 } else {
                     ExitCode::SUCCESS
@@ -127,7 +129,15 @@ fn main() -> ExitCode {
                 }
             };
             match engine.run_json(&name, args) {
-                Ok(out) => print_json(&out),
+                Ok(out) => {
+                    print_json(&out.output);
+                    // The command decides whether its output is a failure (`validate` with errors), on every path.
+                    if out.failed {
+                        ExitCode::from(1)
+                    } else {
+                        ExitCode::SUCCESS
+                    }
+                }
                 Err(e) => fail(&e),
             }
         }

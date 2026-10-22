@@ -192,6 +192,10 @@ mod validate {
         let o = score64(&["validate", &s]);
         assert_eq!(o.status.code(), Some(1));
         assert!(String::from_utf8_lossy(&o.stdout).contains("error, rule 4"));
+        // By name the command decides too: errors exit 1 through `score64 run` as well.
+        let o = score64(&["run", "validate", &json!({ "song": s }).to_string()]);
+        assert_eq!(o.status.code(), Some(1), "run validate with errors");
+        assert!(serde_json::from_slice::<Value>(&o.stdout).unwrap()["errors"].as_u64() > Some(0));
         // A command failure (missing file): exit 2, JSON error on stderr.
         let o = score64(&["validate", &dir.join("nope.json").display().to_string()]);
         assert_eq!(o.status.code(), Some(2));

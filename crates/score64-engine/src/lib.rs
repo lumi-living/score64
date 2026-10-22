@@ -36,6 +36,12 @@ pub trait Command {
 
     /// Run the command.
     fn run(engine: &mut Engine, args: Self::Args) -> Result<Self::Output, CommandError>;
+
+    /// Whether a successful run's output means the front-end should report failure: `validate` with errors, say.
+    /// Every front-end asks the command rather than deciding for itself, so they agree (CLI exit code, MCP error flag).
+    fn fails(_output: &Self::Output) -> bool {
+        false
+    }
 }
 
 /// What a command does to the project. The MCP server derives its tool hints from it; the engine records changes
@@ -145,7 +151,16 @@ pub struct Entry {
     pub effect: Effect,
     args_schema: fn() -> Schema,
     output_schema: fn() -> Schema,
-    run: fn(&mut Engine, Value) -> Result<Value, CommandError>,
+    run: fn(&mut Engine, Value) -> Result<Outcome, CommandError>,
+}
+
+/// What running a command by name gave.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Outcome {
+    /// Its JSON output.
+    pub output: Value,
+    /// Whether the output means failure ([`Command::fails`]).
+    pub failed: bool,
 }
 
 impl Entry {
@@ -160,7 +175,7 @@ impl Entry {
     }
 
     /// Run with JSON arguments and get JSON output.
-    pub fn run(&self, engine: &mut Engine, args: Value) -> Result<Value, CommandError> {
+    pub fn run(&self, engine: &mut Engine, args: Value) -> Result<Outcome, CommandError> {
         (self.run)(engine, args)
     }
 }
@@ -180,11 +195,14 @@ fn schema<T: JsonSchema>() -> Schema {
     schemars::schema_for!(T)
 }
 
-fn run_json<C: Command>(engine: &mut Engine, args: Value) -> Result<Value, CommandError> {
+fn run_json<C: Command>(engine: &mut Engine, args: Value) -> Result<Outcome, CommandError> {
     let args: C::Args = serde_json::from_value(args)
         .map_err(|e| CommandError::new(ErrorKind::InvalidArgs, format!("{}: {e}", C::NAME)))?;
     let output = C::run(engine, args)?;
-    serde_json::to_value(output).map_err(|e| CommandError::new(ErrorKind::Internal, e.to_string()))
+    let failed = C::fails(&output);
+    let output = serde_json::to_value(output)
+        .map_err(|e| CommandError::new(ErrorKind::Internal, e.to_string()))?;
+    Ok(Outcome { output, failed })
 }
 
 /// Every command, in listing order.
@@ -231,7 +249,7 @@ impl Engine {
     }
 
     /// Run a command by name with JSON arguments.
-    pub fn run_json(&mut self, name: &str, args: Value) -> Result<Value, CommandError> {
+    pub fn run_json(&mut self, name: &str, args: Value) -> Result<Outcome, CommandError> {
         let entry = find(name).ok_or_else(|| {
             CommandError::new(
                 ErrorKind::UnknownCommand,
@@ -295,7 +313,8 @@ mod tests {
         let mut engine = Engine::new(EngineConfig::default());
         let typed = engine.run::<Version>(NoArgs {}).unwrap();
         let json = engine.run_json("version", serde_json::json!({})).unwrap();
-        assert_eq!(json, serde_json::to_value(&typed).unwrap());
+        assert_eq!(json.output, serde_json::to_value(&typed).unwrap());
+        assert!(!json.failed);
         assert_eq!(typed.score64, env!("CARGO_PKG_VERSION"));
     }
 
