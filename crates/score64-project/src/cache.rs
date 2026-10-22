@@ -5,6 +5,7 @@
 //! its output. An entry is written whole into a temporary directory and renamed into place, so readers never see half
 //! of one, and two writers racing on one key both succeed with the same entry.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,15 +32,25 @@ pub struct Run {
     pub stage_version: String,
     /// The Score64 version that ran it.
     pub tool_version: String,
-    /// The stage's config, as given to [`Cache::key`].
+    /// The stage's config.
     pub config: Value,
-    /// The input files' hashes, as given to [`Cache::key`].
+    /// The input files' hashes.
     pub inputs: Vec<ContentHash>,
     /// How long the run took, in milliseconds.
     pub millis: u64,
-    /// What it cost, for stages that call a paid service, in the provider's currency.
+    /// What it cost, for stages that call a paid service.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cost: Option<f64>,
+    pub cost: Option<Cost>,
+}
+
+/// What a stage run cost.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cost {
+    /// The amount.
+    pub amount: f64,
+    /// Its currency, as the provider bills it (ISO 4217, such as `"USD"`).
+    pub currency: String,
 }
 
 /// One artifact in an entry: its file name, hash and size.
@@ -62,7 +73,7 @@ pub struct Manifest {
     pub schema: u32,
     /// The stage.
     pub stage: String,
-    /// The entry's key.
+    /// The entry's key: [`Cache::key`] of the stage and its run.
     pub key: ContentHash,
     /// How it was made.
     pub run: Run,
@@ -100,7 +111,7 @@ pub enum Error {
         /// What went wrong.
         error: std::io::Error,
     },
-    /// A stage or artifact name that would not stay inside its directory, or a reserved one.
+    /// A stage or artifact name that would not stay inside its directory on every system, or a reserved one.
     BadName(String),
     /// A manifest that could not be written.
     Manifest(String),
@@ -112,25 +123,40 @@ impl fmt::Display for Error {
             Error::Io { path, error } => write!(f, "{}: {error}", path.display()),
             Error::BadName(name) => write!(
                 f,
-                "{name:?} is not a valid stage or artifact name (letters, digits, '-', '_' and '.', not starting \
-                 with '.')"
+                "{name:?} is not a valid stage or artifact name (letters, digits, '-', '_' and '.', not starting or \
+                 ending with '.', not a device name, not twice)"
             ),
             Error::Manifest(m) => write!(f, "manifest: {m}"),
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io { error, .. } => Some(error),
+            _ => None,
+        }
+    }
+}
 
 const MANIFEST: &str = "manifest.json";
 
-/// Names that stay inside their directory: letters, digits, `-`, `_` and `.`, not starting with `.` (which also keeps
-/// clear of the temporary directories), and not the manifest.
+/// Names that stay inside their directory on every system: letters, digits, `-`, `_` and `.`; not starting with `.`
+/// (which also keeps clear of the temporary directories) or ending with one; not a Windows device name (`con`,
+/// `nul.json`, `com1`, ...); not the manifest.
 fn check_name(name: &str) -> Result<(), Error> {
+    let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
+    let device = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
+        || ((stem.starts_with("com") || stem.starts_with("lpt"))
+            && stem.len() == 4
+            && stem.as_bytes()[3].is_ascii_digit());
     let ok = !name.is_empty()
         && name.len() <= 128
         && !name.starts_with('.')
-        && name != MANIFEST
+        && !name.ends_with('.')
+        && !device
+        && !name.eq_ignore_ascii_case(MANIFEST)
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'));
@@ -141,26 +167,49 @@ fn check_name(name: &str) -> Result<(), Error> {
     }
 }
 
+/// `v` with every object's keys sorted, whatever order `serde_json` keeps them in.
+fn canonical(v: &Value) -> Value {
+    match v {
+        Value::Object(map) => {
+            let sorted: BTreeMap<&String, Value> =
+                map.iter().map(|(k, v)| (k, canonical(v))).collect();
+            Value::Object(sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect())
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
+}
+
+/// Flush a file or directory to disk. Directories can't be opened for syncing on every system, so failures are left
+/// alone: the hash checks still keep a half-flushed entry from ever being a hit.
+fn sync(path: &Path) {
+    if let Ok(f) = std::fs::File::open(path) {
+        let _ = f.sync_all();
+    }
+}
+
 impl Cache {
     /// The cache at `root` (a project's `.score64/cache`); nothing is created until something is put.
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Cache { root: root.into() }
     }
 
-    /// The key of a stage run: blake3 of the stage, its version, its config and its inputs, as canonical JSON (keys
-    /// sorted), so the same work always has the same key and any change gives another.
+    /// The key of a stage run: blake3 of the stage, its version, its config and its inputs, as canonical JSON (every
+    /// object's keys sorted), so the same work always has the same key and any change gives another. Numbers are
+    /// taken as written: `1` and `1.0`, or `0.0` and `-0.0`, give different keys (a needless miss, never a wrong
+    /// hit).
     pub fn key(
         stage: &str,
         stage_version: &str,
         config: &Value,
         inputs: &[ContentHash],
     ) -> ContentHash {
-        let canonical = serde_json::json!({
+        let canonical = canonical(&serde_json::json!({
             "stage": stage,
             "stage_version": stage_version,
             "config": config,
             "inputs": inputs,
-        });
+        }));
         let bytes = serde_json::to_vec(&canonical).expect("JSON values serialise");
         ContentHash(*blake3::hash(&bytes).as_bytes())
     }
@@ -191,24 +240,23 @@ impl Cache {
         Some(Entry { dir, manifest })
     }
 
-    /// Put a stage run's `artifacts` (name and bytes) under `key`, with its manifest. Written whole into a temporary
-    /// directory and renamed into place; if another writer got there first, its entry is kept and returned.
-    pub fn put(
-        &self,
-        stage: &str,
-        key: ContentHash,
-        artifacts: &[(&str, &[u8])],
-        run: Run,
-    ) -> Result<Entry, Error> {
+    /// Put a stage run's `artifacts` (name and bytes) with its manifest, under the key its run gives
+    /// ([`Cache::key`]), so an entry can't claim inputs or config it wasn't made from. Written whole and synced into a
+    /// temporary directory, then renamed into place. If another writer got there first, its entry is kept and
+    /// returned; an entry already there but not whole (damaged, or from an older layout) is replaced.
+    pub fn put(&self, stage: &str, artifacts: &[(&str, &[u8])], run: Run) -> Result<Entry, Error> {
         check_name(stage)?;
-        let mut names: Vec<&str> = Vec::with_capacity(artifacts.len());
+        let mut names: Vec<String> = Vec::with_capacity(artifacts.len());
         for (name, _) in artifacts {
             check_name(name)?;
-            if names.contains(name) {
+            // Names that differ only by case are one file on macOS and Windows.
+            let folded = name.to_ascii_lowercase();
+            if names.contains(&folded) {
                 return Err(Error::BadName((*name).to_owned()));
             }
-            names.push(name);
+            names.push(folded);
         }
+        let key = Self::key(stage, &run.stage_version, &run.config, &run.inputs);
         if let Some(entry) = self.get(stage, key) {
             return Ok(entry);
         }
@@ -218,13 +266,13 @@ impl Cache {
             move |error| Error::Io { path, error }
         };
         std::fs::create_dir_all(&stage_dir).map_err(io(&stage_dir))?;
-        let tmp = stage_dir.join(temp_name());
-        std::fs::create_dir(&tmp).map_err(io(&tmp))?;
+        let tmp = temp_dir(&stage_dir)?;
         let written = (|| {
             let mut listed = Vec::with_capacity(artifacts.len());
             for (name, bytes) in artifacts {
                 let path = tmp.join(name);
                 std::fs::write(&path, bytes).map_err(io(&path))?;
+                sync(&path);
                 listed.push(Artifact {
                     name: (*name).to_owned(),
                     hash: ContentHash(*blake3::hash(bytes).as_bytes()),
@@ -243,6 +291,8 @@ impl Cache {
                 serde_json::to_vec_pretty(&manifest).map_err(|e| Error::Manifest(e.to_string()))?;
             let path = tmp.join(MANIFEST);
             std::fs::write(&path, text).map_err(io(&path))?;
+            sync(&path);
+            sync(&tmp);
             Ok::<Manifest, Error>(manifest)
         })();
         let manifest = match written {
@@ -253,8 +303,22 @@ impl Cache {
             }
         };
         let dir = self.entry_dir(stage, key);
-        match std::fs::rename(&tmp, &dir) {
-            Ok(()) => Ok(Entry { dir, manifest }),
+        let mut result = std::fs::rename(&tmp, &dir);
+        if result.is_err() && self.get(stage, key).is_none() && dir.exists() {
+            // Something that isn't a whole entry is in the way: move it aside, clear it, and try once more.
+            if let Ok(aside) = temp_dir(&stage_dir) {
+                let _ = std::fs::remove_dir(&aside);
+                if std::fs::rename(&dir, &aside).is_ok() {
+                    let _ = std::fs::remove_dir_all(&aside);
+                }
+            }
+            result = std::fs::rename(&tmp, &dir);
+        }
+        match result {
+            Ok(()) => {
+                sync(&stage_dir);
+                Ok(Entry { dir, manifest })
+            }
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&tmp);
                 // Another writer's entry won the race: keep it, since a pure stage gives the same output.
@@ -264,14 +328,29 @@ impl Cache {
     }
 }
 
-/// A temporary directory name unique to this process and call: `.tmp-<pid>-<n>`.
-fn temp_name() -> String {
+/// A new, empty temporary directory under `stage_dir`, named so no other writer (another process, another container
+/// with the same pid, a crashed run's leftovers) is using it.
+fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    format!(
-        ".tmp-{}-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    )
+    for _ in 0..64 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.subsec_nanos());
+        let path = stage_dir.join(format!(
+            ".tmp-{}-{}-{nanos}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(Error::Io { path, error }),
+        }
+    }
+    Err(Error::Io {
+        path: stage_dir.to_path_buf(),
+        error: std::io::Error::other("no free temporary directory name"),
+    })
 }
 
 #[cfg(test)]

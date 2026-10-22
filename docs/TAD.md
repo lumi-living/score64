@@ -214,11 +214,11 @@ Manual decisions override LLM suggestions, which override rules. A decision neve
 | Index for the app: versions, metrics, search | SQLite `.score64/index.db`, rebuildable from manifests and git |
 
 **The stage cache** (`score64_project::Cache`, #26) lives at `.score64/cache/<stage>/<key>/`.
-- **Key.** An entry's key is `Cache::key`: blake3 of canonical JSON (sorted keys) of the stage, its version, its config and its input hashes. The same work always has the same key, and any change gives another.
+- **Key.** An entry's key is `Cache::key`: blake3 of canonical JSON (keys sorted at every depth) of the stage, its version, its config and its input hashes. The same work always has the same key, and any change gives another. Numbers are taken as written, so `1` and `1.0` differ; that costs a needless miss, never a wrong hit. `put` computes the key from the run itself, so an entry can't claim inputs it wasn't made from.
 - **Contents.** An entry holds the artifacts and a `manifest.json`: schema, stage, key, the run (stage version, tool version, config, inputs, timings, optional cost) and each artifact's name, blake3 and size.
-- **Writing.** `put` writes an entry whole into a temporary `.tmp-<pid>-<n>` directory and renames it into place. If two writers race, the first rename wins, and the other returns that entry; stages are pure, so either copy is right.
+- **Writing.** `put` writes an entry whole into a fresh temporary directory, syncs it, and renames it into place. The directory is named by pid, counter and clock, so another process or container can't share it, and a crashed run's leftovers never block one. If two writers race, the first rename wins and the other returns that entry; stages are pure, so either copy is right. Something that isn't a whole entry in the way, damaged or from an older layout, is replaced.
 - **Reading.** `get` checks the manifest and every artifact's hash. A missing, partial or damaged entry is a miss, never a wrong hit.
-- **Names.** Stage and artifact names are plain names, so nothing writes outside the cache.
+- **Names.** Stage and artifact names are plain names, so nothing writes outside the cache. They are also safe on every system: no leading or trailing dot, no Windows device names, and no two artifacts whose names differ only by case.
 
 A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
 

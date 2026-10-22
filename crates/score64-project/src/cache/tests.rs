@@ -35,7 +35,6 @@ fn an_entry_put_is_got_whole() {
     let put = c
         .put(
             "transcribe",
-            key(),
             &[("notes.json", b"[1,2,3]"), ("midi.mid", b"MThd")],
             run(),
         )
@@ -119,9 +118,7 @@ fn racing_writers_all_succeed_with_one_entry() {
     let threads: Vec<_> = (0..8)
         .map(|_| {
             let c = Arc::clone(&c);
-            std::thread::spawn(move || {
-                c.put("transcribe", key(), &[("notes.json", b"same")], run())
-            })
+            std::thread::spawn(move || c.put("transcribe", &[("notes.json", b"same")], run()))
         })
         .collect();
     let entries: Vec<Entry> = threads
@@ -143,7 +140,7 @@ fn racing_writers_all_succeed_with_one_entry() {
 fn damaged_or_half_written_entries_are_misses() {
     let (c, dir) = cache("damage");
     let entry = c
-        .put("transcribe", key(), &[("notes.json", b"[1,2,3]")], run())
+        .put("transcribe", &[("notes.json", b"[1,2,3]")], run())
         .unwrap();
     // An artifact changed on disk: a miss, not a wrong hit.
     std::fs::write(entry.dir.join("notes.json"), b"[9,9,9]").unwrap();
@@ -151,10 +148,13 @@ fn damaged_or_half_written_entries_are_misses() {
     // An artifact gone: a miss.
     std::fs::remove_file(entry.dir.join("notes.json")).unwrap();
     assert_eq!(c.get("transcribe", key()), None);
-    // A manifest gone: a miss. Putting again repairs nothing in place (the old directory is in the way), so the
-    // caller sees the error rather than a silent bad entry.
+    // A manifest gone: a miss, and putting again replaces what is in the way.
     std::fs::remove_file(entry.dir.join("manifest.json")).unwrap();
     assert_eq!(c.get("transcribe", key()), None);
+    let again = c
+        .put("transcribe", &[("notes.json", b"[1,2,3]")], run())
+        .unwrap();
+    assert_eq!(c.get("transcribe", key()), Some(again));
     // A temporary directory from a crashed writer is never an entry.
     let other = Cache::key("transcribe", "1", &json!({}), &[]);
     let tmp = dir.join("cache").join("transcribe").join(".tmp-1-0");
@@ -166,9 +166,7 @@ fn damaged_or_half_written_entries_are_misses() {
 #[test]
 fn a_manifest_for_another_stage_or_key_is_a_miss() {
     let (c, dir) = cache("mismatch");
-    let entry = c
-        .put("transcribe", key(), &[("a.bin", b"x")], run())
-        .unwrap();
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
     // Copy the entry under another key: its manifest names the first key, so it is no hit there.
     let other = Cache::key("transcribe", "9", &json!({}), &[]);
     let copy = dir.join("cache").join("transcribe").join(other.to_string());
@@ -193,15 +191,27 @@ fn names_stay_inside_the_cache() {
     let (c, dir) = cache("names");
     for stage in ["", "../up", "a/b", ".hidden", "tab\tbad"] {
         assert!(
-            matches!(c.put(stage, key(), &[], run()), Err(Error::BadName(_))),
+            matches!(c.put(stage, &[], run()), Err(Error::BadName(_))),
             "{stage:?}"
         );
         assert_eq!(c.get(stage, key()), None);
     }
-    for artifact in ["../escape", "dir/file", ".tmp-1-1", "manifest.json", ""] {
+    for artifact in [
+        "../escape",
+        "dir/file",
+        ".tmp-1-1",
+        "manifest.json",
+        "MANIFEST.JSON",
+        "",
+        "con",
+        "nul.json",
+        "COM1.bin",
+        "lpt9",
+        "trailing.",
+    ] {
         assert!(
             matches!(
-                c.put("transcribe", key(), &[(artifact, b"x")], run()),
+                c.put("transcribe", &[(artifact, b"x")], run()),
                 Err(Error::BadName(_))
             ),
             "{artifact:?}"
@@ -209,12 +219,7 @@ fn names_stay_inside_the_cache() {
     }
     // The same artifact twice is refused too.
     assert!(matches!(
-        c.put(
-            "transcribe",
-            key(),
-            &[("a.bin", b"x"), ("a.bin", b"y")],
-            run()
-        ),
+        c.put("transcribe", &[("a.bin", b"x"), ("a.bin", b"y")], run()),
         Err(Error::BadName(_))
     ));
     assert!(!dir.join("escape").exists());
@@ -224,9 +229,74 @@ fn names_stay_inside_the_cache() {
 #[test]
 fn manifests_refuse_unknown_fields() {
     let (c, dir) = cache("unknown");
-    let entry = c.put("transcribe", key(), &[], run()).unwrap();
+    let entry = c.put("transcribe", &[], run()).unwrap();
     let text = std::fs::read_to_string(entry.dir.join("manifest.json")).unwrap();
     let extra = text.replacen('{', "{\n  \"extra\": true,", 1);
     assert!(serde_json::from_str::<Manifest>(&extra).is_err());
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_entry_is_stored_under_its_own_runs_key() {
+    let (c, dir) = cache("ownkey");
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    assert_eq!(entry.manifest.key, key());
+    let mut other = run();
+    other.config = json!({ "model": "other" });
+    let e2 = c
+        .put("transcribe", &[("a.bin", b"x")], other.clone())
+        .unwrap();
+    assert_eq!(
+        e2.manifest.key,
+        Cache::key("transcribe", "1", &other.config, &other.inputs)
+    );
+    assert_ne!(e2.dir, entry.dir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn leftover_temporary_directories_get_in_nobodys_way() {
+    let (c, dir) = cache("leftovers");
+    let stage = dir.join("cache").join("transcribe");
+    std::fs::create_dir_all(&stage).unwrap();
+    for n in 0..8 {
+        std::fs::create_dir(stage.join(format!(".tmp-{}-{n}", std::process::id()))).unwrap();
+    }
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    assert_eq!(c.get("transcribe", key()), Some(entry));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_entry_under_another_stage_is_a_miss() {
+    let (c, dir) = cache("otherstage");
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    let copy = dir.join("cache").join("separate").join(key().to_string());
+    std::fs::create_dir_all(&copy).unwrap();
+    for name in ["a.bin", "manifest.json"] {
+        std::fs::copy(entry.dir.join(name), copy.join(name)).unwrap();
+    }
+    assert_eq!(c.get("separate", key()), None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_cost_has_its_currency() {
+    let (c, dir) = cache("cost");
+    let mut r = run();
+    r.cost = Some(Cost {
+        amount: 0.012,
+        currency: "USD".into(),
+    });
+    let entry = c.put("transcribe", &[], r.clone()).unwrap();
+    let back = c.get("transcribe", entry.manifest.key).unwrap();
+    assert_eq!(back.manifest.run.cost, r.cost);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn config_keys_sort_at_every_depth() {
+    let a = json!({ "b": { "y": 1, "x": [ { "q": 1, "p": 2 } ] }, "a": 0 });
+    let b = json!({ "a": 0, "b": { "x": [ { "p": 2, "q": 1 } ], "y": 1 } });
+    assert_eq!(Cache::key("s", "1", &a, &[]), Cache::key("s", "1", &b, &[]));
 }
