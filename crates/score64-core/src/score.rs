@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::provenance::{Confidence, DecisionId, SourceRef};
+use crate::provenance::{Confidence, DecisionId, SourceRef, valid_id};
 
 /// The version of the score's file layout this code reads and writes.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -47,14 +47,99 @@ impl From<Schema> for u32 {
 /// A whole song: one or more subtunes under one voice profile.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "SongFields", into = "SongFields")]
 pub struct Song {
     /// Layout version; always [`SCHEMA_VERSION`].
     pub schema: Schema,
     /// The voice profile every subtune follows (rules in `docs/TAD.md` §3.1).
     pub profile: Profile,
-    /// Subtunes; the position is the subtune number the player's init takes in A (0-based).
+    /// Subtunes, with unique names. The position is the number the game passes to the player's init in A
+    /// (0-based); everything else in the project refers to a subtune by name, so reordering cannot re-target it.
     pub subtunes: Vec<Subtune>,
+}
+
+impl Song {
+    /// The subtune called `name`, with its position.
+    pub fn subtune(&self, name: &SubtuneName) -> Option<(usize, &Subtune)> {
+        self.subtunes
+            .iter()
+            .enumerate()
+            .find(|(_, s)| &s.name == name)
+    }
+}
+
+/// [`Song`] as written in files.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+struct SongFields {
+    /// Layout version.
+    schema: Schema,
+    /// Voice profile.
+    profile: Profile,
+    /// Subtunes, with unique names; the position is the player's subtune number.
+    subtunes: Vec<Subtune>,
+}
+
+impl TryFrom<SongFields> for Song {
+    type Error = String;
+    fn try_from(f: SongFields) -> Result<Self, String> {
+        for (i, a) in f.subtunes.iter().enumerate() {
+            if f.subtunes[..i].iter().any(|b| b.name == a.name) {
+                return Err(format!("two subtunes are called {:?}", a.name.as_str()));
+            }
+        }
+        Ok(Song {
+            schema: f.schema,
+            profile: f.profile,
+            subtunes: f.subtunes,
+        })
+    }
+}
+
+impl From<Song> for SongFields {
+    fn from(s: Song) -> Self {
+        SongFields {
+            schema: s.schema,
+            profile: s.profile,
+            subtunes: s.subtunes,
+        }
+    }
+}
+
+/// A subtune's stable name, which decisions and project files use (for example `bed`, `climax`, `victory`): 1–64
+/// characters of `a`–`z`, `0`–`9`, `-` and `_`, starting with a letter or digit.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct SubtuneName(String);
+
+impl SubtuneName {
+    /// `s`, if it is a valid name.
+    pub fn new(s: impl Into<String>) -> Option<Self> {
+        let s = s.into();
+        valid_id(&s).then_some(SubtuneName(s))
+    }
+
+    /// The name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for SubtuneName {
+    type Error = String;
+    fn try_from(s: String) -> Result<Self, String> {
+        let shown = format!("{s:?}");
+        SubtuneName::new(s).ok_or_else(|| {
+            format!("{shown} is not a subtune name (1–64 of a-z, 0-9, - and _, starting with a letter or digit)")
+        })
+    }
+}
+
+impl From<SubtuneName> for String {
+    fn from(n: SubtuneName) -> String {
+        n.0
+    }
 }
 
 /// Voice profile names (`docs/TAD.md` §3.1). The rules themselves live with the validator.
@@ -77,8 +162,10 @@ pub enum Profile {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Subtune {
+    /// Stable name, unique in the song.
+    pub name: SubtuneName,
     /// Frames (50 Hz player calls) per row at row 0.
-    pub frames_per_row: NonZeroU8,
+    pub frames_per_row: FramesPerRow,
     /// Tempo changes after row 0, in row order.
     pub tempo: Vec<TempoChange>,
     /// Rows per bar (16 for 4/4 at four rows per beat). Bars place decisions and timing marks.
@@ -87,8 +174,53 @@ pub struct Subtune {
     pub length: NonZeroU32,
     /// Row the subtune loops back to after its last row.
     pub loop_row: u32,
+    /// Rows that carry a timing mark. The player has one mark byte (start+$3F with `-H1`), which the game reads per
+    /// subtune, so marks belong to the subtune, not to a voice (`docs/reference/player.md`).
+    pub marks: Vec<u32>,
     /// Voice lines, at most one per SID voice.
     pub voices: Vec<VoiceLine>,
+}
+
+/// Frames per row: a GoatTracker tempo from 3 to 127. Values below 3 select funktempo in GoatTracker, which the
+/// score does not model yet, and a hard restart needs the frames anyway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(try_from = "u8", into = "u8")]
+pub struct FramesPerRow(u8);
+
+impl FramesPerRow {
+    /// The fastest tempo.
+    pub const MIN: FramesPerRow = FramesPerRow(3);
+    /// The slowest tempo.
+    pub const MAX: FramesPerRow = FramesPerRow(127);
+
+    /// `n` frames per row, if GoatTracker plays it as a plain tempo.
+    pub const fn new(n: u8) -> Option<Self> {
+        if n >= Self::MIN.0 && n <= Self::MAX.0 {
+            Some(FramesPerRow(n))
+        } else {
+            None
+        }
+    }
+
+    /// Frames per row.
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<u8> for FramesPerRow {
+    type Error = String;
+    fn try_from(n: u8) -> Result<Self, String> {
+        FramesPerRow::new(n).ok_or_else(|| {
+            format!("frames per row must be 3 to 127, not {n} (below 3 is GoatTracker's funktempo, not modelled)")
+        })
+    }
+}
+
+impl From<FramesPerRow> for u8 {
+    fn from(f: FramesPerRow) -> u8 {
+        f.0
+    }
 }
 
 /// A tempo change on the grid.
@@ -99,7 +231,7 @@ pub struct TempoChange {
     /// The first row at the new tempo.
     pub row: u32,
     /// Frames per row from here on.
-    pub frames_per_row: NonZeroU8,
+    pub frames_per_row: FramesPerRow,
 }
 
 /// SID voice 1, 2 or 3.
@@ -166,16 +298,77 @@ pub enum Role {
 pub struct VoiceLine {
     /// The SID voice.
     pub voice: Voice,
-    /// Its role.
-    pub role: Role,
-    /// The instrument preset its notes use.
+    /// Its roles over time: a voice can change role at any row (usually a bar line), as `voice_role` decisions do.
+    pub roles: Roles,
+    /// The instrument its notes use unless a note names its own.
     pub instrument: PresetId,
     /// Notes in row order. The validator checks they do not overlap (`docs/TAD.md` §1.3 rule 1).
     pub notes: Vec<Note>,
     /// Wavetable arpeggios, in row order.
     pub arps: Vec<ArpEvent>,
-    /// Rows that carry a timing mark (`docs/reference/player.md`).
-    pub marks: Vec<u32>,
+}
+
+impl VoiceLine {
+    /// The instrument `note` plays with: its own, or the line's.
+    pub fn instrument_of<'a>(&'a self, note: &'a Note) -> &'a PresetId {
+        note.instrument.as_ref().unwrap_or(&self.instrument)
+    }
+}
+
+/// A role from a row on, until the next span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct RoleSpan {
+    /// The first row in this role.
+    pub row: u32,
+    /// The role.
+    pub role: Role,
+}
+
+/// A voice line's roles: spans in strictly increasing row order, the first at row 0, each lasting until the next.
+/// So every row has exactly one role, with no gaps or overlaps.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(try_from = "Vec<RoleSpan>", into = "Vec<RoleSpan>")]
+pub struct Roles(Vec<RoleSpan>);
+
+impl Roles {
+    /// One role for the whole line.
+    pub fn constant(role: Role) -> Self {
+        Roles(vec![RoleSpan { row: 0, role }])
+    }
+
+    /// `spans`, if the first is at row 0 and rows strictly increase.
+    pub fn new(spans: Vec<RoleSpan>) -> Option<Self> {
+        let ordered = spans.windows(2).all(|w| w[0].row < w[1].row);
+        (spans.first().is_some_and(|s| s.row == 0) && ordered).then_some(Roles(spans))
+    }
+
+    /// The role at `row`.
+    pub fn at(&self, row: u32) -> Role {
+        let i = self.0.partition_point(|s| s.row <= row);
+        self.0[i - 1].role
+    }
+
+    /// The spans.
+    pub fn spans(&self) -> &[RoleSpan] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<RoleSpan>> for Roles {
+    type Error = String;
+    fn try_from(spans: Vec<RoleSpan>) -> Result<Self, String> {
+        Roles::new(spans)
+            .ok_or_else(|| "roles must start at row 0, with rows in increasing order".into())
+    }
+}
+
+impl From<Roles> for Vec<RoleSpan> {
+    fn from(r: Roles) -> Self {
+        r.0
+    }
 }
 
 /// An instrument preset name (`presets/*.toml`).
@@ -197,6 +390,9 @@ pub struct Note {
     pub pitch: Pitch,
     /// Whether the note gates a fresh attack or ties on from the note before.
     pub attack: Attack,
+    /// This note's instrument, when it is not the line's (a drum line's kick, snare and hi-hat, say).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instrument: Option<PresetId>,
     /// Where in the source audio this note came from; absent for notes made by hand or by a rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<SourceRef>,

@@ -1,6 +1,7 @@
 //! proptest strategies for the model (feature `proptest`). Songs come out structurally sound: notes on each line in
-//! row order without overlaps, legato notes only straight after another note, everything inside the subtune's
-//! length. Profile rules (roles, voice 3) are not applied; tests that need them filter or build on these.
+//! row order without overlaps, legato notes only straight after another note, role spans and marks inside the
+//! subtune, unique subtune names. Profile rules (roles, voice 3) are not applied; tests that need them filter or
+//! build on these.
 
 use std::num::{NonZeroU8, NonZeroU32};
 
@@ -10,8 +11,8 @@ use crate::provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
 use crate::score::{
-    ArpEvent, Attack, Note, Pitch, PresetId, Profile, Role, Schema, Song, Subtune, TempoChange,
-    Voice, VoiceLine,
+    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Profile, Role, RoleSpan, Roles, Schema,
+    Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
 
 /// Any playable pitch.
@@ -69,17 +70,28 @@ pub fn decision_id() -> impl Strategy<Value = DecisionId> {
     "[a-z0-9][a-z0-9_-]{0,15}".prop_map(|s| DecisionId::new(s).expect("valid"))
 }
 
-fn frames_per_row() -> impl Strategy<Value = NonZeroU8> {
-    (1u8..=16).prop_map(|n| NonZeroU8::new(n).expect("non-zero"))
+/// Any plain tempo.
+pub fn frames_per_row() -> impl Strategy<Value = FramesPerRow> {
+    (FramesPerRow::MIN.get()..=FramesPerRow::MAX.get())
+        .prop_map(|n| FramesPerRow::new(n).expect("in range"))
 }
 
-/// A voice line's notes: in row order, never overlapping, legato only when the note before ends on its row.
+/// Any subtune name.
+pub fn subtune_name() -> impl Strategy<Value = SubtuneName> {
+    "[a-z0-9][a-z0-9_-]{0,11}".prop_map(|s| SubtuneName::new(s).expect("valid"))
+}
+
+/// Any preset name.
+pub fn preset() -> impl Strategy<Value = PresetId> {
+    "[a-z][a-z0-9-]{0,11}".prop_map(PresetId)
+}
+
+/// A voice line's notes: in row order, never overlapping, legato only when the note before ends on its row, some
+/// with their own instrument.
 pub fn notes() -> impl Strategy<Value = Vec<Note>> {
     let step = (
-        0u32..8,
-        1u32..16,
-        pitch(),
-        any::<bool>(),
+        (0u32..8, 1u32..16, pitch(), any::<bool>()),
+        proptest::option::weighted(0.2, preset()),
         proptest::option::of(source_ref()),
         confidence(),
         proptest::option::of(decision_id()),
@@ -87,7 +99,7 @@ pub fn notes() -> impl Strategy<Value = Vec<Note>> {
     proptest::collection::vec(step, 0..24).prop_map(|steps| {
         let mut row = 0;
         let mut notes: Vec<Note> = Vec::with_capacity(steps.len());
-        for (gap, length, pitch, tie, source, confidence, decision) in steps {
+        for ((gap, length, pitch, tie), instrument, source, confidence, decision) in steps {
             row += gap;
             let attack = if tie && gap == 0 && !notes.is_empty() {
                 Attack::Legato
@@ -99,6 +111,7 @@ pub fn notes() -> impl Strategy<Value = Vec<Note>> {
                 length: NonZeroU32::new(length).expect("non-zero"),
                 pitch,
                 attack,
+                instrument,
                 source,
                 confidence,
                 decision,
@@ -109,13 +122,31 @@ pub fn notes() -> impl Strategy<Value = Vec<Note>> {
     })
 }
 
+/// Role spans: the first at row 0, then changes at increasing rows.
+pub fn roles() -> impl Strategy<Value = Roles> {
+    (role(), proptest::collection::vec((1u32..64, role()), 0..3)).prop_map(|(first, later)| {
+        let mut row = 0;
+        let mut spans = vec![RoleSpan {
+            row: 0,
+            role: first,
+        }];
+        for (gap, role) in later {
+            row += gap;
+            spans.push(RoleSpan { row, role });
+        }
+        Roles::new(spans).expect("ordered from row 0")
+    })
+}
+
 fn line_end(line: &VoiceLine) -> u32 {
-    line.notes.last().map_or(0, |n| n.row + n.length.get())
+    let notes = line.notes.last().map_or(0, |n| n.row + n.length.get());
+    let roles = line.roles.spans().last().map_or(0, |s| s.row + 1);
+    notes.max(roles)
 }
 
 /// A voice line on `voice`.
 pub fn voice_line(voice: Voice) -> impl Strategy<Value = VoiceLine> {
-    (role(), "[a-z][a-z0-9-]{0,11}", notes()).prop_map(move |(role, preset, notes)| {
+    (roles(), preset(), notes()).prop_map(move |(roles, instrument, notes)| {
         let end = notes.last().map_or(0, |n| n.row + n.length.get());
         // One arpeggio over the first four rows, when there is room.
         let arps = (end >= 4)
@@ -129,17 +160,16 @@ pub fn voice_line(voice: Voice) -> impl Strategy<Value = VoiceLine> {
             .collect();
         VoiceLine {
             voice,
-            role,
-            instrument: PresetId(preset),
+            roles,
+            instrument,
             notes,
             arps,
-            marks: (0..end).step_by(16).collect(),
         }
     })
 }
 
-/// A subtune with one to three voice lines, on distinct voices in voice order.
-pub fn subtune() -> impl Strategy<Value = Subtune> {
+/// A subtune called `name`, with one to three voice lines on distinct voices in voice order.
+pub fn subtune(name: SubtuneName) -> impl Strategy<Value = Subtune> {
     let voices = proptest::sample::subsequence(vec![1u8, 2, 3], 1..=3);
     (
         voices,
@@ -155,37 +185,47 @@ pub fn subtune() -> impl Strategy<Value = Subtune> {
                 .collect();
             (lines, Just((fpr, tempo, rows_per_bar, tail)))
         })
-        .prop_map(|(voices, (frames_per_row, tempo, rows_per_bar, tail))| {
-            let length = voices.iter().map(line_end).max().unwrap_or(0) + tail + 1;
-            let mut row = 0;
-            let tempo = tempo
-                .into_iter()
-                .filter_map(|(gap, frames_per_row)| {
-                    row += gap;
-                    (row < length).then_some(TempoChange {
-                        row,
-                        frames_per_row,
+        .prop_map(
+            move |(voices, (frames_per_row, tempo, rows_per_bar, tail))| {
+                let length = voices.iter().map(line_end).max().unwrap_or(0) + tail + 1;
+                let mut row = 0;
+                let tempo = tempo
+                    .into_iter()
+                    .filter_map(|(gap, frames_per_row)| {
+                        row += gap;
+                        (row < length).then_some(TempoChange {
+                            row,
+                            frames_per_row,
+                        })
                     })
-                })
-                .collect();
-            Subtune {
-                frames_per_row,
-                tempo,
-                rows_per_bar: NonZeroU8::new(rows_per_bar).expect("non-zero"),
-                length: NonZeroU32::new(length).expect("non-zero"),
-                loop_row: 0,
-                voices,
-            }
-        })
+                    .collect();
+                Subtune {
+                    name: name.clone(),
+                    frames_per_row,
+                    tempo,
+                    rows_per_bar: NonZeroU8::new(rows_per_bar).expect("non-zero"),
+                    length: NonZeroU32::new(length).expect("non-zero"),
+                    loop_row: 0,
+                    marks: (0..length).step_by(usize::from(rows_per_bar)).collect(),
+                    voices,
+                }
+            },
+        )
 }
 
-/// A song with one to four subtunes.
+/// A song with one to four subtunes with distinct names.
 pub fn song() -> impl Strategy<Value = Song> {
-    (profile(), proptest::collection::vec(subtune(), 1..=4)).prop_map(|(profile, subtunes)| Song {
-        schema: Schema::default(),
-        profile,
-        subtunes,
-    })
+    let names = proptest::collection::btree_set(subtune_name(), 1..=4);
+    (profile(), names)
+        .prop_flat_map(|(profile, names)| {
+            let subtunes: Vec<_> = names.into_iter().map(subtune).collect();
+            (Just(profile), subtunes)
+        })
+        .prop_map(|(profile, subtunes)| Song {
+            schema: Schema::default(),
+            profile,
+            subtunes,
+        })
 }
 
 /// Any proposal.
@@ -215,7 +255,7 @@ pub fn provenance() -> impl Strategy<Value = Provenance> {
 pub fn decision() -> impl Strategy<Value = Decision> {
     (
         decision_id(),
-        0u8..8,
+        subtune_name(),
         0u32..256,
         proposal(),
         provenance(),

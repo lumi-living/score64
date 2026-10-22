@@ -22,8 +22,8 @@ pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
 pub use score::{
-    ArpEvent, Attack, Note, Pitch, PresetId, Profile, Role, SCHEMA_VERSION, Schema, Song, Subtune,
-    TempoChange, Voice, VoiceLine,
+    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Profile, Role, RoleSpan, Roles,
+    SCHEMA_VERSION, Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
 
 #[cfg(test)]

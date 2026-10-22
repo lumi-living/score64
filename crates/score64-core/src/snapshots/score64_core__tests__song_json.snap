@@ -7,6 +7,7 @@ expression: "serde_json::to_string_pretty(&song).unwrap()"
   "profile": "combat",
   "subtunes": [
     {
+      "name": "combat",
       "frames_per_row": 6,
       "tempo": [
         {
@@ -17,10 +18,19 @@ expression: "serde_json::to_string_pretty(&song).unwrap()"
       "rows_per_bar": 16,
       "length": 32,
       "loop_row": 0,
+      "marks": [
+        0,
+        16
+      ],
       "voices": [
         {
           "voice": 1,
-          "role": "lead",
+          "roles": [
+            {
+              "row": 0,
+              "role": "lead"
+            }
+          ],
           "instrument": "lead-saw",
           "notes": [
             {
@@ -51,11 +61,54 @@ expression: "serde_json::to_string_pretty(&song).unwrap()"
               "decision": "octave-bar0"
             }
           ],
-          "arps": [],
-          "marks": [
-            0,
-            16
-          ]
+          "arps": []
+        },
+        {
+          "voice": 3,
+          "roles": [
+            {
+              "row": 0,
+              "role": "bass"
+            },
+            {
+              "row": 16,
+              "role": "drums"
+            }
+          ],
+          "instrument": "bass-pulse",
+          "notes": [
+            {
+              "row": 0,
+              "length": 8,
+              "pitch": "A-2",
+              "attack": "fresh",
+              "confidence": 1.0
+            },
+            {
+              "row": 8,
+              "length": 8,
+              "pitch": "E-2",
+              "attack": "fresh",
+              "confidence": 1.0
+            },
+            {
+              "row": 16,
+              "length": 2,
+              "pitch": "C-3",
+              "attack": "fresh",
+              "instrument": "kick",
+              "confidence": 1.0
+            },
+            {
+              "row": 20,
+              "length": 1,
+              "pitch": "C-6",
+              "attack": "fresh",
+              "instrument": "hihat",
+              "confidence": 1.0
+            }
+          ],
+          "arps": []
         }
       ]
     }

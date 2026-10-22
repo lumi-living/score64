@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use schemars::{JsonSchema, Schema as JsonSchemaDoc, SchemaGenerator, json_schema};
 
 use crate::provenance::{Confidence, ContentHash, DecisionId};
-use crate::score::{Pitch, SCHEMA_VERSION, Schema, Voice};
+use crate::score::{FramesPerRow, Pitch, SCHEMA_VERSION, Schema, SubtuneName, Voice};
 
 macro_rules! schema {
     ($t:ty, $name:literal, $body:tt) => {
@@ -37,4 +37,14 @@ schema!(Confidence, "Confidence", { "type": "number", "minimum": 0, "maximum": 1
 schema!(DecisionId, "DecisionId", {
     "type": "string",
     "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+});
+schema!(SubtuneName, "SubtuneName", {
+    "type": "string",
+    "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+});
+schema!(FramesPerRow, "FramesPerRow", {
+    "description": "GoatTracker tempo; below 3 is funktempo, which the score does not model.",
+    "type": "integer",
+    "minimum": 3,
+    "maximum": 127
 });

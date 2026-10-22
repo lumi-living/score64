@@ -12,13 +12,15 @@ fn hash(b: u8) -> ContentHash {
     ContentHash([b; 32])
 }
 
-/// A small song with one of everything, for the snapshot and the field tests.
+/// A small combat song with one of everything, for the snapshot and the field tests: a lead with a tie, and voice 3
+/// switching from bass to drums at the bar line, with per-note drum instruments.
 fn example() -> (Song, Vec<Decision>) {
     let n = |row, length, pitch: &str, attack| Note {
         row,
         length: NonZeroU32::new(length).unwrap(),
         pitch: pitch.parse().unwrap(),
         attack,
+        instrument: None,
         source: None,
         confidence: Confidence::CERTAIN,
         decision: None,
@@ -31,32 +33,62 @@ fn example() -> (Song, Vec<Decision>) {
     lead[0].source = SourceRef::new(hash(0xAB), 1_250_000, 1_500_000);
     lead[0].confidence = Confidence::new(0.9).unwrap();
     lead[2].decision = DecisionId::new("octave-bar0");
+    let mut v3 = vec![
+        n(0, 8, "A-2", Attack::Fresh),
+        n(8, 8, "E-2", Attack::Fresh),
+        n(16, 2, "C-3", Attack::Fresh),
+        n(20, 1, "C-6", Attack::Fresh),
+    ];
+    v3[2].instrument = Some(PresetId("kick".into()));
+    v3[3].instrument = Some(PresetId("hihat".into()));
+    let fpr = |n| FramesPerRow::new(n).unwrap();
     let song = Song {
         schema: Schema::default(),
         profile: Profile::Combat,
         subtunes: vec![Subtune {
-            frames_per_row: NonZeroU8::new(6).unwrap(),
+            name: SubtuneName::new("combat").unwrap(),
+            frames_per_row: fpr(6),
             tempo: vec![TempoChange {
                 row: 16,
-                frames_per_row: NonZeroU8::new(5).unwrap(),
+                frames_per_row: fpr(5),
             }],
             rows_per_bar: NonZeroU8::new(16).unwrap(),
             length: NonZeroU32::new(32).unwrap(),
             loop_row: 0,
-            voices: vec![VoiceLine {
-                voice: Voice::new(1).unwrap(),
-                role: Role::Lead,
-                instrument: PresetId("lead-saw".into()),
-                notes: lead,
-                arps: vec![],
-                marks: vec![0, 16],
-            }],
+            marks: vec![0, 16],
+            voices: vec![
+                VoiceLine {
+                    voice: Voice::new(1).unwrap(),
+                    roles: Roles::constant(Role::Lead),
+                    instrument: PresetId("lead-saw".into()),
+                    notes: lead,
+                    arps: vec![],
+                },
+                VoiceLine {
+                    voice: Voice::new(3).unwrap(),
+                    roles: Roles::new(vec![
+                        RoleSpan {
+                            row: 0,
+                            role: Role::Bass,
+                        },
+                        RoleSpan {
+                            row: 16,
+                            role: Role::Drums,
+                        },
+                    ])
+                    .unwrap(),
+                    instrument: PresetId("bass-pulse".into()),
+                    notes: v3,
+                    arps: vec![],
+                },
+            ],
         }],
     };
+    let combat = SubtuneName::new("combat").unwrap();
     let decisions = vec![
         Decision {
             id: DecisionId::new("octave-bar0").unwrap(),
-            subtune: 0,
+            subtune: combat.clone(),
             bar: 0,
             proposal: Proposal::Octave {
                 voice: Voice::new(1).unwrap(),
@@ -70,8 +102,22 @@ fn example() -> (Song, Vec<Decision>) {
             reviewed: false,
         },
         Decision {
+            id: DecisionId::new("v3-drums-bar1").unwrap(),
+            subtune: combat.clone(),
+            bar: 1,
+            proposal: Proposal::VoiceRole {
+                voice: Voice::new(3).unwrap(),
+                role: Role::Drums,
+            },
+            provenance: Provenance::Rules {
+                rule: "drum-fold@1".into(),
+            },
+            confidence: Confidence::new(0.8).unwrap(),
+            reviewed: false,
+        },
+        Decision {
             id: DecisionId::new("loop").unwrap(),
-            subtune: 0,
+            subtune: combat,
             bar: 0,
             proposal: Proposal::LoopRow { row: 0 },
             provenance: Provenance::Manual,
@@ -135,6 +181,67 @@ fn ranges_are_checked_on_read() {
 }
 
 #[test]
+fn instruments_and_roles_change_within_a_line() {
+    let (song, _) = example();
+    let v3 = &song.subtunes[0].voices[1];
+    let names: Vec<&str> = v3
+        .notes
+        .iter()
+        .map(|n| v3.instrument_of(n).0.as_str())
+        .collect();
+    assert_eq!(names, ["bass-pulse", "bass-pulse", "kick", "hihat"]);
+    assert_eq!(v3.roles.at(0), Role::Bass);
+    assert_eq!(v3.roles.at(15), Role::Bass);
+    assert_eq!(v3.roles.at(16), Role::Drums);
+    assert_eq!(v3.roles.at(u32::MAX), Role::Drums);
+
+    let span = |row| RoleSpan {
+        row,
+        role: Role::Lead,
+    };
+    assert!(Roles::new(vec![]).is_none(), "no role");
+    assert!(Roles::new(vec![span(4)]).is_none(), "nothing at row 0");
+    assert!(
+        Roles::new(vec![span(0), span(8), span(8)]).is_none(),
+        "repeated row"
+    );
+    assert!(
+        Roles::new(vec![span(0), span(8), span(4)]).is_none(),
+        "out of order"
+    );
+    let e = serde_json::from_str::<Roles>(r#"[{"row": 3, "role": "lead"}]"#).unwrap_err();
+    assert!(e.to_string().contains("start at row 0"), "{e}");
+}
+
+#[test]
+fn tempo_is_three_to_127_frames_per_row() {
+    assert!(FramesPerRow::new(2).is_none());
+    assert!(FramesPerRow::new(128).is_none());
+    assert_eq!(FramesPerRow::MIN.get(), 3);
+    let e = serde_json::from_str::<FramesPerRow>("1")
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains("funktempo"), "{e}");
+    assert!(serde_json::from_str::<FramesPerRow>("127").is_ok());
+}
+
+#[test]
+fn subtunes_have_unique_stable_names() {
+    let (song, decisions) = example();
+    let (index, subtune) = song.subtune(&decisions[0].subtune).unwrap();
+    assert_eq!((index, subtune.name.as_str()), (0, "combat"));
+
+    let mut twice = serde_json::to_value(&song).unwrap();
+    let copy = twice["subtunes"][0].clone();
+    twice["subtunes"].as_array_mut().unwrap().push(copy);
+    let e = serde_json::from_value::<Song>(twice)
+        .unwrap_err()
+        .to_string();
+    assert!(e.contains(r#"two subtunes are called "combat""#), "{e}");
+    assert!(SubtuneName::new("Climax").is_none());
+}
+
+#[test]
 fn newer_schema_versions_are_rejected() {
     let mut v = serde_json::to_value(example().0).unwrap();
     v["schema"] = 2.into();
@@ -152,6 +259,7 @@ fn unknown_fields_are_errors_at_every_level() {
         "/subtunes/0",
         "/subtunes/0/tempo/0",
         "/subtunes/0/voices/0",
+        "/subtunes/0/voices/1/roles/1",
         "/subtunes/0/voices/0/notes/0",
         "/subtunes/0/voices/0/notes/0/source",
     ] {
@@ -187,7 +295,8 @@ fn files_look_like_this() {
 fn only_unreviewed_model_decisions_need_review() {
     let (_, decisions) = example();
     assert!(decisions[0].needs_review());
-    assert!(!decisions[1].needs_review(), "manual");
+    assert!(!decisions[1].needs_review(), "rules");
+    assert!(!decisions[2].needs_review(), "manual");
     let reviewed = Decision {
         reviewed: true,
         ..decisions[0].clone()
@@ -225,7 +334,7 @@ proptest! {
 
     /// The generators keep their promises, so property tests elsewhere can rely on them.
     #[test]
-    fn generated_lines_are_ordered_and_do_not_overlap(subtune in strategies::subtune()) {
+    fn generated_lines_are_ordered_and_do_not_overlap(subtune in strategies::subtune(SubtuneName::new("s").unwrap())) {
         for line in &subtune.voices {
             let mut end = 0;
             for (i, n) in line.notes.iter().enumerate() {
@@ -234,7 +343,9 @@ proptest! {
                 end = n.row + n.length.get();
             }
             prop_assert!(end <= subtune.length.get());
+            prop_assert!(line.roles.spans().iter().all(|s| s.row < subtune.length.get()));
         }
+        prop_assert!(subtune.marks.iter().all(|&m| m < subtune.length.get()));
     }
 }
 

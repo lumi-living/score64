@@ -5,11 +5,10 @@
 //! points at notes.
 
 use std::fmt;
-use std::num::NonZeroU8;
 
 use serde::{Deserialize, Serialize};
 
-use crate::score::{Role, Voice};
+use crate::score::{FramesPerRow, Role, SubtuneName, Voice};
 
 /// A blake3 hash: the identity of a file in the content-addressed cache (ADR-004). Written as 64 lowercase hex digits.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -171,11 +170,7 @@ impl DecisionId {
     /// `s`, if it is a valid id.
     pub fn new(s: impl Into<String>) -> Option<Self> {
         let s = s.into();
-        let ok = (1..=64).contains(&s.len())
-            && s.bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
-            && s.as_bytes()[0].is_ascii_alphanumeric();
-        ok.then_some(DecisionId(s))
+        valid_id(&s).then_some(DecisionId(s))
     }
 
     /// The id.
@@ -200,6 +195,14 @@ impl From<DecisionId> for String {
     }
 }
 
+/// 1–64 of `a`–`z`, `0`–`9`, `-` and `_`, starting with a letter or digit: decision ids and subtune names.
+pub(crate) fn valid_id(s: &str) -> bool {
+    (1..=64).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
+        && s.as_bytes()[0].is_ascii_alphanumeric()
+}
+
 /// One judgement call (`docs/TAD.md` §3.3): a proposed change at a place in the song, who proposed it, how sure they
 /// were, and whether a person has reviewed it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -208,8 +211,8 @@ impl From<DecisionId> for String {
 pub struct Decision {
     /// Stable name.
     pub id: DecisionId,
-    /// Subtune (0-based).
-    pub subtune: u8,
+    /// The subtune, by name: stable when subtunes are added or reordered.
+    pub subtune: SubtuneName,
     /// Bar (0-based) the decision is about.
     pub bar: u32,
     /// The change proposed. Applying it is an engine command's job, after validation.
@@ -289,6 +292,6 @@ pub enum Proposal {
     /// Snap the tempo to this many frames per row.
     FramesPerRow {
         /// Frames per row.
-        frames_per_row: NonZeroU8,
+        frames_per_row: FramesPerRow,
     },
 }
