@@ -123,7 +123,7 @@ fn ctx() -> Context {
         .into_iter()
         .map(|(k, v)| (PresetId(k.into()), v))
         .collect(),
-        ranges: RoleRanges::default(),
+        ..Context::default()
     }
 }
 
@@ -197,8 +197,24 @@ fn rule_3_voices_roles_and_profile_names() {
         }, // bass on the expendable voice from bar 2
     ])
     .unwrap();
-    let p = problems(&s);
-    assert!(p.contains(&(Rule::Voices, Some(1), Some(3))), "{p:?}");
+    let p = validate(&s, &ctx());
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert_eq!(
+        (
+            p[0].rule,
+            p[0].severity,
+            p[0].bar,
+            p[0].voice.map(Voice::get)
+        ),
+        (
+            Rule::FilterAndExpendable,
+            Severity::Warning,
+            Some(1),
+            Some(3)
+        ),
+        "bass on an expendable voice is allowed, with a warning"
+    );
+    assert!(!has_errors(&p));
 
     let mut s = theme();
     s.subtunes[0].profile = Some(pname(builtin::SFX_OWNS_V3)); // V3 belongs to effects
@@ -224,7 +240,7 @@ fn rule_4_filter_and_pulse() {
     assert_eq!(p.len(), 2, "{p:?}");
     assert!(
         p.iter()
-            .all(|p| p.rule == Rule::FilterAndPulse && p.voice.map(Voice::get) == Some(3))
+            .all(|p| p.rule == Rule::FilterAndExpendable && p.voice.map(Voice::get) == Some(3))
     );
     assert!(p.iter().any(|p| p.message.contains("filter")));
     assert!(p.iter().any(|p| p.message.contains("pulse width")));
@@ -273,7 +289,7 @@ fn project_profiles_keep_the_filter_and_roles_where_declared() {
     assert_eq!(p.len(), 1, "{p:?}");
     assert_eq!(
         (p[0].rule, p[0].voice.map(Voice::get)),
-        (Rule::FilterAndPulse, Some(2))
+        (Rule::FilterAndExpendable, Some(2))
     );
     assert!(
         p[0].message.contains("`tension` does not allow"),
@@ -365,6 +381,40 @@ fn rule_6_pitch_ranges_with_fold_hints() {
 }
 
 #[test]
+fn severities_split_taste_from_errors() {
+    // Taste: pitch ranges, lead on an expendable voice, a long expendable note. All warnings.
+    let mut s = theme();
+    lines(&mut s)[1].notes[0].pitch = "A-4".parse().unwrap();
+    lines(&mut s)[2].roles = Roles::constant(Role::Lead);
+    lines(&mut s)[2].notes[2] = note(8, 8, "C-4");
+    let p = validate(&s, &ctx());
+    assert_eq!(p.len(), 3, "{p:?}");
+    assert!(p.iter().all(|p| p.severity == Severity::Warning), "{p:?}");
+    assert!(
+        p.iter()
+            .any(|p| p.message.contains("8-row note on expendable voice 3")),
+        "{p:?}"
+    );
+    assert!(
+        p.iter()
+            .any(|p| p.message.contains("Lead on expendable voice 3")),
+        "{p:?}"
+    );
+    assert!(!has_errors(&p));
+
+    // The threshold is the project's.
+    let lenient = Context {
+        expendable_long_rows: 8,
+        ..ctx()
+    };
+    assert_eq!(validate(&s, &lenient).len(), 2);
+
+    // Mechanics: an overlap is an error.
+    lines(&mut s)[0].notes[1].row = 6;
+    assert!(has_errors(&validate(&s, &ctx())));
+}
+
+#[test]
 fn rule_8_pack_budget() {
     let budget = PackBudget {
         max_bytes: 4096,
@@ -402,18 +452,22 @@ fn problems_read_well_and_serialise() {
     let p = &validate(&s, &ctx())[0];
     assert_eq!(
         p.to_string(),
-        "rule 6, theme, bar 1, V2: A-4 is outside the Bass range C-1 to G-3 (fold down 2 octaves to A-2)"
+        "warning, rule 6, theme, bar 1, V2: A-4 is outside the Bass range C-1 to G-3 (fold down 2 octaves to A-2)"
     );
     let json = serde_json::to_value(p).unwrap();
     assert_eq!(json["rule"], "pitch_range");
+    assert_eq!(json["severity"], "warning");
     assert_eq!(json["bar"], 0);
 }
 
 proptest! {
-    /// The validator never panics, and reports problems in subtune, bar, voice order.
+    /// The generators keep their promise of structurally sound songs: the validator finds no monophony or grid
+    /// problems in them. It never panics, and reports problems in subtune, bar, voice order.
     #[test]
-    fn any_song_validates_without_panicking(song in crate::strategies::song()) {
+    fn generated_songs_are_structurally_sound(song in crate::strategies::song()) {
         let p = validate(&song, &ctx());
+        let structural: Vec<_> = p.iter().filter(|p| matches!(p.rule, Rule::Monophony | Rule::Grid)).collect();
+        prop_assert!(structural.is_empty(), "{structural:?}");
         let index = |p: &Problem| p.subtune.as_ref().and_then(|n| song.subtune(n)).map(|(i, _)| i);
         for w in p.windows(2) {
             prop_assert!((index(&w[0]), w[0].bar, w[0].voice) <= (index(&w[1]), w[1].bar, w[1].voice));

@@ -24,8 +24,9 @@ pub enum Rule {
     Grid,
     /// 3: music only on the profile's voices, in roles the profile allows there.
     Voices,
-    /// 4: the filter only where the profile allows it, and explicit pulse widths on the expendable voice.
-    FilterAndPulse,
+    /// 4: the filter only where the profile allows it, and explicit pulse widths on expendable voices (errors);
+    /// short notes and no lead or bass on expendable voices (warnings).
+    FilterAndExpendable,
     /// 5: declared adaptive sets: layers present, in order at consecutive positions, a timing mark on every bar.
     TimingMarks,
     /// 6: each note inside its role's pitch range.
@@ -43,7 +44,7 @@ impl Rule {
             Rule::Monophony => 1,
             Rule::Grid => 2,
             Rule::Voices => 3,
-            Rule::FilterAndPulse => 4,
+            Rule::FilterAndExpendable => 4,
             Rule::TimingMarks => 5,
             Rule::PitchRange => 6,
             Rule::Effects => 7,
@@ -52,12 +53,30 @@ impl Rule {
     }
 }
 
+/// How serious a problem is. Front-ends fail on errors only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    /// Something the player or the format gets wrong: the song cannot ship like this.
+    Error,
+    /// A matter of taste or arrangement practice: worth a look, but the song works.
+    Warning,
+}
+
+/// Whether any of `problems` is an error.
+pub fn has_errors(problems: &[Problem]) -> bool {
+    problems.iter().any(Problem::is_error)
+}
+
 /// One thing wrong with a song, located as precisely as the rule allows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Problem {
     /// The rule broken.
     pub rule: Rule,
+    /// Error or warning.
+    pub severity: Severity,
     /// The subtune, when the problem is in one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtune: Option<SubtuneName>,
@@ -76,9 +95,20 @@ pub struct Problem {
     pub hint: String,
 }
 
+impl Problem {
+    /// Whether it is an error (not a warning).
+    pub fn is_error(&self) -> bool {
+        self.severity == Severity::Error
+    }
+}
+
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "rule {}", self.rule.number())?;
+        let severity = match self.severity {
+            Severity::Error => "error",
+            Severity::Warning => "warning",
+        };
+        write!(f, "{severity}, rule {}", self.rule.number())?;
         if let Some(s) = &self.subtune {
             write!(f, ", {}", s.as_str())?;
         }
@@ -139,6 +169,8 @@ pub struct RoleRanges {
     pub bass: PitchRange,
     /// Arpeggio (the chord's root note).
     pub arp: PitchRange,
+    /// Harmony.
+    pub harmony: PitchRange,
     /// Drums.
     pub drums: PitchRange,
     /// Drone.
@@ -158,6 +190,7 @@ impl RoleRanges {
             Role::Lead => self.lead,
             Role::Bass => self.bass,
             Role::Arp => self.arp,
+            Role::Harmony => self.harmony,
             Role::Drums => self.drums,
             Role::Drone => self.drone,
             Role::Ostinato => self.ostinato,
@@ -175,6 +208,7 @@ impl Default for RoleRanges {
             lead: PitchRange::of(36, 72),
             bass: PitchRange::of(12, 43),
             arp: PitchRange::of(36, 72),
+            harmony: PitchRange::of(24, 60),
             drums: PitchRange::of(0, 92),
             drone: PitchRange::of(12, 48),
             ostinato: PitchRange::of(24, 60),
@@ -185,7 +219,7 @@ impl Default for RoleRanges {
 }
 
 /// What the validator needs besides the song, gathered from the project.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Context {
     /// The profiles subtunes may name: built-in plus the project's.
     pub profiles: Profiles,
@@ -195,6 +229,23 @@ pub struct Context {
     pub instruments: BTreeMap<PresetId, InstrumentFacts>,
     /// Role pitch ranges.
     pub ranges: RoleRanges,
+    /// Notes on an expendable voice longer than this many rows get a warning: after an effect the voice stays
+    /// silent until the next note, so a long note may not come back at all.
+    pub expendable_long_rows: u32,
+}
+
+impl Default for Context {
+    /// Built-in profiles, no adaptive sets, no instrument facts, default ranges, and a warning for expendable notes
+    /// longer than a beat (4 rows).
+    fn default() -> Self {
+        Context {
+            profiles: Profiles::default(),
+            adaptive: vec![],
+            instruments: BTreeMap::new(),
+            ranges: RoleRanges::default(),
+            expendable_long_rows: 4,
+        }
+    }
 }
 
 /// Every problem in `song`, ordered by subtune, bar, voice and rule. Empty means the song passes rules 1–6.
@@ -247,6 +298,7 @@ struct Checker<'a> {
 }
 
 impl Checker<'_> {
+    /// An error.
     fn report(
         &mut self,
         rule: Rule,
@@ -255,15 +307,40 @@ impl Checker<'_> {
         message: String,
         hint: impl Into<String>,
     ) {
+        self.push(Severity::Error, rule, row, voice, message, hint.into());
+    }
+
+    /// A warning.
+    fn warn(
+        &mut self,
+        rule: Rule,
+        row: Option<u32>,
+        voice: Option<Voice>,
+        message: String,
+        hint: impl Into<String>,
+    ) {
+        self.push(Severity::Warning, rule, row, voice, message, hint.into());
+    }
+
+    fn push(
+        &mut self,
+        severity: Severity,
+        rule: Rule,
+        row: Option<u32>,
+        voice: Option<Voice>,
+        message: String,
+        hint: String,
+    ) {
         let rows_per_bar = u32::from(self.subtune.rows_per_bar.get());
         self.out.push(Problem {
             rule,
+            severity,
             subtune: Some(self.subtune.name.clone()),
             bar: row.map(|r| r / rows_per_bar),
             row,
             voice,
             message,
-            hint: hint.into(),
+            hint,
         });
     }
 
@@ -367,6 +444,29 @@ impl Checker<'_> {
                 }
             }
         }
+        // Rule 4 warnings: lead or bass on an expendable voice is allowed, but effects will cut it.
+        if let Some(rule) = &rule
+            && rule.usage() == VoiceUse::Expendable
+        {
+            for span in line.roles.spans() {
+                if span.row < length
+                    && matches!(span.role, Role::Lead | Role::Bass)
+                    && rule.allows(span.role)
+                {
+                    self.warn(
+                        Rule::FilterAndExpendable,
+                        Some(span.row),
+                        voice,
+                        format!(
+                            "{:?} on expendable voice {}: sound effects will cut it, and it comes back only at its next note",
+                            span.role,
+                            line.voice.get()
+                        ),
+                        "move it to a music voice, or keep it if the gaps are intended",
+                    );
+                }
+            }
+        }
         for span in line.roles.spans() {
             if span.row >= length {
                 self.report(
@@ -429,7 +529,7 @@ impl Checker<'_> {
             let instrument = line.instrument_of(note);
             match self.ctx.instruments.get(instrument) {
                 None => self.report(
-                    Rule::FilterAndPulse,
+                    Rule::FilterAndExpendable,
                     at,
                     voice,
                     format!("no facts for instrument `{}`", instrument.0),
@@ -439,7 +539,7 @@ impl Checker<'_> {
                     if let Some(rule) = &rule {
                         if facts.filter && !rule.filter() {
                             self.report(
-                                Rule::FilterAndPulse,
+                                Rule::FilterAndExpendable,
                                 at,
                                 voice,
                                 format!(
@@ -452,7 +552,7 @@ impl Checker<'_> {
                         }
                         if rule.usage() == VoiceUse::Expendable && !facts.pulse_at_start {
                             self.report(
-                                Rule::FilterAndPulse,
+                                Rule::FilterAndExpendable,
                                 at,
                                 voice,
                                 format!(
@@ -466,11 +566,31 @@ impl Checker<'_> {
                 }
             }
 
+            if let Some(rule) = &rule
+                && rule.usage() == VoiceUse::Expendable
+                && note.length.get() > self.ctx.expendable_long_rows
+            {
+                self.warn(
+                    Rule::FilterAndExpendable,
+                    at,
+                    voice,
+                    format!(
+                        "a {}-row note on expendable voice {}: an effect during it leaves the voice silent until the next note",
+                        note.length.get(),
+                        line.voice.get()
+                    ),
+                    format!(
+                        "split it into notes of at most {} rows, or move it to a music voice",
+                        self.ctx.expendable_long_rows
+                    ),
+                );
+            }
+
             // Rule 6: the role's pitch range.
             let role = line.roles.at(note.row);
             let range = self.ctx.ranges.of(role);
             if !range.contains(note.pitch) {
-                self.report(
+                self.warn(
                     Rule::PitchRange,
                     at,
                     voice,
@@ -500,7 +620,7 @@ impl Checker<'_> {
 /// Rule 5: one declared adaptive set.
 fn adaptive(out: &mut Vec<Problem>, song: &Song, set: &AdaptiveSet) {
     for problem in set.check(song) {
-        let (subtune, bar, message, hint) = match problem {
+        let (subtune, row, message, hint) = match problem {
             LayerProblem::Missing { layer } => (
                 None,
                 None,
@@ -525,25 +645,35 @@ fn adaptive(out: &mut Vec<Problem>, song: &Song, set: &AdaptiveSet) {
                 ),
                 "order the layers at consecutive positions, as the set lists them",
             ),
-            LayerProblem::Mark { layer, bar } => (
+            LayerProblem::Mark { layer, row } => (
                 Some(layer.clone()),
-                Some(bar),
+                Some(row),
                 format!(
-                    "bar {} of layer `{}` has no timing mark",
-                    bar + 1,
+                    "the switch point at row {row} of layer `{}` has no timing mark",
                     layer.as_str()
                 ),
-                "add a mark on the bar's first row, so the game can switch layers there",
+                "add a mark there, so the game knows it may switch layers",
+            ),
+            LayerProblem::PastEnd { layer, row } => (
+                Some(layer.clone()),
+                None,
+                format!(
+                    "adaptive set `{}` switches at row {row}, past the end of `{}`",
+                    set.name(),
+                    layer.as_str()
+                ),
+                "remove the row or lengthen the layer",
             ),
         };
-        let row = match (&subtune, bar) {
-            (Some(name), Some(bar)) => song
+        let bar = match (&subtune, row) {
+            (Some(name), Some(row)) => song
                 .subtune(name)
-                .map(|(_, s)| bar * u32::from(s.rows_per_bar.get())),
+                .map(|(_, s)| row / u32::from(s.rows_per_bar.get())),
             _ => None,
         };
         out.push(Problem {
             rule: Rule::TimingMarks,
+            severity: Severity::Error,
             subtune,
             bar,
             row,
@@ -605,6 +735,7 @@ pub fn check_pack(facts: PackFacts, budget: PackBudget) -> Vec<Problem> {
     let mut out = Vec::new();
     let problem = |message: String, hint: &str| Problem {
         rule: Rule::Pack,
+        severity: Severity::Error,
         subtune: None,
         bar: None,
         row: None,
