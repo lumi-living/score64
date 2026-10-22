@@ -3,7 +3,8 @@
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
 //! skyline), overlaps trimmed, ties that lost their note restarted. [`choose_lead`] (#39) picks the part that
-//! carries the melody, bar by bar.
+//! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles'
+//! ranges.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,9 +16,11 @@ use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, 
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
 mod lead;
+mod octave;
 pub use lead::{
     Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
 };
+pub use octave::{FOLD_OCTAVES, fold_octaves};
 
 /// The rule name and version [`monophonise`] records in its decisions.
 pub const MONOPHONISE: &str = "monophonise@1";
