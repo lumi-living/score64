@@ -6,6 +6,7 @@ members = [
     "crates/score64-project",
     "crates/score64-analysis",
     "crates/score64-adapters",
+    "crates/score64-engine",
     "crates/score64-cli",
     "crates/score64-mcp",
     "crates/score64-app",
@@ -33,6 +34,7 @@ score64-formats = { path = "crates/score64-formats" }
 score64-project = { path = "crates/score64-project" }
 score64-analysis = { path = "crates/score64-analysis" }
 score64-adapters = { path = "crates/score64-adapters" }
+score64-engine = { path = "crates/score64-engine" }
 clap = { version = "4.6.7", features = ["derive"] }
 ort = "=2.0.0-rc.14"
 # score64-emu only (GPL helper, ADR-002 / ADR-010 / ADR-011)
@@ -40,7 +42,9 @@ residfp-sys = { path = "crates/residfp-sys" }
 cc = "1.8.0"
 emulator_6502 = { version = "=1.1.0", default-features = false, features = ["illegal_opcodes", "binary_coded_decimal", "implementation_transparency"] }
 resid-rs = "=1.1.1"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+schemars = "1.2.3"
 insta = "1.49.0"
 blake3 = "1.8.7"
 

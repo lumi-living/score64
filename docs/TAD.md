@@ -93,7 +93,8 @@ crates/
   score64-formats    .sng/.ins/sound-effect bytes, MIDI, WAV
   score64-project    track files, decisions, cache, index, audio.lock
   score64-analysis   features, onsets, fidelity metrics, effect feature curves
-  score64-adapters   transcribers, beat tracker, deciders, gt2reloc, VICE, C64 Ultimate, sidecar
+  score64-adapters   transcribers, beat tracker, deciders, gt2reloc, VICE, C64 Ultimate, sidecar, helper client
+  score64-engine     commands, registry and shared resources (the helper) behind every front-end (ADR-005, ADR-012)
   score64-cli        `score64`
   score64-mcp        `score64-mcp`
   score64-app        Score64 Studio (egui/eframe)
@@ -118,6 +119,13 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 - **Write log:** every SID write is recorded in order with its cycle inside the frame. Oracle tests diff these per frame (register, value and cycle) as well as the audio. Gate-off and hard-restart timing, where the ADSR bug shows up, depends on this order and timing.
 - **SID engine:** behind a `SidEngine` trait. The default is reSIDfp (libresidfp 1.2.3, vendored in `residfp-sys`, ADR-011), set up as sidplayfp 3.2.2 sets it (filter curves and 6581 range 0.5, combined waveforms average, resampling). Fed VICE's exact write log, it matches sidplayfp's own render at waveform r 0.998 (6581) and 0.996 (8580). Where material depends on the free-running envelope counters (slow decays), two sidplayfp runs with different power-on delays differ by as much as our engine does. `--engine resid-rs` keeps the old engine for comparison until #59.
 - Besides `serve`, the helper has two command-line modes for research and oracle work: `render` (PSID → WAV, write log, opcode histogram, optional sound-effect triggers) and `replay` (a VICE `-sounddev dump` log through the same SID).
+
+### 5.2 The command engine
+`score64-engine` holds every user-visible action as a `Command` (ADR-005, ADR-012). A command has a stable snake_case name, a one-line summary, an effect (`read_only`, `writes_project` or `destructive`: MCP tool hints, and which changes get provenance and undo), `serde` arguments and output with JSON Schemas from `schemars`, and a `run` against the `Engine`. `REGISTRY` lists them, and `CommandError` carries a stable `kind` (`unknown_command`, `invalid_args`, `helper_missing`, `helper_failed`, `helper_timeout`, `helper_refused`, `internal`) and a message.
+
+- **Front-ends:** the CLI has typed subcommands for common commands and `score64 run <name> '<json>'` for any of them; `score64 commands --json` prints every name with both schemas. The MCP server (E14) will list the registry as tools. The app calls commands by type. CLI tests run every registry command through `score64 run`, so a command cannot exist in one front-end only.
+- **Threading:** one command at a time (`run` takes `&mut Engine`). The engine is `Send`, which a compile-time assertion checks. The app owns it on a background thread behind a channel and never calls it on the UI thread. Long-running jobs with progress and cancellation (live audition, batch renders) are designed in #132 before the M1 render work.
+- **The helper belongs to the engine.** Commands hand it jobs and never hold the raw client. It starts on the first job, and runs on a worker thread. Each job, and the handshake, waits under a timeout (30 s by default; long renders pass their own); on timeout the engine kills the process. After a timeout, a `Malformed` reply, a broken pipe or a crash, the next job starts a fresh helper; a helper that refuses a request keeps running. The engine counts starts, so a command holding helper state (an audition session) knows when to load and init again.
 
 ## 6. Testing
 

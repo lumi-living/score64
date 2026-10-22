@@ -51,6 +51,7 @@ Pure Rust, one cargo workspace (native: macOS, Windows, Linux):
 - `crates/score64-project` — track files, decisions, approvals, `audio.lock`, content-addressed cache.
 - `crates/score64-analysis` — spectral features, onsets, fidelity metrics.
 - `crates/score64-adapters` — transcription providers, beat tracking, decision makers, packer, VICE, C64 Ultimate.
+- `crates/score64-engine` — the command engine: every user-visible action as a command, shared by the app, CLI and MCP server; owns the emulator helper.
 - `crates/score64-cli` — `score64` binary for Makefiles and batch work.
 - `crates/score64-mcp` — MCP server exposing the same commands to AI agents.
 - `crates/score64-app` — Score64 Studio (egui/eframe).
