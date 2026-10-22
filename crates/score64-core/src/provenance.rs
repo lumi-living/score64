@@ -272,7 +272,8 @@ pub enum Proposal {
         /// The stem or transcribed part, by content hash.
         source: ContentHash,
     },
-    /// Shift a voice's notes in this bar by whole octaves (octave folding).
+    /// Shift a voice's notes in this bar by whole octaves (octave folding). Notes whose role may use the whole pitch
+    /// range stay where they are.
     Octave {
         /// The voice.
         voice: Voice,
