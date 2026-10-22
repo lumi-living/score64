@@ -508,3 +508,36 @@ fn a_clear_new_chord_still_takes_over() {
         ]
     );
 }
+
+#[test]
+fn a_change_to_a_chord_sharing_tones_still_takes_over() {
+    // C major to A minor share C and E; the new chord scores 1, the old one about 0.2: A minor takes over.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.extend(chord(4, 4, &["A-3", "C-4", "E-4"]));
+    let spans = detect_chords(&notes, beat(), rows(8));
+    assert_eq!(
+        found(&spans),
+        [
+            (0, 4, 0, ChordQuality::Major),
+            (4, 4, 9, ChordQuality::Minor)
+        ]
+    );
+}
+
+#[test]
+fn carrying_on_needs_the_chord_sounding_right_before() {
+    // C major, then a beat of a lone C: no chord reaches the floor there, but C major carries on.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.push(note(4, 4, "C-4"));
+    assert_eq!(
+        found(&detect_chords(&notes, beat(), rows(8))),
+        [(0, 8, 0, ChordQuality::Major)]
+    );
+    // With a silent beat between, nothing carries over it.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.push(note(8, 4, "C-4"));
+    assert_eq!(
+        found(&detect_chords(&notes, beat(), rows(12))),
+        [(0, 4, 0, ChordQuality::Major)]
+    );
+}

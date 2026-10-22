@@ -111,10 +111,14 @@ pub struct ChordSpan {
 /// Each beat's pitch classes are weighted by the rows each note sounds in the beat, times its confidence. Every root
 /// and [`ChordQuality`] is scored: the weight on its tones minus the weight off them, over the beat's weight, scaled
 /// by how fully its tones sound (a tone counts fully from a quarter of the tones' mean weight, so a faint note adds
-/// little and a doubled one costs nothing), less a little for each tone past three. A chord's root must sound. The best scores; on a tie the one rooted on the beat's lowest sounding note, then the
-/// simpler quality, then the lower root. The chord already sounding into a beat carries on through it while it scores
-/// at least half [`MIN_SCORE`] and no other beats it by 0.25: a chord change needs clear evidence. Otherwise a beat
-/// whose best scores under [`MIN_SCORE`], or with nothing sounding, has no chord. A span's confidence is the mean of its beats' scores.
+/// little and a doubled one costs nothing), less a little for each tone past three. A chord's root must sound. The
+/// best scores; on a tie the one rooted on the beat's lowest sounding note, then the simpler quality, then the lower
+/// root.
+///
+/// The chord already sounding into a beat carries on through it while it scores at least half [`MIN_SCORE`] and no
+/// other beats it by 0.25: a chord change needs clear evidence. Otherwise a beat whose best scores under
+/// [`MIN_SCORE`], or with nothing sounding, has no chord. A span's confidence is the mean of its beats' scores, so a
+/// span carried through weak beats can be as low as half the floor.
 pub fn detect_chords(
     notes: &[Note],
     rows_per_beat: NonZeroU8,
