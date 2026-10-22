@@ -12,32 +12,39 @@ pub const FOLD_OCTAVES: &str = "fold-octaves@1";
 /// The largest shift tried, in octaves either way: enough to cross GoatTracker's whole range (C-0 to G#7).
 const MAX_SHIFT: i8 = 7;
 
-/// Whether notes in `role` are folded. Drums and texture use noise and pitch sweeps over the whole range, so their
-/// pitches stay where they are.
-fn folds(role: Role) -> bool {
-    !matches!(role, Role::Drums | Role::Texture)
+/// Whether notes in `role` are folded: those whose range is narrower than everything GoatTracker can play. With the
+/// default ranges, drums and texture (noise and pitch sweeps) may use it all, so their pitches stay where they are.
+fn folds(ranges: &RoleRanges, role: Role) -> bool {
+    let range = ranges.of(role);
+    (range.low, range.high) != (Pitch::MIN, Pitch::MAX)
 }
 
-/// Fold one voice line's `notes` (in row order) into the ranges of their roles, a bar at a time.
+/// Fold one voice line's `notes` into the ranges of their roles, a bar at a time.
 ///
 /// Each bar gets one whole-octave shift, so the melody keeps its shape inside the bar. Of the shifts that keep every
-/// note playable, the rule picks the one that leaves the fewest notes outside the range of the role at their row; on
-/// a tie, the previous bar's shift (so the line does not jump an octave between bars); then the smallest. Notes that
-/// still don't fit stay out of range, and the validator warns about them (rule 6). Drum and texture notes are never
-/// moved, and do not count.
+/// note playable, the rule picks the one that leaves the fewest notes outside the range of the role at their row. On
+/// a tie it moves nothing if that is as good, so a bar moves only when moving brings notes into range; otherwise it
+/// keeps the previous bar's shift (so the line does not jump an octave between bars), as long as the bars are next to
+/// each other and in the same role; then it takes the smallest shift. Notes that still don't fit stay out of range,
+/// and the validator warns about them (rule 6). Notes whose role may use the whole range never move, and do not
+/// count.
 ///
-/// Each bar with a non-zero shift gets one [`Proposal::Octave`] decision (`octave-v<voice>-b<bar>`), whose confidence
-/// is the share of the bar's folded notes that end up in range. Its notes record the decision's id unless they
-/// already record one.
+/// Each bar with a non-zero shift gets one [`Proposal::Octave`] decision (`octave-v<voice>-b<bar>`). Its confidence
+/// is the share of the bar's folded notes that end up in range; a tie between shifts is settled by the order above,
+/// not reported as doubt, because a range wider than an octave often fits a bar at more than one shift. Its notes
+/// record the decision's id unless they already record one. The result is in row order whatever the order
+/// of `notes`.
 pub fn fold_octaves(
     mut notes: Vec<Note>,
+    at: &Placement,
     roles: &Roles,
     ranges: &RoleRanges,
-    at: &Placement,
 ) -> Reduced {
+    notes.sort_by_key(|n| n.row);
     let rows_per_bar = u32::from(at.rows_per_bar.get());
     let mut decisions = Vec::new();
-    let mut previous = 0i8;
+    // The last bar with folded notes: its number, its role and its shift.
+    let mut previous: Option<(u32, Role, i8)> = None;
     let mut start = 0;
     while start < notes.len() {
         let bar = notes[start].row / rows_per_bar;
@@ -47,12 +54,17 @@ pub fn fold_octaves(
                 .take_while(|n| n.row / rows_per_bar == bar)
                 .count();
         let folded: Vec<usize> = (start..end)
-            .filter(|&i| folds(roles.at(notes[i].row)))
+            .filter(|&i| folds(ranges, roles.at(notes[i].row)))
             .collect();
         start = end;
-        if folded.is_empty() {
+        let Some(&first) = folded.first() else {
             continue;
-        }
+        };
+        let role = roles.at(notes[first].row);
+        let carried = match previous {
+            Some((b, r, shift)) if b + 1 == bar && r == role => shift,
+            _ => 0,
+        };
         let outside = |shift: i8| -> Option<usize> {
             folded.iter().try_fold(0, |out, &i| {
                 let n = &notes[i];
@@ -60,11 +72,14 @@ pub fn fold_octaves(
                 Some(out + usize::from(!ranges.of(roles.at(n.row)).contains(p)))
             })
         };
-        let (shift, out) = (-MAX_SHIFT..=MAX_SHIFT)
+        let options: Vec<(i8, usize)> = (-MAX_SHIFT..=MAX_SHIFT)
             .filter_map(|k| outside(k).map(|out| (k, out)))
-            .min_by_key(|&(k, out)| (out, k != previous, k.unsigned_abs()))
+            .collect();
+        let &(shift, out) = options
+            .iter()
+            .min_by_key(|&&(k, out)| (out, k != 0, k != carried, k.unsigned_abs()))
             .expect("a shift of 0 keeps every note playable");
-        previous = shift;
+        previous = Some((bar, role, shift));
         if shift == 0 {
             continue;
         }

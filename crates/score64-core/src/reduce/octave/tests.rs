@@ -60,9 +60,9 @@ fn a_bass_line_an_octave_too_high_comes_down() {
     let line = vec![note(0, "C-4"), note(4, "G-4"), note(8, "E-4")];
     let r = fold_octaves(
         line,
+        &at(&n),
         &Roles::constant(Role::Bass),
         &RoleRanges::default(),
-        &at(&n),
     );
     assert_eq!(pitches(&r), ["C-3", "G-3", "E-3"]);
     assert_eq!(shifts(&r), [(0, -1)]);
@@ -84,9 +84,9 @@ fn lines_in_range_are_left_alone() {
     let line = vec![note(0, "C-4"), note(16, "E-5")];
     let r = fold_octaves(
         line.clone(),
+        &at(&n),
         &Roles::constant(Role::Lead),
         &RoleRanges::default(),
-        &at(&n),
     );
     assert_eq!(r.notes, line);
     assert!(r.decisions.is_empty());
@@ -106,28 +106,47 @@ fn each_bar_gets_its_own_shift_and_keeps_its_shape() {
     ];
     let r = fold_octaves(
         line,
+        &at(&n),
         &Roles::constant(Role::Lead),
         &RoleRanges::default(),
-        &at(&n),
     );
     assert_eq!(pitches(&r), ["C-3", "E-3", "E-5", "C-6", "G-5"]);
     assert_eq!(shifts(&r), [(0, 2), (2, -1)]);
 }
 
 #[test]
-fn a_tie_keeps_the_previous_bars_shift() {
-    // Bar 0 must come down an octave. Bar 1's C-5 fits at 0 and at -1: it follows bar 0 down, so the line keeps its
-    // shape across the bar line.
+fn a_bar_moves_only_to_bring_notes_in_and_then_follows_the_bar_before() {
     let n = name();
-    let line = vec![note(0, "C-7"), note(16, "C-5")];
+    // Bar 0 (C-7, G#7) only fits two octaves down. Bar 1's C-7 fits one, two or three octaves down: it follows bar 0
+    // (two), keeping the line's shape across the bar line. Bar 2's E-4 already fits, so it stays, though bar 1 moved.
+    let line = vec![
+        note(0, "C-7"),
+        note(4, "G#7"),
+        note(16, "C-7"),
+        note(32, "E-4"),
+    ];
     let r = fold_octaves(
         line,
+        &at(&n),
         &Roles::constant(Role::Lead),
         &RoleRanges::default(),
-        &at(&n),
     );
-    assert_eq!(pitches(&r), ["C-6", "C-4"]);
-    assert_eq!(shifts(&r), [(0, -1), (1, -1)]);
+    assert_eq!(pitches(&r), ["C-5", "G#5", "C-5", "E-4"]);
+    assert_eq!(shifts(&r), [(0, -2), (1, -2)]);
+    assert!(
+        r.decisions
+            .iter()
+            .all(|d| d.confidence == Confidence::CERTAIN)
+    );
+    // After a bar of rest, the shift is not carried over: the smallest that fits is taken.
+    let line = vec![note(0, "C-7"), note(4, "G#7"), note(32, "C-7")];
+    let r = fold_octaves(
+        line,
+        &at(&n),
+        &Roles::constant(Role::Lead),
+        &RoleRanges::default(),
+    );
+    assert_eq!(shifts(&r), [(0, -2), (2, -1)]);
 }
 
 #[test]
@@ -137,9 +156,9 @@ fn notes_that_cannot_fit_stay_and_lower_the_confidence() {
     let line = vec![note(0, "C-2"), note(4, "C-6")];
     let r = fold_octaves(
         line,
+        &at(&n),
         &Roles::constant(Role::Lead),
         &RoleRanges::default(),
-        &at(&n),
     );
     // Shifting up fits C-3 and pushes C-6 to C-7 (out); shifting nothing keeps C-2 out. Both leave one out: no shift.
     assert!(r.decisions.is_empty(), "{:?}", r.decisions);
@@ -152,9 +171,9 @@ fn notes_that_cannot_fit_stay_and_lower_the_confidence() {
     ];
     let r = fold_octaves(
         line,
+        &at(&n),
         &Roles::constant(Role::Lead),
         &RoleRanges::default(),
-        &at(&n),
     );
     assert_eq!(shifts(&r), [(0, -1)]);
     assert_eq!(r.decisions[0].confidence, Confidence::new(0.75).unwrap());
@@ -176,7 +195,7 @@ fn drums_and_texture_never_move_and_roles_follow_the_row() {
     ])
     .unwrap();
     let line = vec![note(0, "C-5"), note(16, "C-7"), note(20, "C-0")];
-    let r = fold_octaves(line, &roles, &RoleRanges::default(), &at(&n));
+    let r = fold_octaves(line, &at(&n), &roles, &RoleRanges::default());
     assert_eq!(pitches(&r), ["C-3", "C-7", "C-0"]);
     assert_eq!(shifts(&r), [(0, -2)]);
 }
@@ -187,12 +206,94 @@ fn shifts_never_leave_goattrackers_range() {
     let n = name();
     let r = fold_octaves(
         vec![note(0, "G#7")],
+        &at(&n),
         &Roles::constant(Role::Bass),
         &RoleRanges::default(),
-        &at(&n),
     );
     assert_eq!(pitches(&r), ["G#2"]);
     assert!(r.notes.iter().all(|n| n.pitch <= Pitch::MAX));
+}
+
+#[test]
+fn bars_follow_the_subtunes_bar_length() {
+    // Twelve rows a bar: rows 0 and 11 are bar 0, row 12 is bar 1.
+    let n = name();
+    let place = Placement {
+        rows_per_bar: NonZeroU8::new(12).unwrap(),
+        ..at(&n)
+    };
+    let line = vec![note(0, "C-5"), note(11, "D-5"), note(12, "C-2")];
+    let r = fold_octaves(
+        line,
+        &place,
+        &Roles::constant(Role::Bass),
+        &RoleRanges::default(),
+    );
+    assert_eq!(pitches(&r), ["C-3", "D-3", "C-2"]);
+    assert_eq!(shifts(&r), [(0, -2)]);
+}
+
+#[test]
+fn full_range_notes_in_a_bar_do_not_count_towards_the_confidence() {
+    // Bass then drums inside one bar: of the two bass notes only one can fit, so the confidence is a half, whatever
+    // the drum note does.
+    let n = name();
+    let roles = Roles::new(vec![
+        RoleSpan {
+            row: 0,
+            role: Role::Bass,
+        },
+        RoleSpan {
+            row: 8,
+            role: Role::Drums,
+        },
+    ])
+    .unwrap();
+    let line = vec![note(0, "C-1"), note(4, "C-6"), note(8, "C-7")];
+    let r = fold_octaves(line, &at(&n), &roles, &RoleRanges::default());
+    assert_eq!(
+        pitches(&r),
+        ["C-1", "C-6", "C-7"],
+        "both bass shifts leave one out: no move"
+    );
+    // C-5 and G#7 are 32 semitones apart, one more than the bass range spans: two octaves down fits C-5 alone.
+    let line = vec![note(0, "C-5"), note(4, "G#7"), note(8, "C-7")];
+    let r = fold_octaves(line, &at(&n), &roles, &RoleRanges::default());
+    assert_eq!(pitches(&r), ["C-3", "G#5", "C-7"]);
+    assert_eq!(r.decisions[0].confidence, Confidence::new(0.5).unwrap());
+}
+
+#[test]
+fn a_narrowed_drum_range_folds_drums_too() {
+    // The exemption follows the ranges, as rule 6 does: a project that narrows the drums' range gets them folded.
+    let n = name();
+    let mut ranges = RoleRanges::default();
+    ranges.drums = ranges.bass;
+    let r = fold_octaves(
+        vec![note(0, "C-6")],
+        &at(&n),
+        &Roles::constant(Role::Drums),
+        &ranges,
+    );
+    assert_eq!(pitches(&r), ["C-3"]);
+}
+
+#[test]
+fn unsorted_input_folds_by_bar() {
+    // Rows 0, 20, 4: bar 0 is still one bar, with one decision.
+    let n = name();
+    let line = vec![note(0, "C-5"), note(20, "C-2"), note(4, "D-5")];
+    let r = fold_octaves(
+        line,
+        &at(&n),
+        &Roles::constant(Role::Bass),
+        &RoleRanges::default(),
+    );
+    assert_eq!(
+        r.notes.iter().map(|n| n.row).collect::<Vec<_>>(),
+        [0, 4, 20]
+    );
+    assert_eq!(shifts(&r), [(0, -2)]);
 }
 
 #[test]
@@ -202,9 +303,9 @@ fn an_earlier_rules_decision_id_is_kept() {
     first.decision = Some(DecisionId::new("mono-v2-0").unwrap());
     let r = fold_octaves(
         vec![first, note(4, "D-5")],
+        &at(&n),
         &Roles::constant(Role::Bass),
         &RoleRanges::default(),
-        &at(&n),
     );
     assert_eq!(r.notes[0].decision.as_ref().unwrap().as_str(), "mono-v2-0");
     assert_eq!(
@@ -218,7 +319,7 @@ fn outside_per_bar(notes: &[Note], roles: &Roles, ranges: &RoleRanges) -> BTreeM
     let mut out = BTreeMap::new();
     for n in notes {
         let role = roles.at(n.row);
-        if folds(role) {
+        if folds(ranges, role) {
             *out.entry(n.row / 16).or_default() += usize::from(!ranges.of(role).contains(n.pitch));
         }
     }
@@ -265,17 +366,20 @@ proptest! {
     fn folding_only_moves_pitches_and_never_makes_a_bar_worse(
         line in strategies::notes(),
         roles in strategies::roles(),
+        reverse in any::<bool>(),
     ) {
         let n = name();
         let ranges = RoleRanges::default();
-        let r = fold_octaves(line.clone(), &roles, &ranges, &at(&n));
+        // Fed in either order; the result is in row order.
+        let input = if reverse { line.iter().rev().cloned().collect() } else { line.clone() };
+        let r = fold_octaves(input, &at(&n), &roles, &ranges);
         prop_assert_eq!(r.notes.len(), line.len());
         for (a, b) in line.iter().zip(&r.notes) {
             prop_assert_eq!((a.row, a.length, a.attack, &a.instrument, a.source, a.confidence),
                 (b.row, b.length, b.attack, &b.instrument, b.source, b.confidence));
             let moved = i16::from(b.pitch.semitone()) - i16::from(a.pitch.semitone());
             prop_assert_eq!(moved % 12, 0);
-            prop_assert!(moved == 0 || folds(roles.at(a.row)), "drums and texture never move");
+            prop_assert!(moved == 0 || folds(&ranges, roles.at(a.row)), "full-range roles never move");
         }
         let before = outside_per_bar(&line, &roles, &ranges);
         let after = outside_per_bar(&r.notes, &roles, &ranges);
@@ -284,7 +388,7 @@ proptest! {
             // No other shift of this bar's folded notes would leave fewer out.
             let folded: Vec<&Note> = line
                 .iter()
-                .filter(|n| n.row / 16 == *bar && folds(roles.at(n.row)))
+                .filter(|n| n.row / 16 == *bar && folds(&ranges, roles.at(n.row)))
                 .collect();
             for k in -MAX_SHIFT..=MAX_SHIFT {
                 let alt: Option<usize> = folded.iter().try_fold(0, |o, n| {
@@ -296,10 +400,21 @@ proptest! {
                 }
             }
         }
-        // One decision per shifted bar, each naming this voice.
+        // One decision per shifted bar, each naming this voice, with the shift its notes got.
+        let mut bars: Vec<u32> = r.decisions.iter().map(|d| d.bar).collect();
+        bars.dedup();
+        prop_assert_eq!(bars.len(), r.decisions.len(), "one decision per bar");
         for d in &r.decisions {
-            let ok = matches!(d.proposal, Proposal::Octave { voice, shift } if voice == at(&n).voice && shift != 0);
-            prop_assert!(ok);
+            let Proposal::Octave { voice, shift } = d.proposal else {
+                return Err(TestCaseError::fail(format!("{:?}", d.proposal)));
+            };
+            prop_assert!(voice == at(&n).voice && shift != 0);
+            for (a, b) in line.iter().zip(&r.notes) {
+                if a.row / 16 == d.bar && folds(&ranges, roles.at(a.row)) {
+                    let moved = i16::from(b.pitch.semitone()) - i16::from(a.pitch.semitone());
+                    prop_assert_eq!(moved, 12 * i16::from(shift));
+                }
+            }
         }
         let (song, ctx) = song_with(VoiceLine {
             voice: Voice::new(2).unwrap(),
