@@ -30,7 +30,21 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 
 ## Timing marks
 
-With author info enabled, a master-volume command `DXY` with parameter `$10–$FF` is a **timing mark**: the parameter is copied to start+$3F when playback reaches it. Score64 writes a mark on every bar with alternating values so each bar registers as a change; the game switches subtunes when the byte changes.
+With author info enabled, a master-volume command `DXY` with parameter `$10–$FF` is a **timing mark**: the parameter is copied to start+$3F when playback reaches it. Score64 writes a mark at each switch point an adaptive set declares (every bar by default, every N bars, or explicit rows; TAD §3.1). Successive marks alternate their values so each one registers as a change, and the game switches subtunes when the byte changes.
+
+## Sound effects and the music
+
+What the GoatTracker 2.77 packed player does when a sound effect plays on a voice the music also uses. Evidence: the #20 spike ran the packed player on x64sc and in `score64-emu` with effects on voice 3, and matched all 3,007 frames and all 60,828 SID writes, each on the same cycle (`docs/research/2026-10-18-packed-player-spike.md`, "Sound effects on a real 6510"). The helper's write log can therefore stand in for VICE in the checks below.
+
+- **The voice stays silent until the music's next new note.** When the effect ends, the player writes `$00` to that voice's control register and gives the voice back to the music only at the music's next new note on it. A note that was sustaining when the effect started does not come back. In the spike, a bass holding long notes never returned with an effect every 37 frames. In the fixture song (subtune 1, gunshot on voice 3 every 50 frames), voice 3's control register goes `$40`, `$09`, `$81`, … during the effect, `$80` at its end (frame 70), then `$00` until the music's next note.
+- **An effect plays through the music's filter.** The effect routine does not touch the filter registers, and the music keeps writing its own routing every frame. In the same fixture run, `$D417` stays at `$84` (resonance 8, voice 3 routed to the filter) on every frame of the effect, so the effect is filtered and muffled along with the music's sweeps. This is the mechanical reason for rule 4: a voice that effects may interrupt must not use the filter.
+- **The SID has no per-voice volume.** Every voice's envelope peaks at full level whatever its sustain. To make an effect stand out, keep the music quieter rather than the effect louder: the filter on other voices, lower sustain levels and thinner pulse widths for the music, and wide pulses and noise for the effects. The fixture's second subtune puts its effects 5–10 dB (A-weighted, reSIDfp) above the music this way (`fixtures/gt2-original/README.md`).
+
+What this means when arranging, for any voice a profile marks expendable (for example voice 3 in the built-in `sfx-shares-v3`):
+
+- Keep its notes short and frequent (drums, arpeggio, texture), so the voice comes back soon after an effect, or leave it empty. Sustained notes (a bass, a drone or a held lead) can stay silent for a long time after an effect. The validator warns about long notes and about lead or bass on an expendable voice.
+- Route it dry: no filter.
+- Start its notes with an explicit pulse width (see the integration rules below).
 
 ## Sound-effect priority
 
