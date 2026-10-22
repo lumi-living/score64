@@ -173,6 +173,12 @@ impl SidClock {
         })
     }
 
+    /// Treat `cycle` as this SID's present without rendering the time before it (a SID that replaces another one
+    /// mid-session starts where the machine is).
+    pub fn start_at(&mut self, cycle: u64) {
+        self.now = cycle;
+    }
+
     /// Run the SID up to `cycle`, keeping the audio. Does nothing if it is already there.
     pub fn advance_to(&mut self, cycle: u64) {
         if self.now < cycle {

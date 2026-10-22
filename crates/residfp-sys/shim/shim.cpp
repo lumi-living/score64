@@ -56,8 +56,8 @@ void score64_residfp_reset(residfp* sid) { sid->reset(); }
 void score64_residfp_write(residfp* sid, int reg, unsigned char value) { sid->write(reg, value); }
 unsigned char score64_residfp_read(residfp* sid, int reg) { return sid->read(reg); }
 
-// Runs `cycles` cycles and writes the samples produced to buf; returns how many. buf must hold at least
-// cycles * sample_rate / clock_hz + 2 samples.
+// Runs `cycles` cycles and writes the samples produced to buf; returns how many. buf must hold at least `cycles`
+// samples: SID::clock emits at most one per cycle, and slightly more than cycles * sample_rate / clock_hz.
 int score64_residfp_clock(residfp* sid, unsigned int cycles, short* buf) { return sid->clock(cycles, buf); }
 
 }  // extern "C"

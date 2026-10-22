@@ -21,6 +21,7 @@ clap = { workspace = true }
 emulator_6502 = { workspace = true }
 resid-rs = { workspace = true }
 residfp-sys = { workspace = true }
+score64-formats = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -645,6 +645,7 @@ version = "0.0.0"
 dependencies = [
  "blake3",
  "ort",
+ "score64-formats",
  "serde_json",
 ]
 
@@ -675,6 +676,7 @@ dependencies = [
  "emulator_6502",
  "resid-rs",
  "residfp-sys",
+ "score64-formats",
  "serde_json",
 ]
 

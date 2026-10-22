@@ -48,8 +48,6 @@ impl std::error::Error for Rejected {}
 /// One emulated SID.
 pub struct ResidFp {
     raw: ffi::Handle,
-    clock_hz: f64,
-    sample_rate: f64,
 }
 
 impl ResidFp {
@@ -61,11 +59,7 @@ impl ResidFp {
         method: SamplingMethod,
     ) -> Result<Self, Rejected> {
         let raw = ffi::Handle::new().ok_or(Rejected("allocation"))?;
-        let mut sid = Self {
-            raw,
-            clock_hz,
-            sample_rate,
-        };
+        let mut sid = Self { raw };
         sid.set_chip_model(model)?;
         if !sid.raw.set_sampling(clock_hz, method, sample_rate) {
             return Err(Rejected("the sampling parameters"));
@@ -128,10 +122,11 @@ impl ResidFp {
 
     /// Run the chip for `cycles` CPU cycles and append the audio produced to `out`.
     pub fn clock(&mut self, mut cycles: u64, out: &mut Vec<i16>) {
-        // Chunks keep the scratch buffer small; the library writes at most cycles * rate / clock + 1 samples.
+        // Chunks keep the scratch buffer small. The library emits at most one sample per cycle, so a buffer of CHUNK
+        // samples is always enough. (Not cycles * rate / clock: the resampler rounds its step down and emits slightly
+        // more than that, about 0.03% at 192 kHz.)
         const CHUNK: u32 = 16_384;
-        let capacity = (f64::from(CHUNK) * self.sample_rate / self.clock_hz) as usize + 2;
-        let mut buf = vec![0i16; capacity];
+        let mut buf = vec![0i16; CHUNK as usize];
         while cycles > 0 {
             let n = cycles.min(u64::from(CHUNK)) as u32;
             let produced = self.raw.clock(n, &mut buf);
@@ -247,14 +242,16 @@ mod ffi {
             unsafe { score64_residfp_read(self.0, c_int::from(reg)) }
         }
 
-        /// The caller guarantees `buf` holds at least `cycles * rate / clock + 2` samples.
+        /// Runs `cycles` cycles into `buf`, which must hold at least `cycles` samples.
         pub fn clock(&mut self, cycles: u32, buf: &mut [i16]) -> usize {
-            // SAFETY: as above; buf is large enough for what `cycles` can produce (ResidFp::clock sizes it), and the
-            // library writes only within that bound.
+            // Checked before the call: afterwards would be too late. SID::clock emits at most one sample per cycle.
+            assert!(
+                buf.len() >= cycles as usize,
+                "sample buffer shorter than the cycle count"
+            );
+            // SAFETY: as above; buf holds at least `cycles` samples, the most SID::clock can write for `cycles`.
             let n = unsafe { score64_residfp_clock(self.0, cycles, buf.as_mut_ptr()) };
-            let n = usize::try_from(n).unwrap_or(0);
-            assert!(n <= buf.len(), "reSIDfp wrote past the sample buffer");
-            n
+            usize::try_from(n).unwrap_or(0).min(buf.len())
         }
     }
 
@@ -313,5 +310,28 @@ mod tests {
         sid.set_combined_waveforms(CombinedWaveforms::Strong)
             .unwrap();
         sid.set_chip_model(ChipModel::Mos6581).unwrap();
+    }
+
+    /// The resampler emits slightly more than `cycles * rate / clock` samples (it rounds its step down), so buffers
+    /// sized from that ratio overflow at high rates. Regression test for the buffer sizing in `ResidFp::clock`.
+    #[test]
+    fn high_rates_fit_the_buffer() {
+        for rate in [8_000.0, 48_000.0, 192_000.0] {
+            let mut sid = ResidFp::new(
+                ChipModel::Mos6581,
+                985_248.0,
+                rate,
+                SamplingMethod::Resample,
+            )
+            .unwrap();
+            let mut out = Vec::new();
+            sid.clock(985_248, &mut out);
+            let expected = rate as usize;
+            assert!(
+                out.len() >= expected && out.len() <= expected + expected / 1000 + 64,
+                "{rate}: {}",
+                out.len()
+            );
+        }
     }
 }

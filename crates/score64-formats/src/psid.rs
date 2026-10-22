@@ -1,4 +1,5 @@
-//! PSID files, as written by gt2reloc. Only what the helper needs: where the data loads and where init and play are.
+//! PSID files, as written by gt2reloc: where the data loads and where init and play are. Used by the emulator helper
+//! and by its MIT clients, which load packed players over the helper protocol (`emu_protocol`).
 
 /// A parsed PSID file.
 #[derive(Debug, Clone, PartialEq, Eq)]
