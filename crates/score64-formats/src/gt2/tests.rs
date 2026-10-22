@@ -67,6 +67,15 @@ fn bad_files_are_refused_with_the_reason() {
     assert!(past.write().is_ok());
     past.instrument.vibrato = 1; // the speedtable is empty
     assert_eq!(past.check(), Err(InsError::PointerOutOfRange("speedtable")));
+    past.instrument.vibrato = 0;
+    past.instrument.pulse = 3; // two pulse rows
+    assert_eq!(past.check(), Err(InsError::PointerOutOfRange("pulsetable")));
+    past.instrument.pulse = 2;
+    past.instrument.filter = 1; // no filter rows
+    assert_eq!(
+        past.check(),
+        Err(InsError::PointerOutOfRange("filtertable"))
+    );
 }
 
 #[test]
@@ -161,7 +170,8 @@ fn the_songs_instruments_are_the_same_record() {
 fn names_are_sixteen_zero_padded_bytes() {
     let mut ins = Ins::read(&fixture("sfx-clink.ins")).unwrap();
     ins.instrument.set_name("A much longer name than fits");
-    assert_eq!(ins.instrument.name_text(), "A much longer na");
+    assert_eq!(ins.instrument.name_text(), "A much longer n");
+    assert_eq!(ins.instrument.name[15], 0, "always zero-terminated");
     ins.instrument.set_name("Bass");
     assert_eq!(&ins.instrument.name[..5], b"Bass\0");
     assert_eq!(ins.instrument.name_text(), "Bass");

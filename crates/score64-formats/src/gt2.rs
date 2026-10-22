@@ -94,10 +94,11 @@ impl Instrument {
             .collect()
     }
 
-    /// Set the name from text: its first 16 characters, zero-padded, with anything but printable ASCII stored as `?`.
+    /// Set the name from text: its first 15 characters, zero-padded so it always ends in a zero, with anything but
+    /// printable ASCII stored as `?`.
     pub fn set_name(&mut self, name: &str) {
         self.name = [0; 16];
-        for (slot, c) in self.name.iter_mut().zip(name.chars()) {
+        for (slot, c) in self.name[..15].iter_mut().zip(name.chars()) {
             *slot = if (' '..='~').contains(&c) {
                 c as u8
             } else {
