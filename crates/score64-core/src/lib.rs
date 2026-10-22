@@ -33,7 +33,9 @@ pub use score::{
     ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, SCHEMA_VERSION,
     Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
-pub use transcription::{Dropped, Part, QuantiseReport, QuantisedPart, SourceNote, Unplaced};
+pub use transcription::{
+    DroppedNote, QuantiseReport, QuantisedPart, SourceNote, TranscribedPart, Unplaced,
+};
 pub use validate::{Context, InstrumentFacts, Problem, Rule, check_pack, validate};
 
 #[cfg(test)]
