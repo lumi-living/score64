@@ -78,16 +78,24 @@ A profile says which voices carry music in a subtune, with which roles, and whic
 
 | Profile | V1 | V2 | V3 |
 |---|---|---|---|
-| `menu` | any | any | any |
-| `combat` | lead | bass or arp (weak-beat arps) | **expendable**: drums, arp or texture; rule 4 |
-| `combat2` | lead | bass or arp | no music (effects only) |
-| `bed` | any | — | — |
-| `drone` | any | — | any (the drone) |
-| `ostinato` | any | any (the ostinato) | any |
-| `climax` | lead | bass or arp | **expendable**, as `combat` |
-| `sting` | any | any | any |
+| `menu` | any, filter | any, filter | any, filter |
+| `combat` | lead, filter | bass or arp (weak-beat arps), filter | **expendable**: drums, arp or texture; no filter (rule 4) |
+| `combat2` | lead, filter | bass or arp, filter | no music (effects only) |
+| `bed` | bed, filter | no music (ambient effects) | no music (foley and combat effects) |
+| `drone` | bed, filter | drone, no filter | no music (foley and combat effects) |
+| `ostinato` | bed, filter | ostinato, no filter | no music (foley and combat effects) |
+| `climax` | lead, filter | bass or arp, filter | **expendable**, as `combat` |
+| `sting` | any, filter | any, filter | any, filter |
 
-**Mission sets** are songs whose subtunes use the stage profiles, laid out in the order the game numbers them: 0 `bed`, 1 `drone`, 2 `ostinato`, 3 `climax`, then up to two `sting`s (victory, defeat), so 4–6 subtunes. `check_mission_layout` enforces this for any song that uses a stage profile; other songs are not mission sets. Voices grow from one (bed) to three (ostinato), as before. The drone stage puts the drone on V3 and leaves V2 for the ostinato that follows; this reading of the original "1 → 3" table is open to change.
+The stage profiles follow No Glory's voice plan (GDD, Production and Technical Systems):
+
+- **V1** carries the filtered ambience bed through stages 0–2.
+- **V2** carries ambient effects in the quiet stage, then a low drone under the bed, which turns into a slow pulse or ostinato on the same voice.
+- **V3** carries footsteps, breathing, gear clinks and gunfire until the climax, when it becomes the expendable music voice.
+
+So the music voices go 1 → 2 → 2 → 3. A drone on V3 would be cut by every footstep and would not come back until its next note (#119). Roles are restricted per stage so the validator catches, say, a lead line in stage 2. Only V1 may use the filter in the bed, drone and ostinato stages: the SID has one filter, and the bed's cutoff sweeps would move any other filtered voice too.
+
+**Mission sets** are songs whose subtunes use the stage profiles, laid out in the order the game numbers them: 0 `bed`, 1 `drone`, 2 `ostinato`, 3 `climax`, then up to two `sting`s (victory, defeat), so 4–6 subtunes. `check_mission_layout` enforces this for any song that uses a stage profile; other songs are not mission sets.
 
 An expendable voice comes back after an effect only at the music's next new note (#119), so it should carry short, frequent notes. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 

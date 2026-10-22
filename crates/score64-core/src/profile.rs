@@ -1,5 +1,5 @@
-//! Voice profiles (`docs/TAD.md` §3.1): which SID voices carry music in a subtune, with which roles, and which voice
-//! sound effects may take. A profile belongs to a subtune (the song's is the default), because one packed mission
+//! Voice profiles (`docs/TAD.md` §3.1): which SID voices carry music in a subtune, with which roles, which may use
+//! the SID's one filter, and which voice sound effects may take. A profile belongs to a subtune (the song's is the default), because one packed mission
 //! set mixes stages with different voice rules.
 //!
 //! This module defines the rules as data. The validator (#13) checks songs against them and reports per bar and
@@ -22,11 +22,13 @@ pub enum Profile {
     Combat,
     /// Two voices (V1 lead, V2 bass or arpeggio); V3 has no music, so sound effects have it to themselves.
     Combat2,
-    /// Mission stage 0: one voice of bed on V1.
+    /// Mission stage 0 (quiet): the ambience bed on V1, filtered. V2 carries ambient effects and V3 foley and combat
+    /// effects, so neither has music.
     Bed,
-    /// Mission stage 1: the bed plus a drone on V3.
+    /// Mission stage 1: the bed continues on V1 with a low drone on V2. V3 stays with foley and combat effects.
     Drone,
-    /// Mission stage 2: bed, ostinato on V2 and drone; all three voices are music.
+    /// Mission stage 2: the drone on V2 turns into a slow pulse or ostinato; the bed continues on V1, V3 stays
+    /// with effects.
     Ostinato,
     /// Mission stage 3: the climax, under `combat` rules (V3 expendable).
     Climax,
@@ -34,7 +36,25 @@ pub enum Profile {
     Sting,
 }
 
-/// What a profile does with one voice.
+/// What a profile allows on one voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceRule {
+    /// Whether the voice carries music, and in which roles.
+    pub usage: VoiceUse,
+    /// Whether the voice may be routed through the filter. The SID has one filter, so in the mission's quiet stages
+    /// only the bed (V1) may use it: its cutoff sweeps would move any other filtered voice too. The expendable
+    /// voice never may (validator rule 4).
+    pub filter: bool,
+}
+
+impl VoiceRule {
+    /// Whether music may use this voice in `role`.
+    pub fn allows(self, role: Role) -> bool {
+        self.usage.allows(role)
+    }
+}
+
+/// Whether a voice carries music.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoiceUse {
     /// Music with one of these roles (any role if empty).
@@ -59,11 +79,28 @@ impl VoiceUse {
     }
 }
 
-const ANY: VoiceUse = VoiceUse::Music(&[]);
-const LEAD: VoiceUse = VoiceUse::Music(&[Role::Lead]);
-const BASS_OR_ARP: VoiceUse = VoiceUse::Music(&[Role::Bass, Role::Arp]);
-const EXPENDABLE: VoiceUse = VoiceUse::Expendable(&[Role::Drums, Role::Arp, Role::Texture]);
-const UNUSED: VoiceUse = VoiceUse::Unused;
+const fn music(roles: &'static [Role], filter: bool) -> VoiceRule {
+    VoiceRule {
+        usage: VoiceUse::Music(roles),
+        filter,
+    }
+}
+
+const ANY: VoiceRule = music(&[], true);
+const LEAD: VoiceRule = music(&[Role::Lead], true);
+const BASS_OR_ARP: VoiceRule = music(&[Role::Bass, Role::Arp], true);
+const BED: VoiceRule = music(&[Role::Bed], true);
+const DRONE: VoiceRule = music(&[Role::Drone], false);
+const OSTINATO: VoiceRule = music(&[Role::Ostinato], false);
+const EXPENDABLE: VoiceRule = VoiceRule {
+    usage: VoiceUse::Expendable(&[Role::Drums, Role::Arp, Role::Texture]),
+    filter: false,
+};
+/// No music: the voice belongs to sound effects (or, in `combat2`, is simply free for them).
+const EFFECTS: VoiceRule = VoiceRule {
+    usage: VoiceUse::Unused,
+    filter: false,
+};
 
 impl Profile {
     /// Every profile.
@@ -92,19 +129,20 @@ impl Profile {
         }
     }
 
-    /// What the profile does with voices 1, 2 and 3.
-    pub const fn voices(self) -> [VoiceUse; 3] {
+    /// What the profile allows on voices 1, 2 and 3 (the No Glory voice plan for the mission stages).
+    pub const fn voices(self) -> [VoiceRule; 3] {
         match self {
-            Profile::Menu | Profile::Sting | Profile::Ostinato => [ANY, ANY, ANY],
+            Profile::Menu | Profile::Sting => [ANY, ANY, ANY],
             Profile::Combat | Profile::Climax => [LEAD, BASS_OR_ARP, EXPENDABLE],
-            Profile::Combat2 => [LEAD, BASS_OR_ARP, UNUSED],
-            Profile::Bed => [ANY, UNUSED, UNUSED],
-            Profile::Drone => [ANY, UNUSED, ANY],
+            Profile::Combat2 => [LEAD, BASS_OR_ARP, EFFECTS],
+            Profile::Bed => [BED, EFFECTS, EFFECTS],
+            Profile::Drone => [BED, DRONE, EFFECTS],
+            Profile::Ostinato => [BED, OSTINATO, EFFECTS],
         }
     }
 
-    /// What the profile does with `voice`.
-    pub const fn voice(self, voice: Voice) -> VoiceUse {
+    /// What the profile allows on `voice`.
+    pub const fn voice(self, voice: Voice) -> VoiceRule {
         self.voices()[(voice.get() - 1) as usize]
     }
 
@@ -112,19 +150,24 @@ impl Profile {
     pub fn music_voices(self) -> impl Iterator<Item = Voice> {
         (1..=3)
             .filter_map(Voice::new)
-            .filter(move |&v| !matches!(self.voice(v), VoiceUse::Unused))
+            .filter(move |&v| !matches!(self.voice(v).usage, VoiceUse::Unused))
     }
 
     /// The voice sound effects interrupt music on, if any.
     pub fn expendable_voice(self) -> Option<Voice> {
         (1..=3)
             .filter_map(Voice::new)
-            .find(|&v| matches!(self.voice(v), VoiceUse::Expendable(_)))
+            .find(|&v| matches!(self.voice(v).usage, VoiceUse::Expendable(_)))
     }
 
     /// Whether music on `voice` may have `role`.
     pub fn allows(self, voice: Voice, role: Role) -> bool {
         self.voice(voice).allows(role)
+    }
+
+    /// Whether `voice` may be routed through the filter.
+    pub fn may_filter(self, voice: Voice) -> bool {
+        self.voice(voice).filter
     }
 
     /// Whether this is one of the mission stages.
@@ -254,14 +297,52 @@ mod tests {
         assert_eq!(Profile::Climax.voices(), Profile::Combat.voices());
     }
 
+    /// The GDD voice table: V1 bed throughout the quiet stages, V2 drone then ostinato, V3 effects until the climax.
+    #[test]
+    fn mission_stages_follow_the_voice_plan() {
+        assert_eq!(voices(Profile::Bed), [1]);
+        assert_eq!(voices(Profile::Drone), [1, 2]);
+        assert_eq!(voices(Profile::Ostinato), [1, 2]);
+        assert_eq!(voices(Profile::Climax), [1, 2, 3]);
+        for p in [Profile::Bed, Profile::Drone, Profile::Ostinato] {
+            assert!(p.allows(v(1), Role::Bed), "{p}");
+            assert!(!p.allows(v(1), Role::Lead), "{p}: no lead sneaking in");
+            assert_eq!(
+                p.voice(v(3)).usage,
+                VoiceUse::Unused,
+                "{p}: V3 is foley and combat effects"
+            );
+            assert_eq!(p.expendable_voice(), None);
+        }
+        assert!(Profile::Drone.allows(v(2), Role::Drone));
+        assert!(!Profile::Drone.allows(v(2), Role::Ostinato));
+        assert!(Profile::Ostinato.allows(v(2), Role::Ostinato));
+        assert!(!Profile::Ostinato.allows(v(2), Role::Lead));
+        assert!(
+            !Profile::Bed.allows(v(2), Role::Drone),
+            "V2 carries ambient effects in the bed"
+        );
+    }
+
+    #[test]
+    fn only_the_bed_may_filter_in_the_quiet_stages() {
+        for p in [Profile::Bed, Profile::Drone, Profile::Ostinato] {
+            assert!(p.may_filter(v(1)), "{p}");
+            assert!(!p.may_filter(v(2)) && !p.may_filter(v(3)), "{p}");
+        }
+        for p in Profile::ALL {
+            if let Some(x) = p.expendable_voice() {
+                assert!(!p.may_filter(x), "{p}: never on the expendable voice");
+            }
+        }
+        assert!(Profile::Menu.may_filter(v(3)));
+    }
+
     #[test]
     fn voice_counts_and_free_profiles() {
         assert_eq!(voices(Profile::Combat2), [1, 2]);
-        assert_eq!(Profile::Combat2.voice(v(3)), VoiceUse::Unused);
-        assert_eq!(voices(Profile::Bed), [1]);
-        assert_eq!(voices(Profile::Drone), [1, 3]);
-        assert_eq!(voices(Profile::Ostinato), [1, 2, 3]);
-        for p in [Profile::Menu, Profile::Sting, Profile::Ostinato] {
+        assert_eq!(Profile::Combat2.voice(v(3)).usage, VoiceUse::Unused);
+        for p in [Profile::Menu, Profile::Sting] {
             for n in 1..=3 {
                 for r in [Role::Lead, Role::Bass, Role::Drone, Role::Texture] {
                     assert!(p.allows(v(n), r), "{p} V{n} {r:?}");

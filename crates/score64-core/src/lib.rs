@@ -19,7 +19,9 @@ pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
 
-pub use profile::{MISSION_LAYOUT, MissionLayoutError, Profile, VoiceUse, check_mission_layout};
+pub use profile::{
+    MISSION_LAYOUT, MissionLayoutError, Profile, VoiceRule, VoiceUse, check_mission_layout,
+};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
