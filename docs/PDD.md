@@ -43,7 +43,7 @@ The first production user is *No Glory*, a turn-based C64 game, with ambience-an
 - ✅ Beat and downbeat grid; tempo snapping to PAL frame-exact row lengths
 
 ### Arrangement (reduction)
-- ✅ Voice profiles: `menu` (3 voices, free allocation), `combat` (voice 3 expendable for sound effects), `combat2` (2-voice fallback), `mission` (adaptive layers)
+- ✅ Voice profiles: `menu` (3 voices, free allocation), `combat` (voice 3 expendable for sound effects), `combat2` (2-voice fallback), and mission sets of stage profiles (`bed`, `drone`, `ostinato`, `climax`, `sting`) for adaptive layers; profiles are per subtune
 - ✅ Lead selection, monophonisation, octave folding into role ranges
 - ✅ Chord detection → GoatTracker wavetable arpeggios
 - ✅ Drum folding (dedicated voice or interleaved with bass)

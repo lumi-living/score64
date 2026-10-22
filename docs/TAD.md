@@ -15,7 +15,7 @@ The validator in `score64-core` rejects a song that:
 1. has more than one note sounding at a time on any voice,
 2. places a note off the row grid,
 3. exceeds the voice count of its profile,
-4. in `combat` / `mission` climax profiles, puts lead or bass on voice 3, routes voice 3 through the filter, or starts a voice-3 note without an explicit pulse width,
+4. in subtunes under the `combat` or `climax` profile, puts lead or bass on voice 3, routes voice 3 through the filter, or starts a voice-3 note without an explicit pulse width,
 5. has a subtune without a timing mark on every bar (adaptive sets),
 6. violates the role's pitch range after octave folding,
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
@@ -74,12 +74,22 @@ pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, 
 - **Files** (ADR-004): fields serialise in declaration order, lists instead of maps, absent options left out, unknown fields and newer schema versions rejected. JSON and TOML round trips are byte-stable (property-tested). The crate's `schema` feature derives JSON Schemas for engine commands; its `proptest` feature exposes generators of structurally sound songs and decisions.
 
 ### 3.1 Profiles
-| Profile | Voices | Rules |
-|---|---|---|
-| `menu` | 3, free | Any role on any voice |
-| `combat` | 3 | V1 lead, V2 bass (+ weak-beat arps), V3 expendable (drums/arp/texture); validator rule 4 |
-| `combat2` | 2 | V3 silent, reserved for sound effects |
-| `mission` | 1 → 3 | Subtunes 0 bed (V1), 1 drone, 2 ostinato (V2), 3 climax (`combat` rules), 4–5 stings |
+A profile says which voices carry music in a subtune, with which roles, and which voice sound effects may interrupt. **It belongs to the subtune:** `Subtune.profile` overrides `Song.profile`, which is the default (`Song::profile_of`). One packed mission set mixes stages with different voice rules. The quiet stages use all three voices for music; in the climax, effects take voice 3, which therefore can't hold sustained bass (#119). The rules are data in `score64_core::profile`, and the validator (#13) checks songs against them.
+
+| Profile | V1 | V2 | V3 |
+|---|---|---|---|
+| `menu` | any | any | any |
+| `combat` | lead | bass or arp (weak-beat arps) | **expendable**: drums, arp or texture; rule 4 |
+| `combat2` | lead | bass or arp | no music (effects only) |
+| `bed` | any | — | — |
+| `drone` | any | — | any (the drone) |
+| `ostinato` | any | any (the ostinato) | any |
+| `climax` | lead | bass or arp | **expendable**, as `combat` |
+| `sting` | any | any | any |
+
+**Mission sets** are songs whose subtunes use the stage profiles, laid out in the order the game numbers them: 0 `bed`, 1 `drone`, 2 `ostinato`, 3 `climax`, then up to two `sting`s (victory, defeat), so 4–6 subtunes. `check_mission_layout` enforces this for any song that uses a stage profile; other songs are not mission sets. Voices grow from one (bed) to three (ostinato), as before. The drone stage puts the drone on V3 and leaves V2 for the ostinato that follows; this reading of the original "1 → 3" table is open to change.
+
+An expendable voice comes back after an effect only at the music's next new note (#119), so it should carry short, frequent notes. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
 ### 3.2 Reduction
 Lead selection by salience (pitch, density, overrides) → monophonise (skyline) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → minimum note length and ghost-note removal → loop search on downbeats → timing marks on bar lines.

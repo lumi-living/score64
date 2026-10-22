@@ -7,12 +7,13 @@ use std::num::{NonZeroU8, NonZeroU32};
 
 use proptest::prelude::*;
 
+use crate::profile::Profile;
 use crate::provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
 use crate::score::{
-    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Profile, Role, RoleSpan, Roles, Schema,
-    Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
+    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, Schema, Song,
+    Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
 
 /// Any playable pitch.
@@ -41,12 +42,7 @@ pub fn role() -> impl Strategy<Value = Role> {
 
 /// Any profile.
 pub fn profile() -> impl Strategy<Value = Profile> {
-    prop_oneof![
-        Just(Profile::Menu),
-        Just(Profile::Combat),
-        Just(Profile::Combat2),
-        Just(Profile::Mission),
-    ]
+    proptest::sample::select(Profile::ALL.to_vec())
 }
 
 /// Any confidence.
@@ -177,16 +173,17 @@ pub fn subtune(name: SubtuneName) -> impl Strategy<Value = Subtune> {
         proptest::collection::vec((1u32..64, frames_per_row()), 0..3),
         prop_oneof![Just(12u8), Just(16), Just(24)],
         0u32..64,
+        proptest::option::weighted(0.3, profile()),
     )
-        .prop_flat_map(|(voices, fpr, tempo, rows_per_bar, tail)| {
+        .prop_flat_map(|(voices, fpr, tempo, rows_per_bar, tail, profile)| {
             let lines: Vec<_> = voices
                 .into_iter()
                 .map(|v| voice_line(Voice::new(v).expect("1-3")))
                 .collect();
-            (lines, Just((fpr, tempo, rows_per_bar, tail)))
+            (lines, Just((fpr, tempo, rows_per_bar, tail, profile)))
         })
         .prop_map(
-            move |(voices, (frames_per_row, tempo, rows_per_bar, tail))| {
+            move |(voices, (frames_per_row, tempo, rows_per_bar, tail, profile))| {
                 let length = voices.iter().map(line_end).max().unwrap_or(0) + tail + 1;
                 let mut row = 0;
                 let tempo = tempo
@@ -201,6 +198,7 @@ pub fn subtune(name: SubtuneName) -> impl Strategy<Value = Subtune> {
                     .collect();
                 Subtune {
                     name: name.clone(),
+                    profile,
                     frames_per_row,
                     tempo,
                     rows_per_bar: NonZeroU8::new(rows_per_bar).expect("non-zero"),

@@ -8,6 +8,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::profile::Profile;
 use crate::provenance::{Confidence, DecisionId, SourceRef, valid_id};
 
 /// The version of the score's file layout this code reads and writes.
@@ -51,7 +52,7 @@ impl From<Schema> for u32 {
 pub struct Song {
     /// Layout version; always [`SCHEMA_VERSION`].
     pub schema: Schema,
-    /// The voice profile every subtune follows (rules in `docs/TAD.md` §3.1).
+    /// The voice profile of every subtune that does not name its own (`docs/TAD.md` §3.1).
     pub profile: Profile,
     /// Subtunes, with unique names. The position is the number the game passes to the player's init in A
     /// (0-based); everything else in the project refers to a subtune by name, so reordering cannot re-target it.
@@ -59,6 +60,11 @@ pub struct Song {
 }
 
 impl Song {
+    /// The profile subtune `subtune` plays under: its own, or the song's.
+    pub fn profile_of(&self, subtune: &Subtune) -> Profile {
+        subtune.profile.unwrap_or(self.profile)
+    }
+
     /// The subtune called `name`, with its position.
     pub fn subtune(&self, name: &SubtuneName) -> Option<(usize, &Subtune)> {
         self.subtunes
@@ -75,7 +81,7 @@ impl Song {
 struct SongFields {
     /// Layout version.
     schema: Schema,
-    /// Voice profile.
+    /// Default voice profile.
     profile: Profile,
     /// Subtunes, with unique names; the position is the player's subtune number.
     subtunes: Vec<Subtune>,
@@ -142,21 +148,6 @@ impl From<SubtuneName> for String {
     }
 }
 
-/// Voice profile names (`docs/TAD.md` §3.1). The rules themselves live with the validator.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Profile {
-    /// Three voices, any role on any voice.
-    Menu,
-    /// V1 lead, V2 bass, V3 expendable for sound effects.
-    Combat,
-    /// Two voices; V3 silent, reserved for sound effects.
-    Combat2,
-    /// Layered subtunes: bed, drone, ostinato, climax, stings.
-    Mission,
-}
-
 /// One subtune: a grid of rows at a tempo, with one line per voice.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -164,6 +155,10 @@ pub enum Profile {
 pub struct Subtune {
     /// Stable name, unique in the song.
     pub name: SubtuneName,
+    /// This subtune's voice profile, when it is not the song's. A mission set mixes stages with different voice rules
+    /// in one packed file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Profile>,
     /// Frames (50 Hz player calls) per row at row 0.
     pub frames_per_row: FramesPerRow,
     /// Tempo changes after row 0, in row order.

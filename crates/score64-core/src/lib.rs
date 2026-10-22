@@ -11,6 +11,7 @@
 //! Features: `schema` derives JSON Schemas (for engine commands whose arguments embed model types); `proptest`
 //! exposes [`strategies`] for property tests.
 
+pub mod profile;
 pub mod provenance;
 #[cfg(feature = "schema")]
 mod schema;
@@ -18,12 +19,13 @@ pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
 
+pub use profile::{MISSION_LAYOUT, MissionLayoutError, Profile, VoiceUse, check_mission_layout};
 pub use provenance::{
     Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
 };
 pub use score::{
-    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Profile, Role, RoleSpan, Roles,
-    SCHEMA_VERSION, Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
+    ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, SCHEMA_VERSION,
+    Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
 };
 
 #[cfg(test)]

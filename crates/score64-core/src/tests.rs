@@ -47,6 +47,7 @@ fn example() -> (Song, Vec<Decision>) {
         profile: Profile::Combat,
         subtunes: vec![Subtune {
             name: SubtuneName::new("combat").unwrap(),
+            profile: None,
             frames_per_row: fpr(6),
             tempo: vec![TempoChange {
                 row: 16,
