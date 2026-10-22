@@ -146,13 +146,13 @@ Lead selection by salience (pitch, density, overrides) → monophonise (ghost-no
 - **Continuity** rewards a single line moving in steps; a repeated pitch gets no step credit.
 - **Confidence** is the transcriber's.
 
-Notes held over a bar line count in the bars they sound in. Notes past the subtune's end don't count.
+Notes held over a bar line count in the bars they sound in. Notes past the subtune's end don't count, including in a last bar that is only partly inside it.
 
-**Choosing.** A bar's best part becomes the lead only once it stays best for `min_run` bars, so a busy bar or a one-bar rest doesn't flip it.
+**Choosing.** A bar's best part becomes the lead only once it stays best for `min_run` bars, so a busy bar, a one-bar rest or the song's last bar doesn't flip it.
 
 **Overrides.**
-- A person's `LeadSource` decision holds from its bar until their next one.
-- A model's holds the same way, but only where no person's is in force. Re-running a model never undoes a person's choice; overruled, unknown and past-the-end overrides are reported.
+- A person's `LeadSource` decision holds from its bar until their next one. So does a model's decision once a person has accepted it (`reviewed`, ADR-008).
+- A model's holds the same way, but only where no person's is in force. Re-running a model never undoes a person's choice. Overrides that lose (overruled, outranked on their bar, unknown, or past the end) are reported.
 - The rules choose only before the first override.
 
 **Decisions.** Each rules choice is a `LeadSource` decision (`lead-b<bar>`). Its confidence is the lead's mean salience margin over the best other part, relative to its own, over its run. It is 1 when no other part plays.

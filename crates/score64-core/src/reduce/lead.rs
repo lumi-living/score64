@@ -108,6 +108,8 @@ pub enum Unapplied {
     PastEnd,
     /// A model's choice where a person's is in force.
     Overruled,
+    /// Another override of the same rank on the same bar has the lower id, and wins.
+    Outranked,
 }
 
 /// What [`choose_lead`] chose.
@@ -126,13 +128,14 @@ pub struct LeadChoice {
 /// Choose the lead part of each bar of `bars`.
 ///
 /// Each bar's best part is the one with the highest salience (the lowest source hash on a tie, so the order of
-/// `parts` does not matter). The lead moves to a new part only when that part is best for `min_run` bars in a row (or
-/// to the end), and straight away when there is no lead yet; a bar where no part sounds keeps the lead, and so does a
+/// `parts` does not matter). The lead moves to a new part only when that part is best for `min_run` bars in a row (so
+/// not in the last `min_run - 1` bars), and straight away when there is no lead yet; a bar where no part sounds keeps the lead, and so does a
 /// one-bar rest of the lead while another part plays.
 ///
-/// `overrides` are `LeadSource` decisions for this subtune; the rules' own are ignored. A person's (`Manual`) is in
-/// force from its bar until their next; a model's (`Llm`) likewise, but only where no person's is in force, so
-/// re-running a model never undoes a person's choice (TAD §3.3). On the same bar and rank, the lower id wins. The rules
+/// `overrides` are `LeadSource` decisions for this subtune; the rules' own are ignored. A person's (`Manual`, or a
+/// model's they accepted, `reviewed`) is in force from its bar until their next; an unreviewed model's (`Llm`)
+/// likewise, but only where no person's is in force, so re-running a model never undoes a person's choice (TAD
+/// §3.3). On the same bar and rank, the lower id wins. The rules
 /// choose only before the first override in force.
 ///
 /// Each rules decision's confidence is how clearly the lead beat the best other part over its run, counting the bars
@@ -152,9 +155,10 @@ pub fn choose_lead(
         .map(|p| {
             // Each bar's sounding notes, found in one pass over the part.
             let mut by_bar: Vec<Vec<&Note>> = vec![Vec::new(); count];
-            for n in &p.notes {
+            for n in p.notes.iter().filter(|n| n.row < bars.length.get()) {
                 let first = n.row / rows;
-                let last = n.row.saturating_add(n.length.get() - 1) / rows;
+                let end = n.row.saturating_add(n.length.get()).min(bars.length.get());
+                let last = (end - 1) / rows;
                 for b in first..=last.min(count as u32 - 1) {
                     if let Some(bar) = by_bar.get_mut(b as usize) {
                         bar.push(n);
@@ -166,7 +170,10 @@ pub fn choose_lead(
                 bars: by_bar
                     .iter()
                     .enumerate()
-                    .map(|(b, notes)| score(notes, b as u32 * rows, rows, rules))
+                    .map(|(b, notes)| {
+                        let start = b as u32 * rows;
+                        score(notes, start, rows.min(bars.length.get() - start), rules)
+                    })
                     .collect(),
             }
         })
@@ -193,12 +200,10 @@ pub fn choose_lead(
     for b in 0..count {
         if let Some(source) = pinned[b] {
             lead = Some(source);
-        } else if pinned[..b].iter().all(Option::is_none)
-            && let Some(candidate) = best[b]
-        {
-            let holds = best[b..(b + run).min(count)]
-                .iter()
-                .all(|&x| x == Some(candidate));
+        } else if let Some(candidate) = best[b] {
+            // A choice in force carries on to the end, so here no override has been made yet. A new lead needs a
+            // whole run of bars: near the end, too few are left to change it.
+            let holds = b + run <= count && best[b..b + run].iter().all(|&x| x == Some(candidate));
             if lead.is_none() || (lead != Some(candidate) && holds) {
                 lead = Some(candidate);
                 starts.push(b);
@@ -270,7 +275,15 @@ fn score(notes: &[&Note], start: u32, rows: u32, rules: &LeadRules) -> Salience 
     }
     let lines = single as f32 / sounding.max(1) as f32;
     // Melodies move in steps: up to a fourth scores 1, leaps less, and a repeated pitch (drums, ostinati) nothing.
-    let steps: Vec<f32> = starting
+    // The line's top note per row, so a chord's own notes are not steps.
+    let mut tops: Vec<&Note> = Vec::with_capacity(starting.len());
+    for n in &starting {
+        match tops.last_mut() {
+            Some(t) if t.row == n.row => *t = n,
+            _ => tops.push(n),
+        }
+    }
+    let steps: Vec<f32> = tops
         .windows(2)
         .map(
             |w| match w[1].pitch.semitone().abs_diff(w[0].pitch.semitone()) {
@@ -325,8 +338,10 @@ fn in_force(
         let Proposal::LeadSource { source } = d.proposal else {
             continue;
         };
+        // A model's choice a person has accepted (ADR-008) counts as theirs.
         let rank = match d.provenance {
             Provenance::Manual => 0,
+            Provenance::Llm { .. } if d.reviewed => 0,
             Provenance::Llm { .. } => 1,
             Provenance::Rules { .. } => continue,
         };
@@ -341,8 +356,13 @@ fn in_force(
             unapplied.push((d.id.clone(), Unapplied::PastEnd));
             continue;
         };
-        if slot.is_none_or(|(id, _)| &d.id < id) {
-            *slot = Some((&d.id, source));
+        match slot {
+            Some((id, _)) if *id < &d.id => unapplied.push((d.id.clone(), Unapplied::Outranked)),
+            Some((id, _)) => {
+                unapplied.push(((*id).clone(), Unapplied::Outranked));
+                *slot = Some((&d.id, source));
+            }
+            None => *slot = Some((&d.id, source)),
         }
     }
     // Carry each rank's choice forward from its bar; a person's, once made, is in force over any model's.

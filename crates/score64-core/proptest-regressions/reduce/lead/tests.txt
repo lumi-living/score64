@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc a1f391058b24f8c89ecd8b3a8b56d240660660056cd2c272475c0abebf4ba5fe # shrinks to parts = [QuantisedPart { source: ContentHash(0000000000000000000000000000000000000000000000000000000000000000), notes: [], report: QuantiseReport { placed: 0, mean_start_error: 0.0, max_start_error: 0.0, loose: 0, stretched: 0, dropped: [] } }, QuantisedPart { source: ContentHash(0000000000000000000000000000000000000000000000000000000000000001), notes: [], report: QuantiseReport { placed: 0, mean_start_error: 0.0, max_start_error: 0.0, loose: 0, stretched: 0, dropped: [] } }], at_bar = 0, model_bar = 0, pick = Index(9223372036854775808), other = Index(0)

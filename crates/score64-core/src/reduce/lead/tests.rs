@@ -220,10 +220,13 @@ fn ties_go_to_the_lowest_source() {
 
 #[test]
 fn silence_and_no_rival() {
-    // Bar 1 is silent: the lead stays. The solo has bar 2 alone, to the end, so it takes over at once.
-    let parts = [melody(MELODY, 0..1, 60), melody(SOLO, 2..3, 60)];
-    let c = choose(&parts, 3, &[]);
-    assert_eq!(c.leads, [Some(MELODY), Some(MELODY), Some(SOLO)]);
+    // Bar 1 is silent: the lead stays. The solo has bars 2 and 3 alone, so it takes over at 2.
+    let parts = [melody(MELODY, 0..1, 60), melody(SOLO, 2..4, 60)];
+    let c = choose(&parts, 4, &[]);
+    assert_eq!(
+        c.leads,
+        [Some(MELODY), Some(MELODY), Some(SOLO), Some(SOLO)]
+    );
     assert_eq!(sal(&c, MELODY, 1), Salience::default());
     // Neither had a rival where it played.
     assert!(
@@ -231,6 +234,32 @@ fn silence_and_no_rival() {
             .iter()
             .all(|d| d.confidence == Confidence::CERTAIN)
     );
+}
+
+#[test]
+fn the_last_bars_cannot_flip_the_lead() {
+    // The solo is best only in the final bar: too few bars are left for a run of two.
+    let parts = [melody(MELODY, 0..3, 48), melody(SOLO, 2..3, 60)];
+    let c = choose(&parts, 3, &[]);
+    assert_eq!(c.leads, [Some(MELODY); 3]);
+}
+
+#[test]
+fn a_partial_last_bar_counts_only_its_own_rows() {
+    // Twenty rows: bar 1 is rows 16–19. A note at row 25 is past the end; one at row 18 held to 24 is cut at 20.
+    let n = name();
+    let short = Bars {
+        length: NonZeroU32::new(20).unwrap(),
+        ..bars(&n, 2)
+    };
+    let p = part(SOLO, vec![note(0, 4, 60), note(25, 4, 62)]);
+    let c = choose_lead(&[p], short, &[], &LeadRules::default());
+    assert_eq!(c.leads.len(), 2);
+    assert_eq!(sal(&c, SOLO, 1), Salience::default());
+    let p = part(SOLO, vec![note(18, 6, 60)]);
+    let c = choose_lead(&[p], short, &[], &LeadRules::default());
+    // Two of the bar's four rows sound, with one note: a single line over what sounds.
+    assert_eq!(sal(&c, SOLO, 1).continuity, 1.0);
 }
 
 #[test]
@@ -242,7 +271,9 @@ fn notes_past_the_end_do_not_count() {
     assert_eq!(c.leads.len(), 2);
 }
 
+/// An override; a model's starts unreviewed, as ADR-008 has it.
 fn override_(id: &str, bar: u32, source: ContentHash, provenance: Provenance) -> Decision {
+    let reviewed = !matches!(provenance, Provenance::Llm { .. });
     Decision {
         id: DecisionId::new(id).unwrap(),
         subtune: name(),
@@ -250,7 +281,7 @@ fn override_(id: &str, bar: u32, source: ContentHash, provenance: Provenance) ->
         proposal: Proposal::LeadSource { source },
         provenance,
         confidence: Confidence::CERTAIN,
-        reviewed: true,
+        reviewed,
     }
 }
 
@@ -324,6 +355,90 @@ fn on_one_bar_and_rank_the_lower_id_wins_in_any_order() {
         let c = choose(&parts, 2, &overrides);
         assert_eq!(c.leads, [Some(BASS), Some(BASS)]);
     }
+}
+
+#[test]
+fn a_reviewed_models_choice_counts_as_a_persons() {
+    let parts = [bass(0..4), melody(MELODY, 0..4, 60)];
+    let mut accepted = override_("accepted", 2, MELODY, model());
+    accepted.reviewed = true;
+    let overrides = [override_("person", 1, BASS, Provenance::Manual), accepted];
+    let c = choose(&parts, 4, &overrides);
+    assert_eq!(c.leads[1..], [Some(BASS), Some(MELODY), Some(MELODY)]);
+    assert!(c.unapplied.is_empty());
+}
+
+#[test]
+fn the_losing_override_on_one_bar_is_reported() {
+    let parts = [bass(0..2), melody(MELODY, 0..2, 60)];
+    let overrides = [
+        override_("b-melody", 0, MELODY, Provenance::Manual),
+        override_("a-bass", 0, BASS, Provenance::Manual),
+    ];
+    let c = choose(&parts, 2, &overrides);
+    assert_eq!(
+        c.unapplied,
+        [(DecisionId::new("b-melody").unwrap(), Unapplied::Outranked)]
+    );
+}
+
+#[test]
+fn the_margin_counts_the_bars_the_lead_plays_up_to_the_next_override() {
+    // The melody plays bars 0 and 2 (bar 1 silent); the bass plays all four; a person picks the bass at bar 3.
+    let mut m = melody(MELODY, 0..1, 60);
+    m.notes.extend(melody(MELODY, 2..3, 60).notes);
+    let parts = [m, bass(0..4)];
+    let overrides = [override_("person", 3, BASS, Provenance::Manual)];
+    let c = choose(&parts, 4, &overrides);
+    assert_eq!(
+        c.leads,
+        [Some(MELODY), Some(MELODY), Some(MELODY), Some(BASS)]
+    );
+    // Over bars 0 and 2 only: not bar 1 (silent), not bar 3 (overridden).
+    let mean = |s: ContentHash| (sal(&c, s, 0).total + sal(&c, s, 2).total) / 2.0;
+    let (own, other) = (mean(MELODY), mean(BASS));
+    assert!((c.decisions[0].confidence.get() - (own - other) / own).abs() < 1e-5);
+}
+
+#[test]
+fn notes_per_row_sets_the_ideal_density() {
+    let parts = [melody(MELODY, 0..1, 60)];
+    let rules = LeadRules {
+        notes_per_row: 0.5,
+        ..LeadRules::default()
+    };
+    let c = choose_lead(&parts, bars(&name(), 1), &[], &rules);
+    assert_eq!(
+        sal(&c, MELODY, 0).density,
+        0.5,
+        "four notes where eight would be ideal"
+    );
+    let silly = LeadRules {
+        notes_per_row: f32::NAN,
+        ..LeadRules::default()
+    };
+    let c = choose_lead(&parts, bars(&name(), 1), &[], &silly);
+    assert_eq!(
+        sal(&c, MELODY, 0).density,
+        0.25,
+        "an invalid density counts as one note a bar"
+    );
+}
+
+#[test]
+fn chords_get_no_step_credit_of_their_own() {
+    // Two triads a fourth apart, top notes stepping: the steps are between the tops, not inside the chords.
+    let triad = |row, root| {
+        [
+            note(row, 8, root),
+            note(row, 8, root + 4),
+            note(row, 8, root + 7),
+        ]
+    };
+    let p = part(SOLO, triad(0, 60).into_iter().chain(triad(8, 62)).collect());
+    let c = choose(&[p], 1, &[]);
+    // No single-line rows (lines 0), and one step of two semitones between the tops (smooth 1).
+    assert_eq!(sal(&c, SOLO, 0).continuity, 0.5);
 }
 
 #[test]
