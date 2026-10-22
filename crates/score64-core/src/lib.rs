@@ -12,6 +12,7 @@
 //! exposes [`strategies`] for property tests.
 
 pub mod adaptive;
+pub mod decide;
 pub mod grid;
 pub mod profile;
 pub mod provenance;
@@ -25,6 +26,7 @@ pub mod transcription;
 pub mod validate;
 
 pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
+pub use decide::{Rank, Resolution, Slot, resolve};
 pub use grid::{BeatGrid, Quantised, TempoSnap, VideoStandard, snap_tempo};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{

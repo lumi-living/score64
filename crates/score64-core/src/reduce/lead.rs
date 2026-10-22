@@ -338,12 +338,11 @@ fn in_force(
         let Proposal::LeadSource { source } = d.proposal else {
             continue;
         };
-        // A model's choice a person has accepted (ADR-008) counts as theirs.
-        let rank = match d.provenance {
-            Provenance::Manual => 0,
-            Provenance::Llm { .. } if d.reviewed => 0,
-            Provenance::Llm { .. } => 1,
-            Provenance::Rules { .. } => continue,
+        // One ranking for every decision (`Decision::rank`): a model's choice a person has accepted counts as theirs.
+        let rank = match d.rank() {
+            crate::decide::Rank::Person => 0,
+            crate::decide::Rank::Model => 1,
+            crate::decide::Rank::Rules => continue,
         };
         if &d.subtune != bars.subtune {
             continue;
