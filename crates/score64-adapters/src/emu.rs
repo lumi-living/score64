@@ -168,6 +168,12 @@ impl<R: Read, W: Write> Helper<R, W> {
         &self.info
     }
 
+    /// The most frames one [`Self::render`] may ask for at this session's sample rate; split longer renders into
+    /// chunks of this size.
+    pub fn max_render_frames(&self, writes: bool) -> u32 {
+        proto::max_render_frames(self.info.sample_rate, writes)
+    }
+
     fn ask(&mut self, request: &Request) -> Result<Reply, HelperError> {
         proto::write_frame(&mut self.writer, &request.encode())?;
         let body = proto::read_body(&mut self.reader)?

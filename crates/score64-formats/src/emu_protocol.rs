@@ -16,8 +16,55 @@ pub const VERSION: u16 = 0;
 /// The largest message either side accepts (the length field's value).
 pub const MAX_MESSAGE: u32 = 64 << 20;
 
-/// The most frames one `Render` may ask for (10 minutes at 50 Hz).
+/// The most frames one `Render` may ask for (10 minutes at 50 Hz). A render whose reply could exceed
+/// [`MAX_MESSAGE`] is refused even below this; see [`max_render_frames`].
 pub const MAX_RENDER_FRAMES: u32 = 50 * 60 * 10;
+
+/// PAL CPU clock in Hz, which with the frame length fixes how many samples a frame produces.
+pub const PAL_CLOCK_HZ: u32 = 985_248;
+
+/// CPU cycles per PAL frame.
+pub const PAL_CYCLES_PER_FRAME: u32 = 19_656;
+
+/// The most SID writes one frame can hold: on average a 6502 writes at most once every 3 cycles (read-modify-write
+/// instructions write twice in 6).
+pub const MAX_WRITES_PER_FRAME: u32 = PAL_CYCLES_PER_FRAME / 3;
+
+/// The most samples `frames` frames can produce at `sample_rate`. Resamplers may run slightly fast (reSIDfp's emits
+/// about 0.03% more than `cycles * rate / clock`), so the bound allows 0.1% plus 64 samples over the exact ratio.
+pub fn max_samples(frames: u32, sample_rate: u32) -> u64 {
+    let exact = (u64::from(frames) * u64::from(PAL_CYCLES_PER_FRAME) * u64::from(sample_rate))
+        .div_ceil(u64::from(PAL_CLOCK_HZ));
+    exact + exact / 1000 + 64
+}
+
+/// The length field of a `Rendered` reply holding `samples` samples and `writes` writes.
+pub fn rendered_size(samples: u64, writes: u64) -> u64 {
+    // kind, frames, max_play_cycles, sample count, samples, write count, writes
+    1 + 4 + 4 + 4 + 2 * samples + 4 + 8 * writes
+}
+
+/// The largest `Rendered` reply a render of `frames` frames could produce, with `writes` asked for or not.
+pub fn render_reply_bound(frames: u32, sample_rate: u32, writes: bool) -> u64 {
+    let w = if writes {
+        u64::from(frames) * u64::from(MAX_WRITES_PER_FRAME)
+    } else {
+        0
+    };
+    rendered_size(max_samples(frames, sample_rate), w)
+}
+
+/// The most frames one `Render` may ask for at `sample_rate`: the largest count whose reply bound fits in
+/// [`MAX_MESSAGE`], capped at [`MAX_RENDER_FRAMES`]. Clients split longer renders into chunks of this size.
+pub fn max_render_frames(sample_rate: u32, writes: bool) -> u32 {
+    let fits = |f: u32| render_reply_bound(f, sample_rate, writes) <= u64::from(MAX_MESSAGE);
+    let (mut lo, mut hi) = (0, MAX_RENDER_FRAMES);
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        if fits(mid) { lo = mid } else { hi = mid - 1 }
+    }
+    lo
+}
 
 /// SID model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -219,7 +266,8 @@ impl Out {
         self
     }
     fn str(&mut self, s: &str) -> &mut Self {
-        let b = &s.as_bytes()[..s.len().min(usize::from(u16::MAX))];
+        // Cut over-long strings on a character boundary, so the other side still reads valid UTF-8.
+        let b = &s.as_bytes()[..s.floor_char_boundary(usize::from(u16::MAX))];
         self.u16(b.len() as u16);
         self.0.extend_from_slice(b);
         self
@@ -623,6 +671,44 @@ mod tests {
             Reply::decode(&[0x83, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x7F]).is_err(),
             "sample count past the end"
         );
+    }
+
+    #[test]
+    fn long_strings_are_cut_on_a_character_boundary() {
+        // 65,534 ASCII bytes then a 2-byte character that would straddle the 65,535-byte limit.
+        let message = format!("{}é", "a".repeat(65_534));
+        let f = Reply::Error {
+            code: ErrorCode::Internal,
+            message,
+        }
+        .encode();
+        match Reply::decode(body(&f)).unwrap() {
+            Reply::Error { message, .. } => assert_eq!(message.len(), 65_534),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_size_limits() {
+        // 10 minutes at 192 kHz is about 230 MB of samples: refused well below MAX_RENDER_FRAMES.
+        assert!(render_reply_bound(MAX_RENDER_FRAMES, 192_000, false) > u64::from(MAX_MESSAGE));
+        for (rate, writes) in [
+            (8_000, false),
+            (48_000, false),
+            (192_000, false),
+            (48_000, true),
+            (192_000, true),
+        ] {
+            let max = max_render_frames(rate, writes);
+            assert!(max >= 1);
+            assert!(render_reply_bound(max, rate, writes) <= u64::from(MAX_MESSAGE));
+            if max < MAX_RENDER_FRAMES {
+                assert!(render_reply_bound(max + 1, rate, writes) > u64::from(MAX_MESSAGE));
+            }
+        }
+        assert_eq!(max_render_frames(8_000, false), MAX_RENDER_FRAMES);
+        // An actual reply never exceeds its bound: one frame at 48 kHz is about 958 samples.
+        assert!(max_samples(1, 48_000) >= 958);
     }
 
     #[test]

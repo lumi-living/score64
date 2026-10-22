@@ -231,6 +231,67 @@ fn limits_and_cpu_errors_keep_the_session() {
     );
 }
 
+/// A render the helper accepts must never produce a reply the client has to reject (over `MAX_MESSAGE`).
+#[test]
+fn oversized_renders_are_refused_and_the_session_continues() {
+    let rate = 192_000;
+    let replies = run(&[
+        Request::Hello {
+            version: proto::VERSION,
+            sample_rate: rate,
+        },
+        Request::Load {
+            address: 0x1000,
+            data: player(),
+        },
+        Request::Init {
+            init: 0x1000,
+            play: 0x1003,
+            subtune: 0,
+        },
+        // 10 minutes at 192 kHz: about 230 MB of samples.
+        Request::Render {
+            frames: proto::MAX_RENDER_FRAMES,
+            writes: false,
+        },
+        // Just over the cap with writes asked for.
+        Request::Render {
+            frames: proto::max_render_frames(rate, true) + 1,
+            writes: true,
+        },
+        Request::Render {
+            frames: 1,
+            writes: true,
+        },
+    ]);
+    for r in &replies[3..5] {
+        assert_eq!(code(r), ErrorCode::Limit);
+        let Reply::Error { message, .. } = r else {
+            unreachable!()
+        };
+        assert!(message.contains("at most"), "{message}");
+    }
+    match &replies[5] {
+        Reply::Rendered {
+            frames: 1,
+            samples,
+            writes,
+            ..
+        } => {
+            assert!(
+                (3_820..=3_840).contains(&samples.len()),
+                "{}",
+                samples.len()
+            );
+            assert_eq!(
+                writes[0].frame, 0,
+                "the refused renders did not advance the timeline"
+            );
+        }
+        other => panic!("expected Rendered, got {other:?}"),
+    }
+}
+
 #[test]
 fn malformed_input_is_answered_then_the_helper_stops() {
     let mut input = hello().encode();

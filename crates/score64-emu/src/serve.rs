@@ -46,7 +46,16 @@ pub fn serve(mut input: impl Read, mut output: impl Write) -> io::Result<()> {
             }
         };
         let (reply, quit) = handle(&mut session, request);
-        proto::write_frame(&mut output, &reply.encode())?;
+        let mut frame = reply.encode();
+        if frame.len() - 4 > proto::MAX_MESSAGE as usize {
+            // Session::render checks the bound first, so this is a bug; still never send what the client must reject.
+            frame = error(
+                ErrorCode::Internal,
+                format!("reply of {} bytes is over the limit", frame.len() - 4),
+            )
+            .encode();
+        }
+        proto::write_frame(&mut output, &frame)?;
         if quit {
             return Ok(());
         }

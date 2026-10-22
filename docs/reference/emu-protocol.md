@@ -6,7 +6,7 @@
 
 Every message is a `u32` length followed by that many bytes. The length counts everything after itself, so it is never 0; the first byte after it is the message kind. Either side rejects a length above 64 MiB.
 
-All integers are little-endian. A *string* is a `u16` byte count then UTF-8. A *blob* is a `u32` byte count then the bytes. A *flag* is one byte, 0 or 1; any other value is malformed. A message with bytes left over after its last field is malformed.
+All integers are little-endian. A *string* is a `u16` byte count then UTF-8; an encoder cuts a longer string at the last whole character that fits, so it always decodes. A *blob* is a `u32` byte count then the bytes. A *flag* is one byte, 0 or 1; any other value is malformed. A message with bytes left over after its last field is malformed.
 
 The client sends one request and reads exactly one reply before sending the next. When the client closes stdin, the helper exits.
 
@@ -32,6 +32,11 @@ The client sends one request and reads exactly one reply before sending the next
 
 - **Init** calls the init routine with a budget of one second of CPU time (985,248 cycles), then runs the machine idle to the next frame boundary. Audio and writes from init are not returned.
 - **Render** calls play once per PAL frame (19,656 cycles), with a budget of one frame per call. If a play call fails, the timeline is dropped: the next `Render` gets `Sequence` until a new `Init`.
+- **Render size rule:** an accepted `Render` never produces a reply over the 64 MiB limit. Before running anything, the helper bounds the reply from the frame count, the sample rate and whether writes were asked for. If the bound is over the limit, it answers `Limit`; nothing has run, so the timeline is where it was. The bound allows:
+  - 2 bytes per sample, for the exact sample count plus 0.1% and 64 samples (resamplers run slightly fast);
+  - when writes are asked for, 8 bytes for each of 6,552 writes per frame. A 6502 writes at most once every 3 cycles on average.
+  
+  `score64_formats::emu_protocol::max_render_frames` gives the largest accepted count. It is 30,000 frames up to 48 kHz, 8,759 at 192 kHz, and about 1,235 (25 s) with writes. Clients split longer renders into chunks of that size.
 - **Poke** writes now, at the current cycle. Addresses `$D400`–`$D7FF` reach the SID (mirrored every 32 bytes); everything else is RAM.
 - **Model** replaces the SID with a fresh one of the chosen model, started at the current cycle. RAM and the timeline are kept. The default is 6581.
 
@@ -46,7 +51,7 @@ The client sends one request and reads exactly one reply before sending the next
 
 A *write* is 8 bytes: `u32` frame since `Init`, `u16` cycle within that frame (0–19,655, counted from the play call), `u8` SID register (`$00`–`$1C`), `u8` value. Writes come in the order they were made. The write list is empty unless the request asked for it.
 
-The number of samples per chunk follows the PAL clock (985,248 Hz), not the 50 Hz frame count: 50 frames at 48 kHz are 0.9975 s, about 47,885 samples. The engine carries fractional samples across chunks.
+The number of samples per chunk follows the PAL clock (985,248 Hz), not the 50 Hz frame count: 50 frames at 48 kHz are 0.9975 s, about 47,890 samples. The engine carries fractional samples across chunks.
 
 ## Errors
 
@@ -57,7 +62,7 @@ The number of samples per chunk follows the PAL clock (985,248 Hz), not the 50 H
 | 3 | Sequence | A request that is not allowed now | Continues |
 | 4 | CpuJam | The CPU hit a JAM opcode in init or play | Continues; after a play failure, `Init` again |
 | 5 | Timeout | Init or play did not return within its budget | Continues; after a play failure, `Init` again |
-| 6 | Limit | A value is out of range: address overflow, frame count, sample rate | Continues |
+| 6 | Limit | A value is out of range: address overflow, frame count, sample rate, or a `Render` whose reply could exceed the limit | Continues; nothing ran |
 | 7 | Internal | Anything else | Continues |
 
 A client must accept codes it does not know; a newer helper may add some.

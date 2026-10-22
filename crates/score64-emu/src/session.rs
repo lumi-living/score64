@@ -135,6 +135,29 @@ impl Session {
             .timeline
             .as_mut()
             .ok_or_else(|| Failure::new(ErrorCode::Sequence, "render before init"))?;
+        // Refuse before running anything if the reply could outgrow a message; the session stays where it is.
+        // Samples and writes already pending (from Model or Poke since the last render) go in the same reply.
+        let pending_writes = if with_writes {
+            self.machine.memory.writes.len() as u64
+        } else {
+            0
+        };
+        let bound = proto::render_reply_bound(frames, self.sample_rate, with_writes)
+            + 2 * self.machine.memory.sid.samples.len() as u64
+            + 8 * pending_writes;
+        if bound > u64::from(proto::MAX_MESSAGE) {
+            return Err(Failure::new(
+                ErrorCode::Limit,
+                format!(
+                    "{frames} frames at {} Hz{} could need a {bound}-byte reply, over the {}-byte limit; \
+                     render at most {} frames at a time",
+                    self.sample_rate,
+                    if with_writes { " with writes" } else { "" },
+                    proto::MAX_MESSAGE,
+                    proto::max_render_frames(self.sample_rate, with_writes),
+                ),
+            ));
+        }
         let (play, first_play, start) = (t.play, t.first_play, t.frames);
         let mut max_play = 0u64;
         for k in start..start + u64::from(frames) {
