@@ -8,7 +8,8 @@
 
 mod cpu;
 mod machine;
-mod psid;
+mod serve;
+mod session;
 mod sid;
 
 use std::fs::File;
@@ -20,7 +21,7 @@ use clap::{Parser, Subcommand};
 
 use cpu::{Emulator6502, Registers};
 use machine::{Machine, Memory, PAL_CLOCK_HZ, PAL_CYCLES_PER_FRAME};
-use psid::Psid;
+use score64_formats::psid::Psid;
 use sid::{Chip, Engine, SidClock};
 
 #[derive(Parser)]
@@ -79,6 +80,8 @@ enum Command {
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=3))]
         effect_voice: u8,
     },
+    /// Speak the helper protocol on stdin/stdout (docs/reference/emu-protocol.md). This is how Score64 runs the helper.
+    Serve,
     /// Play a VICE `-sounddev dump` register log (lines of `cycles-since-last register value`) through the same SID,
     /// to separate CPU and timing differences from SID-model differences.
     Replay {
@@ -118,6 +121,13 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<(), Box<dyn std::error::Error>> {
     match command {
+        Command::Serve => {
+            serve::serve(
+                std::io::stdin().lock(),
+                std::io::BufWriter::new(std::io::stdout().lock()),
+            )?;
+            Ok(())
+        }
         Command::Render {
             sid,
             subtune,

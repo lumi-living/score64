@@ -65,6 +65,12 @@ impl Memory {
         self.ram[start..end].copy_from_slice(&data[..end - start]);
     }
 
+    /// Write one byte from the host (not the CPU) at `cycle`: RAM, or a SID register in `$D400`–`$D7FF`.
+    pub fn poke(&mut self, address: u16, value: u8, cycle: u64) {
+        self.instruction_start = cycle;
+        Bus::write(self, address, value, 0);
+    }
+
     fn sid_register(address: u16) -> Option<u8> {
         (0xD400..=0xD7FF)
             .contains(&address)

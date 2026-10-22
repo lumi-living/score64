@@ -3,3 +3,5 @@
 //! Every writer matches `docs/reference/` byte for byte and has a round-trip test (ADR-007).
 
 pub mod annotate;
+pub mod emu_protocol;
+pub mod psid;
