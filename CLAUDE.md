@@ -10,7 +10,7 @@ A tool that turns music and sound into game-ready Commodore 64 SID assets. One R
 
 1. Output must satisfy `docs/reference/`: the SID and player constraints, the GoatTracker formats and the memory budget. Never relax the validator to make a test pass; if the reference is wrong, fix it in the same PR with evidence (VICE, sidplayfp or hardware).
 2. `score64-core` stays free of `std::fs`, network access, threads-by-default and platform code.
-3. **Licence boundary:** `crates/score64-emu` is GPL-3.0-or-later and is only ever run as a separate process. No other crate may depend on it, and no GPL code may be copied into any other crate (CI job `licence-boundary`).
+3. **Licence boundary:** `crates/score64-emu` is GPL-3.0-or-later and is only ever run as a separate process. Its SID engine `crates/residfp-sys` (vendored reSIDfp, GPL-2.0-or-later) may be used by `score64-emu` only (ADR-011). No other crate may depend on either, and no GPL code may be copied into any other crate (CI job `licence-boundary`).
 4. Every user-visible action is a command in the shared engine (ADR-005); the app, CLI and MCP server are thin front-ends.
 5. Files are the source of truth (ADR-004): track files, decisions, approvals and `audio.lock` are text in git; artifacts live in the content-addressed cache; the index is rebuildable and never holds anything that is not also in files.
 6. LLM decisions are advisory (ADR-008): structured output, validated by the core, recorded with provenance, overridable, and never written directly into song bytes.
