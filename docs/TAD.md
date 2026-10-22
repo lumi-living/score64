@@ -214,7 +214,23 @@ Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, 
 - `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat; no file holds decisions yet, so the kinds can still change shape), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
-Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
+Manual decisions override LLM suggestions, which override rules. `score64_core::decide::resolve` (#45) applies that wherever decisions meet.
+- **Slots.** Two decisions compete when they are about the same thing, their `Slot`:
+  - a voice's role, the lead's source, or the tempo, from a bar on;
+  - a voice's octave in a bar;
+  - the chord from a row;
+  - the subtune's loop row;
+  - a note's trim, its drop, or its fresh start, by voice, row and pitch. A drop also uses the note's length, which tells two repeats on one row apart. These are three separate slots, since one note can have all three.
+- **Ranks.** In each slot the strongest wins:
+  1. a person's decision, or a model's that a person has accepted (`reviewed`);
+  2. a model's, not yet reviewed;
+  3. the rules'.
+
+  Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
+- **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
+- **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
+
+A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
 
 ## 4. Project and versions (`score64-project`)
 
