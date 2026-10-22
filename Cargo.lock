@@ -3061,6 +3061,7 @@ name = "score64-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "score64-core",
  "score64-engine",
  "serde_json",
 ]
@@ -3095,9 +3096,11 @@ version = "0.0.0"
 dependencies = [
  "schemars",
  "score64-adapters",
+ "score64-core",
  "score64-formats",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]

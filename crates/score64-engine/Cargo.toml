@@ -11,10 +11,12 @@ publish.workspace = true
 
 [dependencies]
 score64-adapters = { workspace = true }
+score64-core = { workspace = true, features = ["schema"] }
 score64-formats = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+toml = { workspace = true }
 
 [lints]
 workspace = true

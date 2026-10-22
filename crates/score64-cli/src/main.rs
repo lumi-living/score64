@@ -1,11 +1,18 @@
 //! The `score64` command-line tool. Every user-visible action is a command in the shared engine (ADR-005, ADR-012);
 //! the CLI, the MCP server and the app are thin front-ends over it. Typed subcommands give the common commands
 //! friendly flags; `score64 run` runs any registry command by name with JSON arguments.
+//!
+//! Exit codes: 0 when the command succeeded (for `validate`: no errors, though there may be warnings), 1 when
+//! `validate` found errors, 2 when a command failed (bad arguments, an unreadable file, a helper failure).
 
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use score64_engine::{CommandError, Engine, EngineConfig, NoArgs, REGISTRY, Version};
+use score64_engine::{
+    CommandError, Engine, EngineConfig, NoArgs, REGISTRY, Validate, ValidateArgs, ValidateOutput,
+    Version,
+};
 use serde_json::{Value, json};
 
 /// Turn music and sound into game-ready Commodore 64 SID assets.
@@ -27,6 +34,17 @@ enum Cmd {
     /// List every command, with argument and output schemas in JSON mode.
     Commands {
         /// Print JSON (names, summaries and schemas) instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check a song against the SID, player and profile rules. Fails (exit 1) only on errors; warnings are printed.
+    Validate {
+        /// The song file (`.json` or `.toml`).
+        song: PathBuf,
+        /// A validation context file (`.json` or `.toml`): project profiles, adaptive sets, instrument facts.
+        #[arg(long)]
+        context: Option<PathBuf>,
+        /// Print JSON (the problems, with the counts) instead of text.
         #[arg(long)]
         json: bool,
     },
@@ -76,6 +94,28 @@ fn main() -> ExitCode {
             }
             ExitCode::SUCCESS
         }
+        Cmd::Validate {
+            song,
+            context,
+            json,
+        } => match engine.run::<Validate>(ValidateArgs { song, context }) {
+            Ok(out) => {
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&out).expect("serialisable")
+                    );
+                } else {
+                    print_problems(&out);
+                }
+                if out.errors > 0 {
+                    ExitCode::from(1)
+                } else {
+                    ExitCode::SUCCESS
+                }
+            }
+            Err(e) => fail(&e),
+        },
         Cmd::Run { name, args } => {
             let args = match serde_json::from_str::<Value>(&args) {
                 Ok(v) => v,
@@ -99,8 +139,21 @@ fn print_json(v: &Value) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Errors go to stderr as JSON (`{"error": {"kind", "message"}}`), so scripts can match on the kind.
+/// Errors go to stderr as JSON (`{"error": {"kind", "message"}}`), so scripts can match on the kind; exit code 2.
 fn fail(e: &CommandError) -> ExitCode {
     eprintln!("{}", json!({ "error": e }));
-    ExitCode::FAILURE
+    ExitCode::from(2)
+}
+
+/// One line per problem, then a summary.
+fn print_problems(out: &ValidateOutput) {
+    for p in &out.problems {
+        println!("{p}");
+    }
+    let plural = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    println!(
+        "{}, {}",
+        plural(out.errors, "error"),
+        plural(out.warnings, "warning")
+    );
 }

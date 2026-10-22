@@ -10,6 +10,7 @@
 
 mod commands;
 mod helper;
+mod validate;
 
 use schemars::{JsonSchema, Schema};
 use serde::de::DeserializeOwned;
@@ -18,6 +19,7 @@ use serde_json::Value;
 
 pub use commands::{HelperInfo, HelperInfoOutput, NoArgs, Version, VersionOutput};
 pub use helper::HelperConfig;
+pub use validate::{ContextFile, Validate, ValidateArgs, ValidateOutput};
 
 /// One user-visible action.
 pub trait Command {
@@ -92,6 +94,8 @@ pub enum ErrorKind {
     UnknownCommand,
     /// The arguments do not match the command's schema.
     InvalidArgs,
+    /// A file the command was given cannot be read or is not valid (missing, unknown fields, a newer schema, …).
+    InvalidInput,
     /// The emulator helper binary was not found.
     HelperMissing,
     /// The emulator helper crashed, closed its pipe or sent something invalid. The next command starts a new one.
@@ -184,7 +188,11 @@ fn run_json<C: Command>(engine: &mut Engine, args: Value) -> Result<Value, Comma
 }
 
 /// Every command, in listing order.
-pub static REGISTRY: &[Entry] = &[entry::<Version>(), entry::<HelperInfo>()];
+pub static REGISTRY: &[Entry] = &[
+    entry::<Version>(),
+    entry::<HelperInfo>(),
+    entry::<Validate>(),
+];
 
 /// The registry entry called `name`.
 pub fn find(name: &str) -> Option<&'static Entry> {
