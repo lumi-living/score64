@@ -126,6 +126,31 @@ impl AdaptiveSet {
         &self.switch
     }
 
+    /// Add a timing mark at every switch point of every layer that has none (`docs/reference/player.md`: the game
+    /// switches layers when a mark changes start+$3F), keeping each layer's marks sorted. Returns the rows added, by
+    /// layer; running it again adds nothing. Layers the song lacks are skipped (rule 5 reports them).
+    pub fn place_marks(&self, song: &mut Song) -> Vec<(SubtuneName, Vec<u32>)> {
+        let mut added = Vec::new();
+        for layer in &self.layers {
+            let Some(subtune) = song.subtunes.iter_mut().find(|s| &s.name == layer) else {
+                continue;
+            };
+            let (points, _) = self.switch.points(subtune);
+            let new: Vec<u32> = points
+                .into_iter()
+                .filter(|r| !subtune.marks.contains(r))
+                .collect();
+            if new.is_empty() {
+                continue;
+            }
+            subtune.marks.extend(&new);
+            subtune.marks.sort_unstable();
+            subtune.marks.dedup();
+            added.push((layer.clone(), new));
+        }
+        added
+    }
+
     /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, or a
     /// declared switch row past a layer's end.
     pub fn check(&self, song: &Song) -> Vec<LayerProblem> {
@@ -384,3 +409,60 @@ mod tests {
         );
     }
 }
+
+/// The lowest timing-mark value: a `DXY` command with a lower parameter sets the master volume instead
+/// (`docs/reference/player.md`).
+pub const FIRST_MARK_VALUE: u8 = 0x10;
+
+/// One timing mark as the player writes it: a `DXY` command with this parameter on this row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TimingMark {
+    /// The row.
+    pub row: u32,
+    /// The parameter, copied to start+$3F when playback reaches the row.
+    pub value: u8,
+}
+
+/// A subtune's timing marks with their values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TimingMarks {
+    /// The marks, in row order.
+    pub marks: Vec<TimingMark>,
+    /// Whether every pass round the loop changes start+$3F at each mark it reaches. False when the loop (from
+    /// `loop_row` to the end) holds a single mark: it writes the same value every time, so only the first pass shows a
+    /// change.
+    pub loop_changes: bool,
+}
+
+/// The `DXY` values for `subtune`'s marks: `$10` and `$11` in turn, so each mark changes start+$3F. When the song
+/// loops back to a mark with the same value as its last one, the last takes `$12`, so the jump back changes it too.
+pub fn timing_marks(subtune: &Subtune) -> TimingMarks {
+    let mut rows: Vec<u32> = subtune.marks.clone();
+    rows.sort_unstable();
+    rows.dedup();
+    let mut marks: Vec<TimingMark> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, &row)| TimingMark {
+            row,
+            value: FIRST_MARK_VALUE + (i % 2) as u8,
+        })
+        .collect();
+    let in_loop = marks.iter().filter(|m| m.row >= subtune.loop_row).count();
+    let first_in_loop = marks.iter().position(|m| m.row >= subtune.loop_row);
+    if let (Some(first), true) = (first_in_loop, in_loop >= 2) {
+        let last = marks.len() - 1;
+        if marks[first].value == marks[last].value {
+            marks[last].value = FIRST_MARK_VALUE + 2;
+        }
+    }
+    TimingMarks {
+        marks,
+        loop_changes: in_loop != 1,
+    }
+}
+
+#[cfg(test)]
+mod mark_tests;
