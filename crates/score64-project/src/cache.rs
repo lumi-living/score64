@@ -115,6 +115,8 @@ pub enum Error {
     BadName(String),
     /// A manifest that could not be written.
     Manifest(String),
+    /// An entry written by a newer Score64 is in the way: left alone rather than replaced.
+    Newer(PathBuf),
 }
 
 impl fmt::Display for Error {
@@ -127,6 +129,11 @@ impl fmt::Display for Error {
                  ending with '.', not a device name, not twice)"
             ),
             Error::Manifest(m) => write!(f, "manifest: {m}"),
+            Error::Newer(dir) => write!(
+                f,
+                "{}: written by a newer Score64 (manifest schema above {MANIFEST_SCHEMA}); left as it is",
+                dir.display()
+            ),
         }
     }
 }
@@ -223,27 +230,15 @@ impl Cache {
     pub fn get(&self, stage: &str, key: ContentHash) -> Option<Entry> {
         check_name(stage).ok()?;
         let dir = self.entry_dir(stage, key);
-        let text = std::fs::read(dir.join(MANIFEST)).ok()?;
-        let manifest: Manifest = serde_json::from_slice(&text).ok()?;
-        if manifest.schema != MANIFEST_SCHEMA || manifest.stage != stage || manifest.key != key {
-            return None;
-        }
-        for a in &manifest.artifacts {
-            check_name(&a.name).ok()?;
-            let bytes = std::fs::read(dir.join(&a.name)).ok()?;
-            if bytes.len() as u64 != a.bytes
-                || ContentHash(*blake3::hash(&bytes).as_bytes()) != a.hash
-            {
-                return None;
-            }
-        }
+        let manifest = whole(&dir, stage, key)?;
         Some(Entry { dir, manifest })
     }
 
     /// Put a stage run's `artifacts` (name and bytes) with its manifest, under the key its run gives
     /// ([`Cache::key`]), so an entry can't claim inputs or config it wasn't made from. Written whole and synced into a
     /// temporary directory, then renamed into place. If another writer got there first, its entry is kept and
-    /// returned; an entry already there but not whole (damaged, or from an older layout) is replaced.
+    /// returned; an entry already there but not whole (damaged, or from an older layout) is replaced, and one from a
+    /// newer Score64 is left alone ([`Error::Newer`]).
     pub fn put(&self, stage: &str, artifacts: &[(&str, &[u8])], run: Run) -> Result<Entry, Error> {
         check_name(stage)?;
         let mut names: Vec<String> = Vec::with_capacity(artifacts.len());
@@ -304,12 +299,38 @@ impl Cache {
         };
         let dir = self.entry_dir(stage, key);
         let mut result = std::fs::rename(&tmp, &dir);
-        if result.is_err() && self.get(stage, key).is_none() && dir.exists() {
-            // Something that isn't a whole entry is in the way: move it aside, clear it, and try once more.
+        if result.is_err()
+            && self.get(stage, key).is_none()
+            && std::fs::symlink_metadata(&dir).is_ok()
+        {
+            // Something that isn't a whole entry is in the way. One from a newer Score64 is left alone.
+            let newer = std::fs::read(dir.join(MANIFEST))
+                .ok()
+                .and_then(|t| serde_json::from_slice::<Value>(&t).ok())
+                .and_then(|v| v.get("schema").and_then(Value::as_u64))
+                .is_some_and(|v| v > u64::from(MANIFEST_SCHEMA));
+            if newer {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err(Error::Newer(dir));
+            }
+            // Move it aside. If what was moved turns out whole, another writer replaced it first: put theirs back and
+            // keep it. Otherwise clear it and try once more.
             if let Ok(aside) = temp_dir(&stage_dir) {
                 let _ = std::fs::remove_dir(&aside);
                 if std::fs::rename(&dir, &aside).is_ok() {
-                    let _ = std::fs::remove_dir_all(&aside);
+                    if whole(&aside, stage, key).is_some() {
+                        let _ = std::fs::rename(&aside, &dir);
+                        let _ = std::fs::remove_dir_all(&tmp);
+                        return self.get(stage, key).ok_or(Error::Io {
+                            path: dir,
+                            error: std::io::Error::other(
+                                "another writer's entry moved while replacing",
+                            ),
+                        });
+                    }
+                    if std::fs::remove_dir_all(&aside).is_err() {
+                        let _ = std::fs::remove_file(&aside);
+                    }
                 }
             }
             result = std::fs::rename(&tmp, &dir);
@@ -328,19 +349,45 @@ impl Cache {
     }
 }
 
+/// The manifest of the entry in `dir`, if it is whole: it reads, is this layout, names `stage` and `key`, and every
+/// artifact's bytes still hash to what it says.
+fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
+    let text = std::fs::read(dir.join(MANIFEST)).ok()?;
+    let manifest: Manifest = serde_json::from_slice(&text).ok()?;
+    if manifest.schema != MANIFEST_SCHEMA || manifest.stage != stage || manifest.key != key {
+        return None;
+    }
+    for a in &manifest.artifacts {
+        check_name(&a.name).ok()?;
+        let bytes = std::fs::read(dir.join(&a.name)).ok()?;
+        if bytes.len() as u64 != a.bytes || ContentHash(*blake3::hash(&bytes).as_bytes()) != a.hash
+        {
+            return None;
+        }
+    }
+    Some(manifest)
+}
+
 /// A new, empty temporary directory under `stage_dir`, named so no other writer (another process, another container
 /// with the same pid, a crashed run's leftovers) is using it.
 fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    for _ in 0..64 {
+    temp_dir_named(stage_dir, || {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.subsec_nanos());
-        let path = stage_dir.join(format!(
+        format!(
             ".tmp-{}-{}-{nanos}",
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        )
+    })
+}
+
+/// [`temp_dir`] with its names from `name`: a taken name is skipped for the next, up to 64 tries.
+fn temp_dir_named(stage_dir: &Path, mut name: impl FnMut() -> String) -> Result<PathBuf, Error> {
+    for _ in 0..64 {
+        let path = stage_dir.join(name());
         match std::fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

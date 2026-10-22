@@ -217,11 +217,25 @@ fn names_stay_inside_the_cache() {
             "{artifact:?}"
         );
     }
-    // The same artifact twice is refused too.
-    assert!(matches!(
-        c.put("transcribe", &[("a.bin", b"x"), ("a.bin", b"y")], run()),
-        Err(Error::BadName(_))
-    ));
+    // The same artifact twice is refused too, also when only the case differs (one file on macOS and Windows).
+    for (a, b) in [("a.bin", "a.bin"), ("A.bin", "a.bin"), ("x.JSON", "X.json")] {
+        assert!(
+            matches!(
+                c.put("transcribe", &[(a, b"x"), (b, b"y")], run()),
+                Err(Error::BadName(_))
+            ),
+            "{a} {b}"
+        );
+    }
+    // Names that only look like devices are fine.
+    assert!(
+        c.put(
+            "transcribe",
+            &[("console.log", b"x"), ("com10", b"y")],
+            run()
+        )
+        .is_ok()
+    );
     assert!(!dir.join("escape").exists());
     let _ = std::fs::remove_dir_all(dir);
 }
@@ -251,6 +265,67 @@ fn an_entry_is_stored_under_its_own_runs_key() {
         Cache::key("transcribe", "1", &other.config, &other.inputs)
     );
     assert_ne!(e2.dir, entry.dir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_damaged_entry_with_files_in_it_is_replaced() {
+    // Renaming onto a directory that still has files fails: the damaged entry must be moved aside first.
+    let (c, dir) = cache("replace");
+    let entry = c
+        .put("transcribe", &[("notes.json", b"[1,2,3]")], run())
+        .unwrap();
+    std::fs::write(entry.dir.join("notes.json"), b"damaged").unwrap();
+    std::fs::write(entry.dir.join("junk"), b"left over").unwrap();
+    assert_eq!(c.get("transcribe", key()), None);
+    let fresh = c
+        .put("transcribe", &[("notes.json", b"[1,2,3]")], run())
+        .unwrap();
+    assert_eq!(c.get("transcribe", key()), Some(fresh.clone()));
+    assert!(!fresh.dir.join("junk").exists());
+    // Nothing is left beside it.
+    let names: Vec<_> = std::fs::read_dir(dir.join("cache").join("transcribe"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, [key().to_string()]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_file_in_an_entrys_place_is_replaced() {
+    let (c, dir) = cache("file");
+    let stage = dir.join("cache").join("transcribe");
+    std::fs::create_dir_all(&stage).unwrap();
+    std::fs::write(stage.join(key().to_string()), b"not a directory").unwrap();
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    assert_eq!(c.get("transcribe", key()), Some(entry));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn an_entry_from_a_newer_score64_is_left_alone() {
+    let (c, dir) = cache("newer");
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    let path = entry.dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let newer = text.replace("\"schema\": 1", "\"schema\": 2");
+    std::fs::write(&path, &newer).unwrap();
+    assert!(matches!(
+        c.put("transcribe", &[("a.bin", b"x")], run()),
+        Err(Error::Newer(_))
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), newer, "untouched");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_taken_temporary_name_is_skipped() {
+    let (_, dir) = cache("taken");
+    std::fs::create_dir_all(dir.join("taken")).unwrap();
+    let mut names = ["taken", "fresh"].into_iter().map(String::from);
+    let got = temp_dir_named(&dir, || names.next().unwrap()).unwrap();
+    assert_eq!(got, dir.join("fresh"));
     let _ = std::fs::remove_dir_all(dir);
 }
 
