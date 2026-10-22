@@ -356,4 +356,10 @@ pub enum DropReason {
     Skyline,
     /// It overlaps its neighbour too closely to trim to the minimum length, and has the lower confidence.
     Overlap,
+    /// Another note on the same row wins: a higher-priority drum hit, or the line drums are interleaved with.
+    Clash,
+    /// A drum hit whose kind has no sound in the project's drum kit.
+    Unmapped,
+    /// A hi-hat left out when drums share a voice with another line.
+    Interleave,
 }
