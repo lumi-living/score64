@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b256afb0beb2a891162036ce319ce7b57106173affa1aa6ecb2e782f9d88d0d9 # shrinks to soup = [Note { row: 142, length: 14, pitch: Pitch(55), attack: Legato, instrument: None, source: None, confidence: Confidence(0.0), decision: None }, Note { row: 142, length: 2, pitch: Pitch(55), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.8591332), decision: None }], rules = MonoRules { skyline: Highest, ghost_below: Confidence(0.5469982), min_rows: 1 }

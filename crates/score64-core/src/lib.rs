@@ -15,6 +15,7 @@ pub mod adaptive;
 pub mod grid;
 pub mod profile;
 pub mod provenance;
+pub mod reduce;
 #[cfg(feature = "schema")]
 mod schema;
 pub mod score;
@@ -26,7 +27,7 @@ pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
 pub use grid::{BeatGrid, Quantised, TempoSnap, snap_tempo};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
-    Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
+    Confidence, ContentHash, Decision, DecisionId, DropReason, Proposal, Provenance, SourceRef,
 };
 pub use score::{
     ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, SCHEMA_VERSION,
