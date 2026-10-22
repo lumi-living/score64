@@ -4,4 +4,4 @@
 
 - `source.wav`: 44.1 kHz, 16-bit mono. No MIDI: there are no notes to transcribe.
 
-Exercises: the ambience path (No Glory's gameplay audio is ambience and foley), and behaviour on material without clear notes.
+Exercises: the ambience path (gameplay audio made of ambience and foley), and behaviour on material without clear notes.

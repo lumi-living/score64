@@ -14,7 +14,7 @@ Expert users in long sessions. The jobs:
 | J4 | Compare two versions by ear, notes, settings, decisions and metrics |
 | J5 | Approve a version for the game build |
 | J6 | Check fit: size, raster time, both chips; push to real hardware |
-| J7 | Feel an adaptive mission: tension stages and simulated effects over the real packed set |
+| J7 | Feel an adaptive set: layer changes and simulated effects over the real packed set |
 | J8 | Make an effect that sounds like a reference recording |
 
 ## 2. Design principles
@@ -35,7 +35,7 @@ Library ─ Asset ─┬─ Listen     (source / stems / MIDI / SID 6581 / SID 8
                  ├─ History    (versions, diffs, approvals, comments)
                  └─ Budget     (size, raster, chips, licence and provenance)
 Effects bench    (reference ↔ matched effect, bytes, variants, priority order)
-Missions         (soundscape, adaptive set, audition)
+Adaptive sets    (soundscape, layers, audition)
 Build            (audio.lock, all budgets, push to C64 Ultimate, export)
 ```
 
@@ -48,7 +48,7 @@ Command palette: ⌘K / Ctrl+K for any asset, version, stage or source.
 - **Pipeline:** node graph of stages, coloured by state (cached, fresh, stale, running, failed); paid stages show cost and ask before forced refresh.
 - **History:** version list with status, metrics and pins; compare any two by audio, notes, config, decisions and metrics; approve, restore as new version, comment at a bar.
 - **Effects bench:** reference vs matched waveform and per-frame loudness and brightness curves, parameters, annotated bytes with format checks, pitch variants played as a sequence, audition over ambience or music. The priority list is the memory layout: drag to reorder.
-- **Missions:** stage buttons that switch on the next timing mark, effect triggers, a voice scope and a timeline; record a scenario for a reference render.
+- **Adaptive sets:** layer buttons that switch on the next timing mark, effect triggers, a voice scope and a timeline; record a scenario for a reference render.
 
 ## 5. Words
 

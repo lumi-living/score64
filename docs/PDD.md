@@ -24,7 +24,7 @@ Steps 1–3 lose most of the musical judgement, and step 4 redoes it by hand. No
 - **Musicians** who compose elsewhere (DAW, AI generators, field recordings) and want a SID version that preserves the idea.
 - **Sound designers** building foley and effects for the SID from reference recordings.
 
-The first production user is *No Glory*, a turn-based C64 game, with ambience-and-foley gameplay audio and film-score-style adaptive music near mission ends.
+Typical needs range from a single title tune to gameplay audio of ambience and foley, with adaptive music that builds in layers.
 
 ## Scope decisions
 
@@ -43,7 +43,7 @@ The first production user is *No Glory*, a turn-based C64 game, with ambience-an
 - ✅ Beat and downbeat grid; tempo snapping to PAL frame-exact row lengths
 
 ### Arrangement (reduction)
-- ✅ Voice profiles: `menu` (3 voices, free allocation), `combat` (voice 3 expendable for sound effects), `combat2` (2-voice fallback), `mission` (adaptive layers)
+- ✅ Voice profiles per subtune, as validated data: built-in `full`, `sfx-shares-v3`, `sfx-owns-v3` and `sfx-owns-v2-v3`, plus profiles a project defines for its own voice plan
 - ✅ Lead selection, monophonisation, octave folding into role ranges
 - ✅ Chord detection → GoatTracker wavetable arpeggios
 - ✅ Drum folding (dedicated voice or interleaved with bass)
@@ -55,7 +55,7 @@ The first production user is *No Glory*, a turn-based C64 game, with ambience-an
 - ✅ GoatTracker 2 `.sng` with instrument presets
 - ✅ Packed `.prg` / `.sid` via gt2reloc with sound-effect support, timing marks and configurable zero page
 - ✅ Budget checks: packed size, raster time, zero page
-- ⏩ Adaptive sets: subtunes for bed, drone, ostinato, climax and stings, with timing marks on every bar
+- ⏩ Adaptive sets: a project-declared ordered list of layers (subtunes), with timing marks on every bar
 - ✅ Sound effects: GoatTracker effect format, ≤ 128 bytes, resident block in priority order
 - ⏩ Effects matched from reference recordings (parameter search), pitch variants
 
@@ -64,7 +64,7 @@ The first production user is *No Glory*, a turn-based C64 game, with ambience-an
 - ✅ HTML report per run (shareable)
 - ✅ Score64 Studio: library, listen and compare on one playhead, piano roll and tracker views, voice map, pipeline view
 - ✅ Version history, diffs, approvals, `audio.lock` for the game build
-- ⏩ Mission audition: stage changes and simulated effects over the real packed set, live
+- ⏩ Adaptive audition: layer changes and simulated effects over the real packed set, live
 - ⏩ C64 Ultimate push, DAWproject export
 
 ### Automation
@@ -92,6 +92,6 @@ The first production user is *No Glory*, a turn-based C64 game, with ambience-an
 | **M0 Scaffold** | Workspace, CI, score model and validator, fixtures, de-risking spike (emulation, ONNX transcription) |
 | **M1 Pipeline MVP** | CLI end to end: transcribe → grid → reduce → `.sng` → pack → render → score → HTML report |
 | **M2 Studio & sound effects** | Score64 Studio (library, listen, map, pipeline, history, approvals), LLM decider, sound-effect bench, MCP server |
-| **M3 Adaptive & integrations** | Adaptive mission sets and live audition, VICE harness, C64 Ultimate, DAWproject, release 0.1 |
+| **M3 Adaptive & integrations** | Adaptive sets and live audition, VICE harness, C64 Ultimate, DAWproject, release 0.1 |
 
 Epics and issues: [docs/github/EPICS.md](github/EPICS.md).
