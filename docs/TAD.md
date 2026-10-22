@@ -143,6 +143,13 @@ Lead selection by salience (pitch, density, overrides) → monophonise (skyline)
 
 Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, and 0.5 for a skyline pick. Any order of the same notes gives the same line and the same decisions. Ghost and minimum-length removal therefore happen here, at the start, rather than late in the chain above.
 
+**Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
+- **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
+- **Choosing the shift.** Only shifts that keep every note playable count. Among those it picks the one that leaves the fewest notes outside the range of the role at their row. On a tie, it keeps the previous bar's shift, so the line doesn't jump an octave at a bar line; then it takes the smallest.
+- **Notes that still don't fit** stay where they are, and rule 6 warns about them.
+- **Drums and texture** are never moved.
+- **Decisions.** Each bar with a non-zero shift is one `Octave` decision, `octave-v<voice>-b<bar>`. Its confidence is the share of the bar's notes in range after the shift.
+
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 

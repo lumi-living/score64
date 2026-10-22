@@ -2,7 +2,8 @@
 //! recorded as a [`Decision`] (provenance `rules`).
 //!
 //! [`monophonise`] (#40) makes one voice's notes a single line: ghosts and too-short notes out, one note per row (the
-//! skyline), overlaps trimmed, ties that lost their note restarted.
+//! skyline), overlaps trimmed, ties that lost their note restarted. [`fold_octaves`] (#41) moves a line's bars by
+//! whole octaves into its roles' ranges.
 
 use std::cmp::Ordering;
 use std::num::{NonZeroU8, NonZeroU32};
@@ -11,6 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
+
+mod octave;
+pub use octave::{FOLD_OCTAVES, fold_octaves};
 
 /// The rule name and version [`monophonise`] records in its decisions.
 pub const MONOPHONISE: &str = "monophonise@1";
