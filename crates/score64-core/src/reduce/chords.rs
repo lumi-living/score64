@@ -21,8 +21,16 @@ pub const CHORDS: &str = "chords@1";
 const EXTRA_TONE_COST: f32 = 0.05;
 
 /// The score a beat's best chord needs: below it, the beat has no chord (a cluster, noise, or a lone note: a melody
-/// on its own is not harmony).
+/// on its own is not harmony). A chord already sounding carries on through a beat at half this.
 pub const MIN_SCORE: f32 = 0.4;
+
+/// How much better a new chord must score than the one already sounding to take over: a chord change needs clear
+/// evidence, so passing notes over a held chord don't spell a new one.
+const CHANGE_MARGIN: f32 = 0.25;
+
+/// A chord tone sounds fully at this share of the chord tones' mean weight: below it, it counts in proportion, so a
+/// faint note adds little, while a doubled tone (louder than the rest) costs the others nothing.
+const FULL_TONE: f32 = 0.25;
 
 /// The chord qualities detection knows, simplest first: on a tie the earlier one wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -102,11 +110,11 @@ pub struct ChordSpan {
 ///
 /// Each beat's pitch classes are weighted by the rows each note sounds in the beat, times its confidence. Every root
 /// and [`ChordQuality`] is scored: the weight on its tones minus the weight off them, over the beat's weight, scaled
-/// by how fully its tones sound (each counts up to the tones' mean weight, so a faint note adds little), less a little
-/// for each tone past three. A
-/// chord's root must sound. The best scores; on a tie the one rooted on the beat's lowest sounding note, then the
-/// simpler quality, then the lower root. A beat with nothing sounding, or whose best scores under
-/// [`MIN_SCORE`], has no chord. A span's confidence is the mean of its beats' scores.
+/// by how fully its tones sound (a tone counts fully from a quarter of the tones' mean weight, so a faint note adds
+/// little and a doubled one costs nothing), less a little for each tone past three. A chord's root must sound. The best scores; on a tie the one rooted on the beat's lowest sounding note, then the
+/// simpler quality, then the lower root. The chord already sounding into a beat carries on through it while it scores
+/// at least half [`MIN_SCORE`] and no other beats it by 0.25: a chord change needs clear evidence. Otherwise a beat
+/// whose best scores under [`MIN_SCORE`], or with nothing sounding, has no chord. A span's confidence is the mean of its beats' scores.
 pub fn detect_chords(
     notes: &[Note],
     rows_per_beat: NonZeroU8,
@@ -133,8 +141,25 @@ pub fn detect_chords(
             }
         }
         let bass = lowest.map(|p| p.semitone() % 12);
-        let Some((chord, score)) = best_chord(&weight, bass).filter(|&(_, s)| s >= MIN_SCORE)
-        else {
+        // A chord already sounding into this beat needs less to carry on than a new one needs to start: a held bass
+        // under a running melody keeps its chord.
+        let sounding = spans
+            .last()
+            .filter(|(last, ..)| last.row + last.length.get() == start)
+            .map(|(last, ..)| last.chord);
+        let best = best_chord(&weight, bass).filter(|&(_, s)| s >= MIN_SCORE);
+        let carried = sounding.and_then(|chord| {
+            score(&weight, chord)
+                .filter(|&s| s >= MIN_SCORE / 2.0)
+                .map(|s| (chord, s))
+        });
+        // The new chord takes over only when it is clearly better.
+        let pick = match (best, carried) {
+            (Some(new), Some(old)) if new.1 - old.1 < CHANGE_MARGIN => Some(old),
+            (Some(new), _) => Some(new),
+            (None, old) => old,
+        };
+        let Some((chord, score)) = pick else {
             continue;
         };
         let span_length = NonZeroU32::new(end - start).expect("a beat has rows");
@@ -171,41 +196,45 @@ pub fn detect_chords(
 /// The best chord for a beat's pitch-class weights, and its score. Of chords that score the same (the sus2 on D and
 /// the sus4 on A share their notes, say), the one rooted on the lowest sounding note, `bass`, wins.
 fn best_chord(weight: &[f32; 12], bass: Option<u8>) -> Option<(Chord, f32)> {
-    let total: f32 = weight.iter().sum();
-    if total <= 0.0 {
-        return None;
-    }
     let mut best: Option<(Chord, f32)> = None;
     // Simplest quality first, then lowest root, so a later candidate wins only by scoring higher.
     for quality in ChordQuality::ALL {
         for root in 0u8..12 {
-            if weight[usize::from(root)] <= 0.0 {
+            let chord = Chord { root, quality };
+            let Some(score) = score(weight, chord) else {
                 continue;
-            }
-            let tones = quality.intervals();
-            // Summed over the pitch classes in order, so chords sharing their notes score exactly the same.
-            let mut mask = [false; 12];
-            for &i in tones {
-                mask[usize::from((root + i) % 12)] = true;
-            }
-            let on: f32 = (0..12).filter(|&pc| mask[pc]).map(|pc| weight[pc]).sum();
-            // How fully the chord sounds: each tone counts up to the tones' mean weight, so a faint note is a faint
-            // part of the chord, not a whole one.
-            let mean = on / tones.len() as f32;
-            let full: f32 = (0..12)
-                .filter(|&pc| mask[pc])
-                .map(|pc| weight[pc].min(mean))
-                .sum();
-            let share = if on > 0.0 { full / on } else { 0.0 };
-            let score =
-                (2.0 * on - total) / total * share - EXTRA_TONE_COST * (tones.len() - 3) as f32;
+            };
             let on_bass = |r: u8| bass == Some(r);
             if best.is_none_or(|(c, s)| (score, on_bass(root)) > (s, on_bass(c.root))) {
-                best = Some((Chord { root, quality }, score));
+                best = Some((chord, score));
             }
         }
     }
     best
+}
+
+/// How well `chord` fits a beat's pitch-class weights; `None` when nothing sounds or its root does not.
+fn score(weight: &[f32; 12], chord: Chord) -> Option<f32> {
+    let total: f32 = weight.iter().sum();
+    if total <= 0.0 || weight[usize::from(chord.root)] <= 0.0 {
+        return None;
+    }
+    let tones = chord.quality.intervals();
+    // Summed over the pitch classes in order, so chords sharing their notes score exactly the same.
+    let mut mask = [false; 12];
+    for &i in tones {
+        mask[usize::from((chord.root + i) % 12)] = true;
+    }
+    let on: f32 = (0..12).filter(|&pc| mask[pc]).map(|pc| weight[pc]).sum();
+    // How fully the chord sounds: each tone counts fully from a quarter of the tones' mean weight, and in proportion
+    // below that, so a faint note is a faint part of the chord and a doubled one costs nothing.
+    let enough = FULL_TONE * on / tones.len() as f32;
+    let full: f32 = (0..12)
+        .filter(|&pc| mask[pc])
+        .map(|pc| (weight[pc] / enough).min(1.0))
+        .sum();
+    let share = full / tones.len() as f32;
+    Some((2.0 * on - total) / total * share - EXTRA_TONE_COST * (tones.len() - 3) as f32)
 }
 
 /// An arp voice's line: root notes, the arpeggios over them, and the decisions that chose the chords.

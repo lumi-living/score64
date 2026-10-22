@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d2f06ebba9b659df4f8f4c67da068f3b64a8bfab45c2864ab4d2ba12a08a7e8c # shrinks to soup = [Note { row: 167, length: 29, pitch: Pitch(75), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.9685506), decision: None }, Note { row: 170, length: 30, pitch: Pitch(19), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.7653317), decision: None }, Note { row: 191, length: 9, pitch: Pitch(35), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.80420643), decision: None }, Note { row: 169, length: 31, pitch: Pitch(54), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.51378345), decision: None }, Note { row: 184, length: 11, pitch: Pitch(0), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.4432604), decision: None }, Note { row: 172, length: 28, pitch: Pitch(44), attack: Fresh, instrument: None, source: None, confidence: Confidence(0.983553), decision: None }], seed = 0, length = 197

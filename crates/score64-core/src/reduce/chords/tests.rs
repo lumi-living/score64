@@ -255,7 +255,8 @@ proptest! {
         ids.dedup();
         prop_assert_eq!(ids.len(), a.decisions.len());
         let (song, ctx) = checked(a);
-        prop_assert!(spans.iter().all(|s| s.confidence.get() >= MIN_SCORE));
+        // Every beat met the floor, or half of it carrying a chord on, so no span is under half.
+        prop_assert!(spans.iter().all(|s| s.confidence.get() >= MIN_SCORE / 2.0));
         let errors: Vec<_> = validate(&song, &ctx).into_iter().filter(|p| p.is_error()).collect();
         prop_assert!(errors.is_empty(), "{errors:#?}");
         let mut shuffled = soup;
@@ -408,4 +409,102 @@ fn roots_sit_nearest_the_middle_of_the_range() {
     };
     let a = arpeggiate(&[span], &at(&n), narrow);
     assert_eq!(a.notes[0].pitch.to_string(), "A-3");
+}
+
+#[test]
+fn a_doubled_tone_costs_the_chord_nothing() {
+    // C in three octaves over E and G: as complete a C major as C E G.
+    let doubled = detect_chords(
+        &chord(0, 4, &["C-2", "C-3", "C-4", "E-4", "G-4"]),
+        beat(),
+        rows(4),
+    );
+    assert_eq!(found(&doubled), [(0, 4, 0, ChordQuality::Major)]);
+    assert!(
+        (doubled[0].confidence.get() - 1.0).abs() < 1e-5,
+        "{:?}",
+        doubled[0].confidence
+    );
+}
+
+#[test]
+fn a_held_bass_keeps_its_chord_under_a_running_melody() {
+    // C held for three beats; E-G in beats 1 and 3; in beat 2 the melody runs C D E F, one row each. The C major
+    // already sounding carries on through beat 2.
+    let mut notes = vec![note(0, 12, "C-3")];
+    notes.extend(chord(0, 4, &["E-4", "G-4"]));
+    notes.extend(chord(8, 4, &["E-4", "G-4"]));
+    for (i, p) in ["C-5", "D-5", "E-5", "F-5"].iter().enumerate() {
+        notes.push(note(4 + i as u32, 1, p));
+    }
+    let spans = detect_chords(&notes, beat(), rows(12));
+    assert_eq!(found(&spans), [(0, 12, 0, ChordQuality::Major)]);
+    // Heard on its own, that beat reads as a D minor 7th (D, F and the held C): only the chord already sounding,
+    // which a new one must clearly beat, keeps it C.
+    let mut cold: Vec<Note> = notes
+        .iter()
+        .filter(|n| (4..8).contains(&n.row))
+        .cloned()
+        .collect();
+    cold.push(note(4, 4, "C-3"));
+    assert_eq!(
+        found(&detect_chords(&cold, beat(), rows(8)))[0].3,
+        ChordQuality::Minor7
+    );
+}
+
+#[test]
+fn the_floor_sits_between_a_lone_note_and_a_weak_dyad() {
+    // C with an E faint enough that the chord scores about 0.45: a chord. Fainter, about 0.35: none.
+    let with_e = |confidence| {
+        let mut notes = vec![note(0, 4, "C-4")];
+        notes.push(weighted(0, 1, "E-4", confidence));
+        detect_chords(&notes, beat(), rows(4))
+    };
+    let weak = with_e(0.108);
+    assert_eq!(weak.len(), 1);
+    assert!(
+        (weak[0].confidence.get() - 0.45).abs() < 0.02,
+        "{:?}",
+        weak[0].confidence
+    );
+    assert!(with_e(0.015).is_empty());
+}
+
+#[test]
+fn a_seventh_chords_share_is_over_its_four_tones() {
+    // G B D at 3.6 each and a faint F at 0.2: F is under a quarter of the tones' mean (0.25 × 11 / 4), so it counts
+    // as 0.2 / 0.6875 of a tone, and the share is over all four.
+    let mut weight = [0.0f32; 12];
+    weight[7] = 3.6;
+    weight[11] = 3.6;
+    weight[2] = 3.6;
+    weight[5] = 0.2;
+    let g7 = Chord {
+        root: 7,
+        quality: ChordQuality::Dominant7,
+    };
+    let share = (3.0 + 0.2 / (0.25 * 11.0 / 4.0)) / 4.0;
+    let expected = (2.0 * 11.0 - 11.0) / 11.0 * share - 0.05;
+    assert!((score(&weight, g7).unwrap() - expected).abs() < 1e-5);
+    // The triad wins: the faint F costs the seventh more than it brings.
+    assert_eq!(
+        best_chord(&weight, Some(7)).unwrap().0.quality,
+        ChordQuality::Major
+    );
+}
+
+#[test]
+fn a_clear_new_chord_still_takes_over() {
+    // C major then F major, both full: the F beat changes the chord at once.
+    let mut notes = chord(0, 4, &["C-4", "E-4", "G-4"]);
+    notes.extend(chord(4, 4, &["F-4", "A-4", "C-5"]));
+    let spans = detect_chords(&notes, beat(), rows(8));
+    assert_eq!(
+        found(&spans),
+        [
+            (0, 4, 0, ChordQuality::Major),
+            (4, 4, 5, ChordQuality::Major)
+        ]
+    );
 }
