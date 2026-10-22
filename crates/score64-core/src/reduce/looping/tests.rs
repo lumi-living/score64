@@ -305,3 +305,31 @@ fn a_silent_ending_gives_no_candidates() {
     s.voices[0].notes.clear();
     assert!(find_loop(&s, &LoopRules::default()).candidates.is_empty());
 }
+
+#[test]
+fn a_part_bar_with_music_is_left_out_too() {
+    // C F G three times, then four rows of an E♭ note in a part bar: the ending is still the last whole bars.
+    let mut s = subtune(&[C, F, G].repeat(3));
+    let clean = find_loop(&s, &LoopRules::default());
+    s.length = NonZeroU32::new(9 * 16 + 4).unwrap();
+    s.voices[0].notes.push(note(144, 4, 51));
+    let part = find_loop(&s, &LoopRules::default());
+    assert_eq!(part.row, clean.row);
+    assert!((part.decision.confidence.get() - clean.decision.confidence.get() / 2.0).abs() < 1e-5);
+}
+
+#[test]
+fn arpeggios_listed_out_of_order_still_count() {
+    // Two arpeggios over one C, listed later one first: both rows 0–7 and 8–15 sound as the chord.
+    let mut s = from_notes(vec![note(0, 16, 48)], 1);
+    for row in [8, 0] {
+        s.voices[0].arps.push(ArpEvent {
+            row,
+            length: NonZeroU32::new(8).unwrap(),
+            intervals: vec![0, 4, 7],
+            decision: None,
+        });
+    }
+    let chroma = chroma_by_bar(&s, 1);
+    assert!((chroma[0][4] - 16.0 * 0.3).abs() < 1e-4, "{:?}", chroma[0]);
+}

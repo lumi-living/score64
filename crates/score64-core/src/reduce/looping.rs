@@ -60,8 +60,8 @@ pub struct LoopChoice {
 
 /// Find the loop row of `subtune`.
 ///
-/// The ending is the last `context` whole bars with music in them: a part bar at the end, and silent bars before
-/// it, are left out. Every bar `a` from 1 on whose `context` bars before it end before the ending starts is a
+/// The ending is the last `context` whole bars, up to the last bar with music in it: a part bar at the end, and
+/// silent bars before it, are left out. Every bar `a` from 1 on whose `context` bars before it end before the ending starts is a
 /// candidate, scored by the cosine similarity of those bars' chroma (all voices, by rows sounding times confidence,
 /// arpeggios by their chord tones) with the ending's; candidates whose bars are silent are skipped. The best
 /// candidate at or above `min_similarity` wins, the earliest on a tie (the longest loop); with none, or a subtune too
@@ -69,7 +69,7 @@ pub struct LoopChoice {
 ///
 /// One [`Proposal::LoopRow`] decision proposes it, as sure as the similarity, or half as sure when the subtune ends
 /// inside a bar or after silence (the jump then comes from music the comparison did not see). The subtune itself is
-/// not changed, and tempo changes are not considered: a loop across one resumes at the ending's tempo.
+/// not changed, and tempo is not compared.
 pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
     let rows = u32::from(subtune.rows_per_bar.get());
     let length = subtune.length.get();
