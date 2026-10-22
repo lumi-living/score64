@@ -226,6 +226,43 @@ fn a_persons_choice_holds_over_later_weaker_ones() {
 }
 
 #[test]
+fn tempos_hold_over_time_apart_from_leads() {
+    let tempo = |id: &str, bar, f, provenance| {
+        decision(
+            id,
+            bar,
+            Proposal::FramesPerRow {
+                frames_per_row: crate::score::FramesPerRow::new(f).unwrap(),
+            },
+            provenance,
+        )
+    };
+    let lead = decision(
+        "lead-rules",
+        4,
+        Proposal::LeadSource {
+            source: ContentHash([3; 32]),
+        },
+        rules(),
+    );
+    // A person's tempo at bar 0 holds over the rules' at bar 4; the rules' lead at bar 4 is another kind.
+    let r = resolve([
+        tempo("tempo-person", 0, 6, Provenance::Manual),
+        tempo("tempo-rules", 4, 5, rules()),
+        lead,
+    ]);
+    assert_eq!(ids(&r), ["lead-rules", "tempo-person"]);
+    assert_eq!(r.overruled[0].0.id.as_str(), "tempo-rules");
+    // Two people, then a model: the model loses to the later person, which is in force.
+    let r = resolve([
+        tempo("p1", 0, 6, Provenance::Manual),
+        tempo("p2", 2, 5, Provenance::Manual),
+        tempo("m", 4, 4, model()),
+    ]);
+    assert_eq!(r.overruled[0].1.as_str(), "p2");
+}
+
+#[test]
 fn roles_hold_per_voice() {
     let role = |id: &str, bar, v, provenance| {
         decision(
@@ -363,6 +400,9 @@ fn competing() -> impl Strategy<Value = Decision> {
             intervals: vec![0, 4, 7]
         }),
         (0u32..3).prop_map(|row| Proposal::LoopRow { row }),
+        (3u8..5).prop_map(|f| Proposal::FramesPerRow {
+            frames_per_row: crate::score::FramesPerRow::new(f).unwrap()
+        }),
         (voice.clone(), 0u32..3, pitch.clone(), length.clone()).prop_map(
             |(voice, row, pitch, length)| {
                 Proposal::TrimNote {
@@ -449,6 +489,31 @@ proptest! {
                 })
             })
         };
+        // For the kinds that hold from a bar: what is in force at a bar is the latest chosen decision of the kind at
+        // or before it. A chosen one is never weaker than what was in force before it; a loser not beaten in its own
+        // slot names exactly that decision.
+        let in_force_at = |lost: &Decision| {
+            let (ls, lk, lv, lb) = lost.slot().holds_from_bar()?;
+            r.chosen
+                .iter()
+                .filter(|d| {
+                    d.slot().holds_from_bar().is_some_and(|(s, k, v, b)| (&s, k, v) == (&ls, lk, lv) && b <= lb)
+                        && d.slot() != lost.slot()
+                })
+                .max_by_key(|d| d.bar)
+        };
+        for d in &r.chosen {
+            if let Some(before) = in_force_at(d).filter(|b| b.bar < d.bar) {
+                prop_assert!(before.rank() <= d.rank(), "{d:?} chosen though {before:?} was stronger and in force");
+            }
+        }
+        for (lost, by) in &r.overruled {
+            let same_slot = r.chosen.iter().any(|d| &d.id == by && d.slot() == lost.slot());
+            if !same_slot {
+                let in_force = in_force_at(lost);
+                prop_assert!(in_force.is_some_and(|f| &f.id == by), "{lost:?} names {by:?}, not what is in force");
+            }
+        }
         for (lost, by) in &r.overruled {
             let winner = beat(lost, by);
             prop_assert!(winner.is_some(), "{by:?} did not win over {lost:?}");
