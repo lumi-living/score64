@@ -267,21 +267,32 @@ pub fn proposal() -> impl Strategy<Value = Proposal> {
             voice(),
             0u32..1024,
             pitch(),
+            1u32..64,
             proptest::option::of(source_ref()),
             drop_reason()
         )
-            .prop_map(|(voice, row, pitch, source, reason)| Proposal::DropNote {
+            .prop_map(
+                |(voice, row, pitch, length, source, reason)| Proposal::DropNote {
+                    voice,
+                    row,
+                    pitch,
+                    length: NonZeroU32::new(length).expect("non-zero"),
+                    source,
+                    reason,
+                }
+            ),
+        (
+            voice(),
+            0u32..1024,
+            pitch(),
+            proptest::option::of(source_ref())
+        )
+            .prop_map(|(voice, row, pitch, source)| Proposal::Retrigger {
                 voice,
                 row,
                 pitch,
-                source,
-                reason,
+                source
             }),
-        (voice(), 0u32..1024, pitch()).prop_map(|(voice, row, pitch)| Proposal::Retrigger {
-            voice,
-            row,
-            pitch
-        }),
     ]
 }
 
