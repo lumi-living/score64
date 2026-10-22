@@ -227,6 +227,19 @@ fn tempo_is_three_to_127_frames_per_row() {
 }
 
 #[test]
+fn frames_follow_the_tempo_map() {
+    let (song, _) = example();
+    let st = &song.subtunes[0]; // 6 frames per row, 5 from row 16
+    assert_eq!(st.frames_per_row_at(15).get(), 6);
+    assert_eq!(st.frames_per_row_at(16).get(), 5);
+    assert_eq!(st.frames(0, 16), 96);
+    assert_eq!(st.frames(14, 18), 2 * 6 + 2 * 5);
+    assert_eq!(st.frames(16, 32), 80);
+    assert_eq!(st.frames(8, 8), 0);
+    assert_eq!(st.frames(9, 8), 0);
+}
+
+#[test]
 fn subtunes_have_unique_stable_names() {
     let (song, decisions) = example();
     let (index, subtune) = song.subtune(&decisions[0].subtune).unwrap();

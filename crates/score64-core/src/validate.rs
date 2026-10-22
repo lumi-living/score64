@@ -1,7 +1,7 @@
 //! The validator for `docs/TAD.md` §1.3: checks a song against the SID, the player and its subtunes' voice profiles,
 //! and reports every problem with its subtune, bar, voice and a hint for fixing it.
 //!
-//! [`validate`] covers rules 1–6 from the song plus the instrument facts it needs. Rule 8 (packed size and zero page)
+//! [`validate`] covers rules 1–6 and 9 from the song plus the instrument facts it needs. Rule 8 (packed size and zero page)
 //! is [`check_pack`], run after packing. Rule 7 (sound-effect data) waits for the sound-effect model (E13).
 
 use std::collections::BTreeMap;
@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::adaptive::{AdaptiveSet, LayerProblem};
 use crate::profile::{Profile, ProfileName, Profiles, VoiceUse};
-use crate::score::{Attack, Pitch, PresetId, Role, Song, Subtune, SubtuneName, Voice, VoiceLine};
+use crate::score::{
+    Attack, Note, Pitch, PresetId, Role, Song, Subtune, SubtuneName, Voice, VoiceLine,
+};
 
 /// Which TAD §1.3 rule a problem breaks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -35,6 +37,8 @@ pub enum Rule {
     Effects,
     /// 8: packed size and zero page within the budget.
     Pack,
+    /// 9: hard restart: gate timers below every row's tempo, and a gate-off that leaves the previous note sounding.
+    HardRestart,
 }
 
 impl Rule {
@@ -49,6 +53,7 @@ impl Rule {
             Rule::PitchRange => 6,
             Rule::Effects => 7,
             Rule::Pack => 8,
+            Rule::HardRestart => 9,
         }
     }
 }
@@ -131,6 +136,16 @@ pub struct InstrumentFacts {
     pub filter: bool,
     /// It sets a pulse width when a note starts (its pulse table's first step), rather than inheriting one.
     pub pulse_at_start: bool,
+    /// GoatTracker's HR/gate timer (0–63): how many frames before the next row the player fetches that row and,
+    /// if it holds a new note, turns the gate off. It must be less than the frames per row on every row this
+    /// instrument plays.
+    pub gate_timer: u8,
+    /// Whether that gate-off also hard-restarts (gate-timer bit `$80` clear): the player writes the hard-restart
+    /// ADSR (gt2reloc `-A`). It does not change when the gate goes off.
+    pub hard_restart: bool,
+    /// Whether a new note with this instrument turns the gate off before it at all (gate-timer bit `$40` clear).
+    /// Without it the instrument is a legato instrument: no gate-off and no hard restart before its notes.
+    pub gate_off: bool,
 }
 
 /// An inclusive pitch range.
@@ -248,7 +263,7 @@ impl Default for Context {
     }
 }
 
-/// Every problem in `song`, ordered by subtune, bar, voice and rule. Empty means the song passes rules 1–6.
+/// Every problem in `song`, ordered by subtune, bar, voice and rule. Empty means the song passes rules 1–6 and 9.
 pub fn validate(song: &Song, ctx: &Context) -> Vec<Problem> {
     let mut out = Vec::new();
     for set in &ctx.adaptive {
@@ -359,6 +374,118 @@ impl Checker<'_> {
             }
             seen.push(line.voice);
             self.line(line);
+            self.hard_restart(line);
+        }
+    }
+
+    /// Rule 9: GoatTracker's gate timer against the tempo, and the gate-off before each new note.
+    ///
+    /// The player fetches the next row `gate_timer` frames before it starts, using the gate timer of the instrument
+    /// playing now, and turns the gate off then if the fetched row holds a new note (not legato) whose instrument
+    /// does gate-off. That takes the last `gate_timer` frames from the note before.
+    fn hard_restart(&mut self, line: &VoiceLine) {
+        let voice = Some(line.voice);
+        let facts = |n: &Note| self.ctx.instruments.get(line.instrument_of(n)).copied();
+        let ends: Vec<u32> = line
+            .notes
+            .iter()
+            .skip(1)
+            .map(|n| n.row)
+            .chain([self.length()])
+            .collect();
+        for (i, note) in line.notes.iter().enumerate() {
+            let Some(own) = facts(note) else { continue };
+            let gate = u32::from(own.gate_timer);
+            if own.gate_timer > 63 {
+                self.report(
+                    Rule::HardRestart,
+                    Some(note.row),
+                    voice,
+                    format!(
+                        "`{}` has gate timer {gate}; GoatTracker allows 0 to 63",
+                        line.instrument_of(note).0
+                    ),
+                    "set a gate timer from 0 to 63 frames",
+                );
+                continue;
+            }
+            // Playback stops if the gate timer is not below the tempo on a row this instrument plays.
+            let rows = note.row..ends[i].max(note.row + 1);
+            if let Some(row) = rows
+                .into_iter()
+                .find(|&r| u32::from(self.subtune.frames_per_row_at(r).get()) <= gate)
+            {
+                let fpr = self.subtune.frames_per_row_at(row).get();
+                self.report(
+                    Rule::HardRestart,
+                    Some(row),
+                    voice,
+                    format!(
+                        "`{}` has gate timer {gate} at {fpr} frames per row; GoatTracker stops playback when the gate timer is not below the tempo",
+                        line.instrument_of(note).0
+                    ),
+                    format!("lower the gate timer below {fpr}, or slow the tempo"),
+                );
+            }
+        }
+
+        for (i, pair) in line.notes.windows(2).enumerate() {
+            let (prev, next) = (&pair[0], &pair[1]);
+            // Only a fresh note straight after the previous one cuts it; after silence there is nothing to cut.
+            if next.attack != Attack::Fresh || prev.row + prev.length.get() != next.row {
+                continue;
+            }
+            let (Some(out), Some(incoming)) = (facts(prev), facts(next)) else {
+                continue;
+            };
+            if !incoming.gate_off {
+                // The score says new attack, but with the gate still on from the note before and no gate-off, the
+                // instrument cannot retrigger it: the packed song plays it legato.
+                self.warn(
+                    Rule::HardRestart,
+                    Some(next.row),
+                    voice,
+                    format!(
+                        "`{}` has gate-off disabled (gate-timer bit $40), so this fresh note straight after another won't retrigger",
+                        line.instrument_of(next).0
+                    ),
+                    "mark it legato, or use an instrument that turns the gate off",
+                );
+                continue;
+            }
+            // The gate has been on since the attack that started a run of legato notes.
+            let attack = line.notes[..=i]
+                .iter()
+                .rev()
+                .find(|n| n.attack == Attack::Fresh)
+                .map_or(prev.row, |n| n.row);
+            let frames = self.subtune.frames(attack, next.row);
+            let gated = frames as i64 - i64::from(out.gate_timer);
+            if gated <= 0 {
+                self.report(
+                    Rule::HardRestart,
+                    Some(next.row),
+                    voice,
+                    format!(
+                        "the gate goes off {} frames before row {}, at or before the note at row {attack} starts ({frames} frames), so it never sounds",
+                        out.gate_timer, next.row
+                    ),
+                    "lengthen the earlier note, tie the new one (legato), or use a smaller gate timer",
+                );
+            } else if gated <= 2 {
+                self.warn(
+                    Rule::HardRestart,
+                    Some(next.row),
+                    voice,
+                    format!(
+                        "the gate goes off {} frames before row {}, leaving the note at row {attack} only {gated} gated frame{}",
+                        out.gate_timer,
+                        next.row,
+                        if gated == 1 { "" } else { "s" }
+                    ),
+                    "it will probably sound clipped: lengthen it, tie the new note, or use a smaller gate timer",
+                );
+            }
         }
     }
 
@@ -533,7 +660,7 @@ impl Checker<'_> {
                     at,
                     voice,
                     format!("no facts for instrument `{}`", instrument.0),
-                    "add the preset, or say whether it uses the filter and sets a pulse width",
+                    "add the preset, or state its filter, pulse width at note start, gate timer and hard restart",
                 ),
                 Some(facts) => {
                     if let Some(rule) = &rule {

@@ -218,6 +218,39 @@ impl From<FramesPerRow> for u8 {
     }
 }
 
+impl Subtune {
+    /// The frames per row at `row`: the starting tempo, or the last tempo change at or before it.
+    pub fn frames_per_row_at(&self, row: u32) -> FramesPerRow {
+        self.tempo
+            .iter()
+            .filter(|t| t.row <= row)
+            .max_by_key(|t| t.row)
+            .map_or(self.frames_per_row, |t| t.frames_per_row)
+    }
+
+    /// The player frames from the start of row `from` to the start of row `to` (0 if `to` is not after `from`),
+    /// following tempo changes in between.
+    pub fn frames(&self, from: u32, to: u32) -> u64 {
+        let mut changes: Vec<u32> = self
+            .tempo
+            .iter()
+            .map(|t| t.row)
+            .filter(|&r| r > from && r < to)
+            .collect();
+        changes.sort_unstable();
+        changes.dedup();
+        let mut total = 0;
+        let mut at = from;
+        for next in changes.into_iter().chain([to]) {
+            if next > at {
+                total += u64::from(next - at) * u64::from(self.frames_per_row_at(at).get());
+                at = next;
+            }
+        }
+        total
+    }
+}
+
 /// A tempo change on the grid.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
