@@ -253,6 +253,7 @@ impl Ins {
     }
 }
 
+pub mod sng;
 pub mod wave;
 
 #[cfg(test)]
