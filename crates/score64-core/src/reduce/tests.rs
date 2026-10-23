@@ -1248,3 +1248,99 @@ proptest! {
         }
     }
 }
+
+fn as_model(mut d: Decision) -> Decision {
+    d.provenance = Provenance::Llm {
+        model: "any".into(),
+        prompt: ContentHash([1; 32]),
+    };
+    d
+}
+
+#[test]
+fn of_several_decisions_for_one_slot_the_strongest_wins_in_any_order() {
+    let n = name();
+    let soup = vec![note(0, 8, "C-4", 0.9), note(8, 4, "D-4", 0.9)];
+    // A person's trim to 4 beats a model's trim to 2, whatever their order.
+    for overrides in [
+        vec![
+            as_model(person("m-trim", trim_of(0, "C-4", 2))),
+            person("p-trim", trim_of(0, "C-4", 4)),
+        ],
+        vec![
+            person("p-trim", trim_of(0, "C-4", 4)),
+            as_model(person("m-trim", trim_of(0, "C-4", 2))),
+        ],
+    ] {
+        let r = monophonise_with(soup.clone(), &at(&n), &MonoRules::default(), &overrides);
+        assert_eq!(shape(&r.notes)[0], (0, 4, "C-4".into()));
+        assert_eq!(
+            r.notes[0].decision.as_ref().map(|d| d.as_str()),
+            Some("p-trim")
+        );
+        assert_eq!(unapplied(&r), [("m-trim", Unapplied::Overruled)]);
+    }
+    // Two drops of one slot over identical twins take one twin, not both.
+    let twins = vec![note(0, 4, "C-4", 0.9), note(0, 4, "C-4", 0.5)];
+    let r = monophonise_with(
+        twins,
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("p-drop", drop_of(0, 4, "C-4")),
+            as_model(person("m-drop", drop_of(0, 4, "C-4"))),
+        ],
+    );
+    assert_eq!(r.notes.len(), 1);
+    assert_eq!(unapplied(&r), [("m-drop", Unapplied::Overruled)]);
+    // A second fresh start of a note by the same rank is outranked.
+    let r = monophonise_with(
+        vec![note(0, 4, "C-4", 0.9), legato(note(4, 4, "D-4", 0.9))],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("b-fresh", retrigger_of(4, "D-4")),
+            person("a-fresh", retrigger_of(4, "D-4")),
+        ],
+    );
+    assert_eq!(
+        r.notes[1].decision.as_ref().map(|d| d.as_str()),
+        Some("a-fresh"),
+        "the lower id makes the tie fresh"
+    );
+    assert_eq!(unapplied(&r), [("b-fresh", Unapplied::Outranked)]);
+}
+
+#[test]
+fn a_stronger_fresh_start_keeps_the_note_and_another_pitch_doesnt() {
+    let n = name();
+    let soup = vec![note(0, 4, "C-4", 0.9), note(0, 4, "E-4", 0.5)];
+    let rules = MonoRules {
+        skyline: Skyline::Lowest,
+        ..MonoRules::default()
+    };
+    // A person's fresh start of C-4 keeps it against a model's drop.
+    let r = monophonise_with(
+        soup.clone(),
+        &at(&n),
+        &rules,
+        &[
+            as_model(person("m-drop", drop_of(0, 4, "C-4"))),
+            person("p-fresh", retrigger_of(0, "C-4")),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("m-drop", Unapplied::Overruled)]);
+    assert_eq!(r.notes[0].pitch.to_string(), "C-4");
+    // A person's trim of E-4 on the same row says nothing about C-4: the model's drop of C-4 applies.
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &rules,
+        &[
+            as_model(person("m-drop", drop_of(0, 4, "C-4"))),
+            person("p-trim-e", trim_of(0, "E-4", 2)),
+        ],
+    );
+    assert!(!unapplied(&r).contains(&("m-drop", Unapplied::Overruled)));
+    assert!(r.notes.iter().all(|x| x.pitch.to_string() != "C-4"));
+}
