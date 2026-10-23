@@ -810,8 +810,44 @@ fn rule_8_memory_window() {
         ..budget()
     };
     assert_eq!(pack_messages(&top, &b), Vec::<String>::new());
+    // An empty tune is one problem, not also three jump-table ones.
     let empty = PackFacts { size: 0, ..facts() };
-    assert!(pack_messages(&empty, &budget()).contains(&"the packed tune is empty".to_string()));
+    assert_eq!(
+        pack_messages(&empty, &budget()),
+        ["the packed tune is empty"]
+    );
+    // Facts from outside are never trusted to be sane: no overflow, and past $FFFF is its own problem.
+    let past = PackFacts {
+        start: 0xFF00,
+        size: 0x200,
+        jump_table: [Some(0xFF00); 3],
+        ..facts()
+    };
+    let b = PackBudget {
+        first: 0xF000,
+        last: 0xFFFF,
+        ..budget()
+    };
+    assert_eq!(
+        pack_messages(&past, &b),
+        ["the tune at $FF00 is 512 bytes, which runs past $FFFF"]
+    );
+    let huge = PackFacts {
+        start: 0xFFFF,
+        size: u32::MAX,
+        ..facts()
+    };
+    assert_eq!(pack_messages(&huge, &b).len(), 1);
+    // An inverted window.
+    let b = PackBudget {
+        first: 0x2000,
+        last: 0x1000,
+        ..budget()
+    };
+    assert_eq!(
+        pack_messages(&facts(), &b)[0],
+        "the memory window $2000–$1000 ends before it starts"
+    );
 }
 
 #[test]
@@ -841,6 +877,19 @@ fn rule_8_jump_table() {
     let p = check_pack(&f, &budget());
     assert_eq!(p.len(), 1);
     assert!(p[0].hint.contains("-D1"));
+    // An entry needs its three bytes inside the tune.
+    let tiny = PackFacts {
+        size: 4,
+        jump_table: [Some(0x1000); 3],
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&tiny, &budget()),
+        [
+            "no JMP at $1003, the play entry",
+            "no JMP at $1006, the sound-effect entry"
+        ]
+    );
     // The tune's last byte is inside; one past it is not.
     let f = PackFacts {
         jump_table: [Some(0x1BB7), Some(0x1BB8), Some(0x1000)],
@@ -868,13 +917,38 @@ fn rule_8_zero_page_and_writes_outside() {
         ]
     );
     assert!(p[0].hint.contains("-Z"));
-    // The pair wraps at the top of zero page.
+    // The 6510's port is never part of the pair: a pair at $FF (wrapping onto $00) or $00 is a budget error, and a
+    // player using $00/$01 is reported.
     let f = PackFacts {
         zero_page_used: [0xFF, 0x00].into(),
         ..facts()
     };
     let b = PackBudget {
         zero_page: 0xFF,
+        ..budget()
+    };
+    assert_eq!(
+        pack_messages(&f, &b),
+        [
+            "the configured zero page $FF isn't a pair in $02–$FF: $00/$01 are the 6510's port",
+            "the player uses zero page $00 outside the configured $FF–$00",
+        ]
+    );
+    let f = PackFacts {
+        zero_page_used: [0x00, 0x01].into(),
+        ..facts()
+    };
+    let b = PackBudget {
+        zero_page: 0x00,
+        ..budget()
+    };
+    assert_eq!(pack_messages(&f, &b).len(), 2);
+    let f = PackFacts {
+        zero_page_used: [0xFE, 0xFF].into(),
+        ..facts()
+    };
+    let b = PackBudget {
+        zero_page: 0xFE,
         ..budget()
     };
     assert_eq!(pack_messages(&f, &b), Vec::<String>::new());

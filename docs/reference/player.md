@@ -11,6 +11,28 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 | +6 | Play sound effect (only when packed with sound-effect support) | `LDA #<effect` · `LDY #>effect` · `LDX #channel` (0, 7 or 14 for voices 1–3) · `JSR start+6` |
 | +6 or +9 | Set master volume (only with volume-change support; +9 when sound effects are also enabled) | `LDA #volume (0–15)` · `JSR …` |
 
+Each entry is a `JMP abs` (`$4C lo hi`) into the player. Without sound-effect support (`-D0`) there is no entry at +6: the bytes there are the start of the player's code (`B9 76 24`, `LDA $2476,Y`, in the fixture below). Rule 8 refuses a pack whose init or play entry, or with effects configured its effect entry, isn't a `JMP abs` into the tune.
+
+## Output containers
+
+gt2reloc picks the container from the output's extension (`sid`, `prg` or `bin`, lowercase; anything else is a `.prg`). All three hold the same bytes, which load at the player page (`-W`):
+
+| Container | Layout |
+|---|---|
+| `.prg` | The load address (little-endian), then the bytes |
+| `.bin` | The bytes alone; they load at `-W`, which the file doesn't record |
+| `.sid` | A PSID v2 header of `$7C` bytes. Its load address (+8) is 0, so the load address (little-endian) comes first in the data. Init (+$0A) is the player start and play (+$0C) is start+3. The name, author and copyright fields come from the song |
+
+The size gt2reloc reports is the bytes without any header or load address, so `.prg` is that size plus 2 and `.sid` that size plus `$7C` + 2.
+
+**Evidence.** `fixtures/gt2-original/sixteen-steps.sng` packed by gt2reloc 2.73 with `-W20 -ZFB` (2026-10-23):
+- with `-D1` it reports 2,028 bytes: `.bin` is 2,028 bytes, `.prg` 2,030 and `.sid` 2,154;
+- the `.prg` starts `00 20 4C 7D 20 4C B2 20 4C 87 20`;
+- the `.sid` header starts `50 53 49 44 00 02 00 7C 00 00 20 00 20 03`, and its data starts `00 20 4C 7D 20`;
+- with `-D0` the `.prg` starts `00 20 4C 7A 20 4C 84 20 B9 76 24`.
+
+`crates/score64-adapters/tests/pack_facts.rs` checks this for every container, with and without `-D1`.
+
 ## gt2reloc options used by Score64
 
 `gt2reloc <song.sng> <out.prg|.sid|.bin> [options]`

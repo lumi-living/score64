@@ -155,7 +155,8 @@ pub struct Packed {
     pub format: Format,
     /// Where the player loads (the player page, `-W`).
     pub start: u16,
-    /// The packed size gt2reloc reports (player and data, without a file header), for the size budget.
+    /// The packed size gt2reloc reports (player and data, without a file header), cross-checked by
+    /// [`Packed::payload`], for rule 8.
     pub size: u32,
     /// The version from gt2reloc's banner.
     pub version: String,

@@ -940,11 +940,13 @@ fn fold_hint(p: Pitch, range: PitchRange) -> String {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PackBudget {
-    /// First address of the memory window the target gives the tune.
+    /// First address of the memory window the target gives the tune. gt2reloc places the player on a page boundary
+    /// (`-W`), so a window that doesn't start on one can only hold a tune packed further up.
     pub first: u16,
-    /// Last address of that window (inclusive).
+    /// Last address of that window (inclusive); at least `first`.
     pub last: u16,
-    /// The zero-page pair the player may use (gt2reloc `-Z`): this address and the next.
+    /// The zero-page pair the player may use (gt2reloc `-Z`): this address and the next, in `$02`–`$FE` so both are
+    /// clear of the 6510's port at `$00`/`$01`.
     pub zero_page: u8,
     /// Whether the target calls the sound-effect entry, so the jump table needs it (gt2reloc `-D1`).
     pub sound_effects: bool,
@@ -966,7 +968,9 @@ pub struct PackFacts {
     pub jump_table: [Option<u16>; 3],
     /// Every zero-page address the player read or wrote, over init, play and effect calls.
     pub zero_page_used: std::collections::BTreeSet<u8>,
-    /// Every page the player wrote outside the window, other than zero page, the stack page and the SID.
+    /// The high byte of every address the player wrote outside the window, other than zero page, the stack page and
+    /// the SID (`$D400`–`$D7FF`). A window that doesn't end on a page boundary shares its last page with addresses
+    /// outside it; a write to those reports that page.
     pub pages_written_outside: std::collections::BTreeSet<u8>,
     /// The longest play call measured, in CPU cycles, if it was measured.
     pub max_play_cycles: Option<u32>,
@@ -994,25 +998,56 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
         })
     };
     let (first, last) = (u32::from(budget.first), u32::from(budget.last));
-    let start = u32::from(facts.start);
-    // The tune occupies start..end (exclusive).
-    let end = start + facts.size;
-    if facts.size == 0 {
+    if first > last {
+        problem(
+            format!(
+                "the memory window {}–{} ends before it starts",
+                addr(first),
+                addr(last)
+            ),
+            "give the window's first address, then its last",
+        );
+    }
+    if !(0x02..=0xFE).contains(&budget.zero_page) {
+        problem(
+            format!(
+                "the configured zero page ${:02X} isn't a pair in $02–$FF: $00/$01 are the 6510's port",
+                budget.zero_page
+            ),
+            "configure a pair starting in $02–$FE",
+        );
+    }
+    // The tune occupies start..end (exclusive); u64, since the facts may come from anywhere.
+    let start = u64::from(facts.start);
+    let end = start + u64::from(facts.size);
+    let empty = facts.size == 0;
+    // Where the tune itself is wrong, its jump table says nothing more.
+    let placed = !empty && end <= 0x10000;
+    if empty {
         problem(
             "the packed tune is empty".into(),
             "check that the packer was given a song",
         );
-    } else if start < first || end - 1 > last {
+    } else if end > 0x10000 {
+        problem(
+            format!(
+                "the tune at {} is {} bytes, which runs past $FFFF",
+                addr(start as u32),
+                facts.size
+            ),
+            "shorten patterns, share instruments or pack lower in memory",
+        );
+    } else if start < u64::from(first) || end - 1 > u64::from(last) {
         problem(
             format!(
                 "the tune takes {}–{} ({} bytes), outside the window {}–{}",
-                addr(start),
-                addr(end - 1),
+                addr(start as u32),
+                addr((end - 1) as u32),
                 facts.size,
                 addr(first),
                 addr(last)
             ),
-            if end - start > last.saturating_sub(first) + 1 {
+            if end - start > u64::from(last.saturating_sub(first)) + 1 {
                 "shorten patterns, share instruments or give the tune a larger window"
             } else {
                 "pack with the player page at the window's start"
@@ -1024,20 +1059,23 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
     } else {
         &[(0, "init"), (1, "play")]
     };
-    for &(i, name) in entries {
-        let at = addr(start + 3 * i as u32);
-        match facts.jump_table[i] {
+    for &(i, name) in entries.iter().filter(|_| placed) {
+        let at = start + 3 * i as u64;
+        // An entry needs its three bytes inside the tune.
+        let fits = at + 3 <= end;
+        match facts.jump_table[i].filter(|_| fits) {
             None => problem(
-                format!("no JMP at {at}, the {name} entry"),
+                format!("no JMP at {}, the {name} entry", addr(at as u32)),
                 if i == 2 {
                     "pack with sound-effect support (gt2reloc -D1)"
                 } else {
                     "check the packer's start address and output format"
                 },
             ),
-            Some(to) if !(start..end).contains(&u32::from(to)) => problem(
+            Some(to) if !(start..end).contains(&u64::from(to)) => problem(
                 format!(
-                    "the {name} entry at {at} jumps to {}, outside the tune",
+                    "the {name} entry at {} jumps to {}, outside the tune",
+                    addr(at as u32),
                     addr(u32::from(to))
                 ),
                 "check the packer's start address",
@@ -1045,11 +1083,13 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
             Some(_) => {}
         }
     }
+    // $00/$01 are never part of the pair, even when the configured one wraps onto them.
     let pair = [budget.zero_page, budget.zero_page.wrapping_add(1)];
+    let pair = pair.map(|z| (z >= 2).then_some(z));
     let extra: Vec<String> = facts
         .zero_page_used
         .iter()
-        .filter(|z| !pair.contains(z))
+        .filter(|&&z| !pair.contains(&Some(z)))
         .map(|z| format!("${z:02X}"))
         .collect();
     if !extra.is_empty() {
@@ -1057,8 +1097,8 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
             format!(
                 "the player uses zero page {} outside the configured ${:02X}–${:02X}",
                 extra.join(", "),
-                pair[0],
-                pair[1]
+                budget.zero_page,
+                budget.zero_page.wrapping_add(1)
             ),
             "pack with gt2reloc -Z set to the configured pair",
         );

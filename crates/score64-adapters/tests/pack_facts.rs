@@ -2,10 +2,12 @@
 //! the size gt2reloc reported, with a jump table into the tune (#51). Runs when gt2reloc is available; otherwise it
 //! skips visibly (CI has no gt2reloc).
 
+use std::collections::BTreeSet;
 use std::io::Write as _;
 use std::path::PathBuf;
 
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
+use score64_core::{PackBudget, PackFacts, check_pack};
 
 #[test]
 fn every_format_holds_the_same_player() {
@@ -47,6 +49,33 @@ fn every_format_holds_the_same_player() {
         assert!(inside(jumps[0]) && inside(jumps[1]), "{jumps:04X?}");
         // Without -D1 the third entry is not a jump into the tune.
         assert_eq!(inside(jumps[2]), effects, "{jumps:04X?}");
+        // The measured facts pass rule 8 for a window at $2000, with the effect entry required only when packed for
+        // it. (The zero-page and outside-write sets come from the helper's trace; empty here.)
+        let facts = PackFacts {
+            start: first.load,
+            size: *size,
+            jump_table: jumps,
+            zero_page_used: BTreeSet::new(),
+            pages_written_outside: BTreeSet::new(),
+            max_play_cycles: None,
+        };
+        let budget = |sound_effects| PackBudget {
+            first: 0x2000,
+            last: 0x2FFF,
+            zero_page: 0xFB,
+            sound_effects,
+            max_play_cycles: None,
+        };
+        assert_eq!(check_pack(&facts, &budget(effects)), []);
+        if !effects {
+            let p = check_pack(&facts, &budget(true));
+            assert_eq!(p.len(), 1, "{p:?}");
+            assert!(
+                p[0].message.contains("sound-effect entry"),
+                "{}",
+                p[0].message
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
