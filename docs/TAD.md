@@ -243,6 +243,12 @@ They're unique within the subtune when each voice is monophonised once, with all
   - A fresh note plays with its instrument.
   - A legato note ties with `3` `00` and no instrument, so it isn't retriggered (#137).
   - A note followed by silence ends with a key-off. One followed directly by another note leaves the gate to that note's hard restart.
+  - **Silence after the release** (`export_with` and `Options::silence_after_release`, #186; opt-in per preset, off by default). After a key-off the oscillator keeps running and leaks a ghost of the note. For a preset that asks, the export writes `7 00` (no waveform) on the first row after the release has fully decayed. The decay is counted from the key-off row with the tempo map and the release nibble's full-level time; for a note running to the end, from the loop row after the jump back. It writes nothing:
+    - when the next note, or the next note's early fetch (the gate timer), comes first;
+    - when the voice's command slot on that row is taken (it goes in last, so it never moves another command);
+    - when the instrument's wavetable loops, or an arpeggio is still running at the key-off, since either would overwrite the waveform.
+
+    `$00` rather than `$08` comes from measuring both chips (`reference/sid.md` §After the release). The preset file gains the setting with #49.
   - A note that runs to the end, when the loop row is silent, gets a key-off on the loop row, so it stops after the jump back.
 - **Song-wide commands.** These go on the first voice with a free command slot, after the voices' own commands; a row with none is an error:
   - the tempo (`Fxx`, all voices) on row 0, at each tempo change, and on the loop row when the tempo there differs from the tempo at the end;

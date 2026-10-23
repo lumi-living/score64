@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
 use score64_core::Song;
 use score64_formats::gt2::Ins;
-use score64_formats::gt2::export::{Header, Library, export};
+use score64_formats::gt2::export::{Header, Library, Options, export_with};
 
 mod fixture;
 mod measure;
@@ -53,6 +53,10 @@ pub struct Args {
     /// The version gt2reloc's banner must name.
     #[arg(long, default_value = "2.73")]
     gt2reloc_version: String,
+    /// Export with `silence_after_release` on for every preset (#186), add `+silence` to each case's name and write
+    /// `LISTEN-silence.md`, so a second run into the same folder sits beside the first.
+    #[arg(long)]
+    silence_after_release: bool,
 }
 
 /// The repository root (xtask sits in `<root>/xtask`).
@@ -204,14 +208,25 @@ pub fn run(args: Args) -> Result<(), String> {
 
     let mut done = Vec::new();
     for (name, song, adaptive, library, notes) in cases {
+        let (name, options) = if args.silence_after_release {
+            let all = library.keys().cloned().collect();
+            (
+                format!("{name}+silence"),
+                Options {
+                    silence_after_release: all,
+                },
+            )
+        } else {
+            (name, Options::default())
+        };
         eprintln!("{name}: exporting, packing, rendering");
         let header = Header {
             name: name.clone(),
             author: "Score64 export".into(),
             copyright: "listening test".into(),
         };
-        let exported =
-            export(&song, &library, &adaptive, &header).map_err(|e| format!("{name}: {e}"))?;
+        let exported = export_with(&song, &library, &adaptive, &header, &options)
+            .map_err(|e| format!("{name}: {e}"))?;
         let sng = out.join(format!("{name}.sng"));
         std::fs::write(
             &sng,
@@ -337,8 +352,14 @@ pub fn run(args: Args) -> Result<(), String> {
         args.pr,
         &command,
     );
-    std::fs::write(out.join("LISTEN.md"), md).map_err(|e| e.to_string())?;
-    eprintln!("wrote {}", out.join("LISTEN.md").display());
+    // A `+silence` run writes its own report, so it can sit beside a plain run's.
+    let report = if args.silence_after_release {
+        "LISTEN-silence.md"
+    } else {
+        "LISTEN.md"
+    };
+    std::fs::write(out.join(report), md).map_err(|e| e.to_string())?;
+    eprintln!("wrote {}", out.join(report).display());
     Ok(())
 }
 

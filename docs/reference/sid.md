@@ -35,6 +35,25 @@ Attack: 2, 8, 16, 24, 38, 56, 68, 80, 100, 250, 500, 800 ms, 1, 3, 5, 8 s (value
 Decay and release: 6, 24, 48, 72, 114, 168, 204, 240, 300, 750 ms, 1.5, 2.4, 3, 9, 15, 24 s (values 0–15; three times the attack time).
 Sustain is a level (0–15), not a time.
 
+## After the release
+
+After the gate goes off and the release reaches zero, the voice isn't silent: the oscillator keeps running and a little of the waveform leaks to the output, a faint ghost of the last note. Selecting no waveform silences it. GoatTracker's command `7XY` sets the waveform register; it has no effect while a wavetable program is still writing the waveform (GoatTracker 2 readme, "Command 7XY"). Score64's opt-in `silence_after_release` writes `7 00` once the release has fully decayed (#186).
+
+Measured in the emulator helper (reSIDfp, as sidplayfp sets it up). The note is gate-off with release 0, after which the waveform register is set as shown. Levels are the RMS of 0.5 s windows with the DC taken out, in dBFS. "Settled" is from about 1 s after the write.
+
+| Chip | Waveform | Left alone (the ghost) | `$00` settled | `$08` (test bit) settled |
+|---|---|---|---|---|
+| 6581 | pulse | −60 | silent | silent |
+| 6581 | saw, triangle, noise | −65 | silent | silent |
+| 8580 | pulse | −68 | −98 | −91 |
+| 8580 | saw | −73 | −96 | −93 |
+| 8580 | triangle | −72 | silent | −90 |
+| 8580 | noise | −74 | silent | −95 |
+
+"Silent" means the output is exactly constant. On the 8580 both values fade through a small bump in the first second (about −75 to −79 dBFS) as the waveform output floats down. `$00` settles lower on every waveform, so Score64 uses it.
+
+`crates/score64-adapters/tests/silence_after_release.rs` checks this end to end, through an exported song packed by gt2reloc 2.73. The gap after a key-off keeps the ghost without the setting (−60 to −73 dBFS). With it, the gap is silent on both chips for pulse and saw, and −105 dBFS for triangle on the 8580, measured over its last 3 s.
+
 ## Hard restart
 
 Envelope state carries over between notes and can make a new note start late or silent (the "ADSR bug"). Players avoid it with a **hard restart**: gate off with fast release a couple of frames before the next note, optionally set the test bit for one frame, then start the note. GoatTracker's packed player does this per instrument; gt2reloc's `-Axx` sets the hard-restart ADSR value (default `0F00`). Score64 instrument presets must state their hard-restart behaviour.

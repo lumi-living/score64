@@ -895,3 +895,125 @@ fn an_arpeggio_running_to_the_end_cant_end_on_a_loop_row_tie() {
     s.voices[0].arps = vec![arp(24, 4, &[0, 4])];
     assert!(export(&song(vec![s]), &library(), &[], &header()).is_ok());
 }
+
+/// `lead` with release nibble `release` and gate timer `gate`, silenced after release.
+fn silencing(release: u8, gate: u8) -> (Library, Options) {
+    let mut lib = library();
+    let lead = lib.get_mut(&preset("lead")).unwrap();
+    lead.instrument.sr = 0xA0 | release;
+    lead.instrument.gate_timer = gate;
+    let options = Options {
+        silence_after_release: [preset("lead")].into(),
+    };
+    (lib, options)
+}
+
+/// The rows of voice 1 where a `7XY` was written, with XY.
+fn silences(song: &Song, lib: &Library, options: &Options) -> Vec<(usize, u8)> {
+    let exported = export_with(song, lib, &[], &header(), options).unwrap();
+    rows_of(&exported.sng, 0, 0)
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.command == 0x7)
+        .map(|(i, r)| (i, r.data))
+        .collect()
+}
+
+/// One lead note at row 0, 4 long (key-off on row 4), then, if given, one from `next` to the end (no key-off of its
+/// own: the loop goes back to row 0's note), in a 32-row subtune at 5 frames a row.
+fn gap_song(next: Option<u32>, tempo: Vec<TempoChange>) -> Song {
+    let mut notes = vec![note(0, 4, "C-4", Attack::Fresh)];
+    if let Some(r) = next {
+        notes.push(note(r, 32 - r, "E-4", Attack::Fresh));
+    }
+    let mut sub = subtune("main", vec![line(1, "lead", notes)]);
+    sub.frames_per_row = FramesPerRow::new(5).unwrap();
+    sub.tempo = tempo;
+    song(vec![sub])
+}
+
+#[test]
+fn the_waveform_goes_off_on_the_first_row_after_the_release() {
+    // Release 0 (6 ms, one frame): row 5. Release 8 (300 ms, 16 frames at 5 a row): row 8. Release 9 (750 ms, 38
+    // frames) with 3 frames a row from row 8: 20 frames to row 8, then 18 more at 3 a row, row 14.
+    for (release, tempo, want) in [
+        (0, vec![], 5),
+        (8, vec![], 8),
+        (
+            9,
+            vec![TempoChange {
+                row: 8,
+                frames_per_row: FramesPerRow::new(3).unwrap(),
+            }],
+            14,
+        ),
+    ] {
+        let (lib, options) = silencing(release, 2);
+        assert_eq!(
+            silences(&gap_song(None, tempo), &lib, &options),
+            [(want, 0x00)],
+            "release ${release:X}"
+        );
+    }
+}
+
+#[test]
+fn nothing_is_written_when_something_comes_first() {
+    // Release 9 at 5 frames a row reaches row 12.
+    let (lib, options) = silencing(9, 2);
+    // The next note comes first.
+    assert_eq!(silences(&gap_song(Some(12), vec![]), &lib, &options), []);
+    assert_eq!(
+        silences(&gap_song(Some(13), vec![]), &lib, &options),
+        [(12, 0x00)]
+    );
+    // The next note's gate-timer lead (5 frames, one whole row here) reaches back to row 12.
+    let (lib, options) = silencing(9, 5);
+    assert_eq!(silences(&gap_song(Some(13), vec![]), &lib, &options), []);
+    // The voice's command slot on that row is taken: a tempo change there takes voice 1's first.
+    let (lib, options) = silencing(0, 2);
+    let tempo = vec![TempoChange {
+        row: 5,
+        frames_per_row: FramesPerRow::new(6).unwrap(),
+    }];
+    assert_eq!(silences(&gap_song(None, tempo), &lib, &options), []);
+    // A wavetable that loops would overwrite the waveform: nothing written.
+    let (mut lib, options) = silencing(0, 2);
+    lib.get_mut(&preset("lead")).unwrap().wave.rows =
+        vec![(0x41, 0x00), (0x40, 0x00), (WAVE_JUMP, 0x01)];
+    assert_eq!(silences(&gap_song(None, vec![]), &lib, &options), []);
+    // So would an arpeggio still running at the key-off; one that ended while its note sounded has handed back to
+    // the instrument's program.
+    let (lib, options) = silencing(0, 2);
+    let with_arp = |len: u32| {
+        let mut s = gap_song(None, vec![]);
+        s.subtunes[0].voices[0].notes[0].length = NonZeroU32::new(6).unwrap();
+        s.subtunes[0].voices[0].arps = vec![arp(0, len, &[0, 4, 7])];
+        s
+    };
+    assert_eq!(silences(&with_arp(6), &lib, &options), []);
+    assert_eq!(silences(&with_arp(3), &lib, &options), [(7, 0x00)]);
+}
+
+#[test]
+fn it_is_off_unless_the_preset_asks_and_follows_the_loop() {
+    let (lib, options) = silencing(0, 2);
+    let s = gap_song(None, vec![]);
+    // Off by default: the same song as `export` writes.
+    assert_eq!(silences(&s, &lib, &Options::default()), []);
+    assert_eq!(
+        export(&s, &lib, &[], &header()).unwrap(),
+        export_with(&s, &lib, &[], &header(), &Options::default()).unwrap()
+    );
+    // Another preset's notes aren't touched.
+    let other = Options {
+        silence_after_release: [preset("bass")].into(),
+    };
+    assert_eq!(silences(&s, &lib, &other), []);
+    // A note running to the end stops on the loop row after the jump back; its silence follows from there.
+    let mut looped = gap_song(None, vec![]);
+    let sub = &mut looped.subtunes[0];
+    sub.loop_row = 16;
+    sub.voices[0].notes.push(note(24, 8, "G-4", Attack::Fresh));
+    assert_eq!(silences(&looped, &lib, &options), [(5, 0x00), (17, 0x00)]);
+}

@@ -49,6 +49,7 @@ A PR that changes what the packed player plays (labelled `needs-vice-check`) get
 ```
 cargo xtask listen --pr <n> [case ...]
 cargo xtask listen --pr <n> --score <song.toml|json> --instruments <folder of <preset id>.ins>
+cargo xtask listen --pr <n> --silence-after-release [case ...]   # the same cases with #186's setting on
 ```
 
 It writes to `scratch/<n>-listen/`, which git ignores. For each case it:

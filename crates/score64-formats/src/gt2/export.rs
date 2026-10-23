@@ -253,6 +253,31 @@ fn merge_speed(into: &mut Table, from: &Table, pointer: u8) -> Result<u8, Export
     })
 }
 
+/// Export settings beyond the score itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Options {
+    /// Presets whose voice is switched off once a note's release has decayed (#186): after a key-off the oscillator
+    /// keeps running, and a little of it leaks out at the note's pitch. The preset setting `silence_after_release`
+    /// fills this once presets carry settings (#49); off for every preset by default.
+    pub silence_after_release: std::collections::BTreeSet<PresetId>,
+}
+
+/// Command `7XY`: set the waveform register to XY, unless a running wavetable overwrites it.
+const SET_WAVEFORM: u8 = 0x7;
+
+/// The waveform `silence_after_release` sets: none, test bit clear. Measured in the emulator helper (reSIDfp) after a
+/// key-off: exact silence on the 6581, and on the 8580 lower than with the test bit (`$08`) on every waveform once the
+/// floating output has faded (`docs/reference/sid.md` §After the release).
+const SILENT_WAVEFORM: u8 = 0x00;
+
+/// SID release (and decay) times from full level to zero, in milliseconds, by the SR register's low nibble.
+const RELEASE_MS: [u32; 16] = [
+    6, 24, 48, 72, 114, 168, 204, 240, 300, 750, 1500, 2400, 3000, 9000, 15000, 24000,
+];
+
+/// PAL frames per second, times 1000: 985,248 Hz over 19,656 cycles a frame.
+const PAL_MILLIHERTZ: u64 = 50_125;
+
 /// Write `song` as a GoatTracker 2 song, with instruments from `library` and timing marks for `adaptive`'s layers.
 /// The song should pass the validator first; this checks only what the format itself needs.
 pub fn export(
@@ -260,6 +285,17 @@ pub fn export(
     library: &Library,
     adaptive: &[AdaptiveSet],
     header: &Header,
+) -> Result<Exported, ExportError> {
+    export_with(song, library, adaptive, header, &Options::default())
+}
+
+/// [`export`] with `options`.
+pub fn export_with(
+    song: &Song,
+    library: &Library,
+    adaptive: &[AdaptiveSet],
+    header: &Header,
+    options: &Options,
 ) -> Result<Exported, ExportError> {
     let mut sng = Sng::empty();
     sng.name = sng::header_field(&header.name);
@@ -277,7 +313,7 @@ pub fn export(
     };
     for subtune in &song.subtunes {
         shape(subtune)?;
-        let lists = subtune_rows(&mut b, subtune, adaptive)?;
+        let lists = subtune_rows(&mut b, subtune, adaptive, options)?;
         let cuts = cuts(subtune);
         let mut voices: [Orderlist; 3] = Default::default();
         for (rows, list) in lists.into_iter().zip(&mut voices) {
@@ -406,6 +442,7 @@ fn subtune_rows(
     b: &mut Builder<'_>,
     subtune: &Subtune,
     adaptive: &[AdaptiveSet],
+    options: &Options,
 ) -> Result<[Rows; 3], ExportError> {
     let length = subtune.length.get() as usize;
     let rest = Row {
@@ -477,7 +514,117 @@ fn subtune_rows(
             }
         }
     }
+    // Last, so they only ever take a slot nothing else wanted.
+    for line in &subtune.voices {
+        let v = usize::from(line.voice.get()) - 1;
+        silence_after_release(b, subtune, line, &mut voices[v], options);
+    }
     Ok(voices)
+}
+
+/// For notes whose preset has `silence_after_release`, a `7 00` on the first row after the release has fully decayed,
+/// counted from the key-off row with the tempo map and the release nibble's full-level time (the most it can take).
+/// Skipped, writing nothing, when the next note (or its gate-timer lead) comes first, when the voice's command slot on
+/// that row is taken, when the instrument's wavetable keeps running (it would overwrite the waveform), or when an
+/// arpeggio is still running at the key-off.
+fn silence_after_release(
+    b: &Builder<'_>,
+    subtune: &Subtune,
+    line: &VoiceLine,
+    rows: &mut Rows,
+    options: &Options,
+) {
+    if options.silence_after_release.is_empty() {
+        return;
+    }
+    let length = subtune.length.get();
+    let mut notes: Vec<_> = line.notes.iter().collect();
+    notes.sort_by_key(|n| n.row);
+    // Each note's preset: its own, or its line's; a tie keeps the one it ties to.
+    let mut presets: Vec<&PresetId> = Vec::with_capacity(notes.len());
+    for n in &notes {
+        let p = match n.attack {
+            Attack::Fresh => n.instrument.as_ref().unwrap_or(&line.instrument),
+            Attack::Legato => presets.last().copied().unwrap_or(&line.instrument),
+        };
+        presets.push(p);
+    }
+    let instrument = |p: &PresetId| {
+        b.numbers
+            .get(p)
+            .map(|&n| &b.sng.instruments[usize::from(n) - 1])
+    };
+    for (k, n) in notes.iter().enumerate() {
+        if !options.silence_after_release.contains(presets[k]) {
+            continue;
+        }
+        let end = n.row + n.length.get();
+        // The key-off the export writes: where the note ends with no note right after, or on the loop row for a note
+        // running to the end.
+        let (key_off, next) = if end < length {
+            if notes.get(k + 1).is_some_and(|m| m.row == end) {
+                continue;
+            }
+            (end, notes.get(k + 1).map(|m| (m.row, presets[k + 1])))
+        } else if rows[subtune.loop_row as usize].note == KEY_OFF {
+            let after = notes
+                .iter()
+                .zip(&presets)
+                .find(|(m, _)| m.row > subtune.loop_row)
+                .map(|(m, p)| (m.row, *p));
+            (subtune.loop_row, after)
+        } else {
+            continue;
+        };
+        let Some(ins) = instrument(presets[k]) else {
+            continue;
+        };
+        if !wavetable_stops(&b.sng.wave, ins.wave) {
+            continue;
+        }
+        let release_ms = u64::from(RELEASE_MS[usize::from(ins.sr & 0x0F)]);
+        let need = (release_ms * PAL_MILLIHERTZ).div_ceil(1_000_000);
+        let Some(r) = (key_off + 1..length).find(|&r| subtune.frames(key_off, r) >= need) else {
+            continue;
+        };
+        if let Some((m, _)) = next {
+            // The next note is fetched this many frames early, timed by the instrument playing before it: this one
+            // (`docs/reference/sid.md` §Hard restart).
+            let lead = u64::from(ins.gate_timer & 0x3F);
+            if r >= m || subtune.frames(key_off, r) + lead >= subtune.frames(key_off, m) {
+                continue;
+            }
+        }
+        // An arpeggio still running at the key-off keeps its program going (the export only points the voice back
+        // at the instrument's program where a note sounds on), and that would overwrite the waveform.
+        let arp_in_gap = line.arps.iter().any(|a| {
+            let to = a.row + a.length.get();
+            a.row < r && to > n.row && to >= key_off
+        });
+        let row = &mut rows[r as usize];
+        if arp_in_gap || row.command != 0 || row.note != REST {
+            continue;
+        }
+        row.command = SET_WAVEFORM;
+        row.data = SILENT_WAVEFORM;
+    }
+}
+
+/// Whether the wavetable program from row `start` (1-based; 0 for none) ends by stopping rather than looping: a
+/// running program writes the waveform every step and would undo `7XY`.
+fn wavetable_stops(table: &crate::gt2::Table, start: u8) -> bool {
+    if start == 0 {
+        return true;
+    }
+    let mut at = usize::from(start) - 1;
+    for _ in 0..table.rows.len() {
+        match table.rows.get(at) {
+            Some(&(WAVE_JUMP, 0)) => return true,
+            Some(&(WAVE_JUMP, _)) | None => return false,
+            Some(_) => at += 1,
+        }
+    }
+    false
 }
 
 /// Put one voice line's notes and arpeggios into its rows.
