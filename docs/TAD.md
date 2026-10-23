@@ -146,7 +146,7 @@ A song may hold other subtunes before or after a set, such as a title tune.
 - A layer's marks that aren't switch points get no `DXY`, so the byte changes only where the set allows a switch.
 - If the loop goes back to a mark with the same value as the last one, the last takes `$12`, so the jump back changes the byte too.
 - A loop with fewer than two marks can't change the byte on every pass, and `loop_changes` says so.
-- The `.sng` writer (#47) writes these as `DXY` commands.
+- The `.sng` export (`score64_formats::gt2::export`, #47) writes these as `DXY` commands. A packed song needs `-H1` for them to reach start+`$3F`.
 
 *Unverified until #47 checks them in x64sc:*
 - what start+`$3F` does across a loop jump and across init;
@@ -207,7 +207,7 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 - **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
   - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
   - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
-  - **GoatTracker encoding:** `score64_formats::gt2::wave::arpeggio` writes an arp event's intervals as a looping wavetable program, reusing identical ones. The `.sng` writer (#47) points the note's row at it with `8XY`.
+  - **GoatTracker encoding:** `score64_formats::gt2::wave::arpeggio` writes an arp event's intervals as a looping wavetable program, reusing identical ones. The `.sng` export (#47) points the voice at it with `8XY` on the event's row, and back at the instrument's own program where the event ends while the note sounds on.
 
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
@@ -230,6 +230,22 @@ They're unique within the subtune when each voice is monophonised once, with all
 - **Notes that still don't fit** stay where they are, and rule 6 warns about them.
 - **Full-range roles never move.** Notes whose role may use the whole range (drums and texture, by default) are left alone and don't count. That's a property of the ranges, so narrowing the drums' range folds drums too, just as rule 6 then checks them.
 - **Decisions.** Each bar with a non-zero shift is one `Octave` decision, `octave-v<voice>-b<bar>`. Its confidence is the share of the bar's folded notes in range after the shift. The input can come in any order.
+
+### 3.2.1 Writing a GoatTracker song
+
+`score64_formats::gt2::export(song, library, adaptive, header)` turns a validated score into an `Sng` (#47). The library maps preset ids to GoatTracker instruments with their own tables, in `.ins` form; the presets (#49) will fill it.
+
+- **Patterns.** Each voice's rows are cut at every bar start and at the loop row, into pieces of at most 128 rows. So all three orderlists stay in step, and the restart position is the pattern that starts at the loop row. Identical patterns are shared across voices and subtunes, up to GoatTracker's 208.
+- **Notes.**
+  - A fresh note plays with its instrument.
+  - A legato note ties with `3` `00` and no instrument, so it isn't retriggered (#137).
+  - A note followed by silence ends with a key-off. One followed directly by another note leaves the gate to that note's hard restart.
+- **Song-wide commands.** These go on the first voice with a free command slot; a row with none is an error:
+  - the tempo (`Fxx`, all voices) on row 0 and at each tempo change;
+  - each timing mark of an adaptive layer (`DXY`, values from `AdaptiveSet::timing_marks`).
+- **Arpeggios** use `8XY` and §3.2's wavetable programs. A note plus an interval must stay at or below B-7, and the instrument's first wavetable row must give a gated waveform.
+- **Instruments** are numbered by first use, with their tables moved into the song's and pointers and jumps relocated.
+- **Evidence.** `crates/score64-adapters/tests/sng_export.rs` exports a score, packs it with the real `gt2reloc` and plays it in the emulator helper. It checks the notes' frequency ratios, the tie holding the gate, the key-off, and the arpeggio stepping each frame. (In that render, row 0 starts at frame 7 at 6 frames a row, and the gate timer closes the gate 2 frames before a key-off's row.) It runs where `gt2reloc` is installed, which CI isn't. Listening on 6581 and 8580, and VICE, are still to do.
 
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
@@ -285,7 +301,7 @@ A version is an immutable run, identified by a hash of intent + input hashes + t
 ```
 crates/
   score64-core       pure model, profiles, reduction, validator
-  score64-formats    .sng/.ins/sound-effect bytes, MIDI, WAV
+  score64-formats    .sng/.ins/sound-effect bytes, MIDI, WAV; the score as a GoatTracker song (depends on core)
   score64-project    track files, decisions, cache, index, audio.lock
   score64-analysis   features, onsets, fidelity metrics, effect feature curves
   score64-adapters   transcribers, beat tracker, deciders, gt2reloc, VICE, C64 Ultimate, sidecar, helper client
