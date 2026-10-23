@@ -151,11 +151,7 @@ A song may hold other subtunes before or after a set, such as a title tune.
 - A loop with fewer than two marks can't change the byte on every pass, and `loop_changes` says so.
 - The `.sng` export (`score64_formats::gt2::export`, #47) writes these as `DXY` commands. A packed song needs `-H1` for them to reach start+`$3F`.
 
-*Unverified until #47 checks them in x64sc:*
-- what start+`$3F` does across a loop jump and across init;
-- whether a layer's row-0 mark registers right after the game switches to it.
-
-Every layer starts at `$10`, so a game should treat its own init call as the switch rather than wait for a change.
+**What the game sees** (#52, `crates/score64-adapters/tests/timing_marks.rs`): a two-layer set exported, packed with `-H1` and traced in the emulator helper with start+`$3F` watched. The byte changes on exactly the switch-point frames the tempo map gives, including each first switch point after the loop back, and on no other frame. Init doesn't reset the byte, so a layer the game switches to keeps the old value until its row-0 mark on the eighth play call after init (`reference/player.md` §Timing marks). Every layer's row 0 is `$10`, which may equal the old value, so a game should treat its own init call as the switch rather than wait for a change. VICE confirmation belongs to the harness (§6).
 
 An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
