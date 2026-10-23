@@ -30,7 +30,7 @@ pub enum Rule {
     /// short notes and no lead or bass on expendable voices (warnings).
     FilterAndExpendable,
     /// 5: declared adaptive sets: layers present, in order at consecutive positions, a timing mark at every switch
-    /// point the set declares.
+    /// point the set declares (and a warning for marks elsewhere), and a layer shared by sets only if they switch alike.
     TimingMarks,
     /// 6: each note inside its role's pitch range.
     PitchRange,
@@ -267,9 +267,11 @@ impl Default for Context {
 /// Every problem in `song`, ordered by subtune, bar, voice and rule. Empty means the song passes rules 1–6 and 9.
 pub fn validate(song: &Song, ctx: &Context) -> Vec<Problem> {
     let mut out = Vec::new();
+    let mut off_switch = std::collections::BTreeSet::new();
     for set in &ctx.adaptive {
-        adaptive(&mut out, song, set);
+        adaptive(&mut out, song, set, &ctx.adaptive, &mut off_switch);
     }
+    shared_layers(&mut out, song, &ctx.adaptive);
     for subtune in &song.subtunes {
         let name = song.profile_of(subtune);
         let profile = ctx.profiles.get(name);
@@ -746,8 +748,29 @@ impl Checker<'_> {
 }
 
 /// Rule 5: one declared adaptive set.
-fn adaptive(out: &mut Vec<Problem>, song: &Song, set: &AdaptiveSet) {
+///
+/// A mark off this set's switch points is a warning only if no other set with that layer switches there (that case is
+/// the shared-layer error instead), and only once however many sets share the layer: `seen` holds those reported.
+fn adaptive(
+    out: &mut Vec<Problem>,
+    song: &Song,
+    set: &AdaptiveSet,
+    sets: &[AdaptiveSet],
+    seen: &mut std::collections::BTreeSet<(SubtuneName, u32)>,
+) {
     for problem in set.check(song) {
+        if let LayerProblem::OffSwitch { layer, row } = &problem {
+            let switches_elsewhere = sets.iter().any(|other| {
+                other.layers().contains(layer)
+                    && song
+                        .subtune(layer)
+                        .is_some_and(|(_, s)| other.switch_rows(s).contains(row))
+            });
+            if switches_elsewhere || !seen.insert((layer.clone(), *row)) {
+                continue;
+            }
+        }
+        let mut severity = Severity::Error;
         let (subtune, row, message, hint) = match problem {
             LayerProblem::Missing { layer } => (
                 None,
@@ -782,6 +805,19 @@ fn adaptive(out: &mut Vec<Problem>, song: &Song, set: &AdaptiveSet) {
                 ),
                 "add a mark there, so the game knows it may switch layers",
             ),
+            LayerProblem::OffSwitch { layer, row } => {
+                severity = Severity::Warning;
+                (
+                    Some(layer.clone()),
+                    Some(row),
+                    format!(
+                        "layer `{}` has a timing mark at row {row}, where adaptive set `{}` doesn't switch",
+                        layer.as_str(),
+                        set.name()
+                    ),
+                    "remove the mark, or add the row to the set's switch points: only switch points reach the player",
+                )
+            }
             LayerProblem::PastEnd { layer, row } => (
                 Some(layer.clone()),
                 None,
@@ -801,13 +837,49 @@ fn adaptive(out: &mut Vec<Problem>, song: &Song, set: &AdaptiveSet) {
         };
         out.push(Problem {
             rule: Rule::TimingMarks,
-            severity: Severity::Error,
+            severity,
             subtune,
             bar,
             row,
             voice: None,
             message,
             hint: hint.into(),
+        });
+    }
+}
+
+/// Rule 5 across sets: a subtune that is a layer of sets with different switch points would need more than one set
+/// of timing-mark values. Sets that switch alike may share a layer. One error per such layer, naming every set that has
+/// it.
+fn shared_layers(out: &mut Vec<Problem>, song: &Song, sets: &[AdaptiveSet]) {
+    let mut layers: Vec<&SubtuneName> = sets.iter().flat_map(|s| s.layers()).collect();
+    layers.sort();
+    layers.dedup();
+    for layer in layers {
+        let Some((_, subtune)) = song.subtune(layer) else {
+            continue;
+        };
+        let having: Vec<&AdaptiveSet> =
+            sets.iter().filter(|s| s.layers().contains(layer)).collect();
+        let rows = having[0].switch_rows(subtune);
+        if having.iter().all(|s| s.switch_rows(subtune) == rows) {
+            continue;
+        }
+        let names: Vec<String> = having.iter().map(|s| format!("`{}`", s.name())).collect();
+        out.push(Problem {
+            rule: Rule::TimingMarks,
+            severity: Severity::Error,
+            subtune: Some(layer.clone()),
+            bar: None,
+            row: None,
+            voice: None,
+            message: format!(
+                "`{}` is a layer of adaptive sets {}, which switch at different rows",
+                layer.as_str(),
+                names.join(", ")
+            ),
+            hint: "give those sets the same switch points, or use a separate subtune in each"
+                .into(),
         });
     }
 }
