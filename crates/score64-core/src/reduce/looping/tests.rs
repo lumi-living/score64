@@ -388,38 +388,63 @@ fn a_loop_row_in_force_replaces_the_rules_choice() {
 fn a_loop_row_that_cant_apply_says_why() {
     use crate::provenance::Provenance;
     let s = subtune(&[C, F, G, C]);
+    let plain = find_loop(&s, &LoopRules::default());
+    let reasons = |r: &LoopChoice| {
+        r.unapplied
+            .iter()
+            .map(|(id, w)| (id.as_str().to_string(), *w))
+            .collect::<Vec<_>>()
+    };
+    // Past the end, or inside a note: the rule's row stays.
+    for (row, why) in [(64, Unapplied::PastEnd), (20, Unapplied::InsideNote)] {
+        let r = find_loop_with(
+            &s,
+            &LoopRules::default(),
+            &[loop_decision("bad", row, Provenance::Manual)],
+        );
+        assert_eq!((r.row, r.by.as_str()), (plain.row, "loop"));
+        assert_eq!(reasons(&r), [("bad".to_string(), why)]);
+    }
+    // Of two people's, the lower id; another subtune's and the rules' own aren't this call's.
     let mut elsewhere = loop_decision("elsewhere", 16, Provenance::Manual);
     elsewhere.subtune = SubtuneName::new("combat").unwrap();
+    let rules = loop_decision(
+        "rules",
+        48,
+        Provenance::Rules {
+            rule: FIND_LOOP.into(),
+        },
+    );
     let r = find_loop_with(
         &s,
         &LoopRules::default(),
         &[
-            loop_decision("a-past", 64, Provenance::Manual),
-            loop_decision("b-inside", 20, Provenance::Manual),
-            loop_decision("c-first", 16, Provenance::Manual),
             loop_decision("d-second", 32, Provenance::Manual),
-            loop_decision(
-                "rules",
-                48,
-                Provenance::Rules {
-                    rule: FIND_LOOP.into(),
-                },
-            ),
+            loop_decision("c-first", 16, Provenance::Manual),
+            rules,
             elsewhere,
         ],
     );
     assert_eq!((r.row, r.by.as_str()), (16, "c-first"));
-    let reasons: Vec<_> = r
-        .unapplied
-        .iter()
-        .map(|(id, w)| (id.as_str(), *w))
-        .collect();
     assert_eq!(
-        reasons,
+        reasons(&r),
+        [("d-second".to_string(), Unapplied::Outranked)]
+    );
+    // The strongest claims the row even when it can't apply: the weaker valid one doesn't take its place.
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[
+            loop_decision("a-inside", 20, Provenance::Manual),
+            loop_decision("b-fine", 16, Provenance::Manual),
+        ],
+    );
+    assert_eq!(r.by.as_str(), "loop");
+    assert_eq!(
+        reasons(&r),
         [
-            ("a-past", Unapplied::PastEnd),
-            ("b-inside", Unapplied::InsideNote),
-            ("d-second", Unapplied::Outranked),
+            ("a-inside".to_string(), Unapplied::InsideNote),
+            ("b-fine".to_string(), Unapplied::Outranked)
         ]
     );
     // A tie on the row is cut by the jump back too.

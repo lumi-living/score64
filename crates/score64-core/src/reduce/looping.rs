@@ -84,9 +84,9 @@ pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
 /// rule's choice, and `by` names it. The rule still scores the candidates and makes its own decision, for review.
 ///
 /// An override is unapplied past the subtune's end (`past_end`), or on a row inside a note or on a tie
-/// (`inside_note`): after the jump back that note couldn't sound, and the export refuses it. Of several for the
-/// subtune, the strongest that can apply wins (the lowest id on a tie, as `resolve` would); the others are
-/// `overruled` or `outranked`. `unapplied` is sorted by id.
+/// (`inside_note`): after the jump back that note couldn't sound, and the export refuses it. The rule's row then
+/// stays. Of several for the subtune, the strongest claims it whether or not it can apply, as `resolve` would
+/// choose; the others are `overruled` or `outranked`. `unapplied` is sorted by id.
 pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decision]) -> LoopChoice {
     let mut choice = rule_loop(subtune, rules);
     let candidates: Vec<&Decision> = overrides
@@ -94,6 +94,7 @@ pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decisio
         .filter(|d| d.subtune == subtune.name && d.rank() != Rank::Rules)
         .filter(|d| matches!(d.proposal, Proposal::LoopRow { .. }))
         .collect();
+    // The strongest claims the loop row whether or not it can apply, as `resolve` would choose.
     let mut winner: Option<&Decision> = None;
     for d in crate::decide::by_strength(candidates) {
         let Proposal::LoopRow { row } = d.proposal else {
@@ -103,12 +104,14 @@ pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decisio
             choice
                 .unapplied
                 .push((d.id.clone(), crate::decide::lost_to(d, w)));
-        } else if row >= subtune.length.get() {
+            continue;
+        }
+        winner = Some(d);
+        if row >= subtune.length.get() {
             choice.unapplied.push((d.id.clone(), Unapplied::PastEnd));
         } else if splits_a_note(subtune, row) {
             choice.unapplied.push((d.id.clone(), Unapplied::InsideNote));
         } else {
-            winner = Some(d);
             choice.row = row;
             choice.similarity = choice
                 .candidates

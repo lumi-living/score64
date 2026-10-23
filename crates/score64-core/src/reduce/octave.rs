@@ -52,8 +52,9 @@ pub fn fold_octaves(
 /// folded note there, moved or not. Notes count in the bar they start in.
 ///
 /// An override is unapplied when its bar has no note that folds (`no_such_note`), or when its shift would take one
-/// of them past what GoatTracker can play (`out_of_range`). Of several for one bar, the strongest that can apply
-/// wins (the lowest id on a tie, as `resolve` would); the others are `overruled` or `outranked`. The rules' own
+/// of them past what GoatTracker can play (`out_of_range`); the bar is then the rule's. Of several for one bar, the
+/// strongest claims it whether or not it can apply, as `resolve` would choose; the others are `overruled` or
+/// `outranked`. The rules' own
 /// decisions, and any of another kind, are left alone. `unapplied` is sorted by id.
 pub fn fold_octaves_with(
     mut notes: Vec<Note>,
@@ -102,17 +103,19 @@ pub fn fold_octaves_with(
                     .iter()
                     .all(|&i| shifted(notes[i].pitch, shift).is_some())
             };
-            let mut winner: Option<(&Decision, i8)> = None;
-            for d in crate::decide::by_strength(candidates) {
-                let Proposal::Octave { shift, .. } = d.proposal else {
-                    continue;
-                };
-                match winner {
-                    Some((w, _)) => unapplied.push((d.id.clone(), crate::decide::lost_to(d, w))),
-                    None if playable(shift) => winner = Some((d, shift)),
-                    None => unapplied.push((d.id.clone(), Unapplied::OutOfRange)),
-                }
+            // The strongest claims the bar whether or not it can apply, as `resolve` would choose.
+            let ranked = crate::decide::by_strength(candidates);
+            let top = ranked[0];
+            for d in &ranked[1..] {
+                unapplied.push((d.id.clone(), crate::decide::lost_to(d, top)));
             }
+            let winner = match top.proposal {
+                Proposal::Octave { shift, .. } if playable(shift) => Some((top, shift)),
+                _ => {
+                    unapplied.push((top.id.clone(), Unapplied::OutOfRange));
+                    None
+                }
+            };
             if let Some((d, shift)) = winner {
                 for &i in &folded {
                     let n = &mut notes[i];

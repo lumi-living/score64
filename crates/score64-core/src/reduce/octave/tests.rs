@@ -601,7 +601,7 @@ fn by_model(mut d: Decision) -> Decision {
 }
 
 #[test]
-fn of_several_shifts_for_a_bar_the_strongest_that_fits_wins_in_any_order() {
+fn of_several_shifts_for_a_bar_the_strongest_claims_it_in_any_order() {
     let n = name();
     let line = vec![note(0, "C-4"), note(4, "G-4")];
     let bass = Roles::constant(Role::Bass);
@@ -637,10 +637,17 @@ fn of_several_shifts_for_a_bar_the_strongest_that_fits_wins_in_any_order() {
         assert_eq!(pitches(&r), ["C-4", "G-4"]);
         assert_eq!(reasons(&r), [("b".to_string(), Unapplied::Outranked)]);
     }
-    // The strongest can't apply (five octaves up is past G#7), so the next one does.
+    // The strongest claims the bar even when it can't apply (five octaves up is past G#7): the bar is then the
+    // rule's, as `resolve` and then the rule would give, and the weaker one is outranked.
     let r = run(&[forced("a-high", 0, 5), forced("b-low", 0, -2)]);
-    assert_eq!(pitches(&r), ["C-2", "G-2"]);
-    assert_eq!(reasons(&r), [("a-high".to_string(), Unapplied::OutOfRange)]);
+    assert_eq!(pitches(&r), ["C-3", "G-3"]);
+    assert_eq!(
+        reasons(&r),
+        [
+            ("a-high".to_string(), Unapplied::OutOfRange),
+            ("b-low".to_string(), Unapplied::Outranked)
+        ]
+    );
 }
 
 #[test]
