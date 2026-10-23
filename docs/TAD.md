@@ -308,7 +308,30 @@ A decision never changes the song by itself. An engine command (`writes_project`
   - An unknown field, a bad value or a TOML error is reported with its file, line and column. One inside a `proposal` or `provenance` table points at that table's header.
   - A manual provenance with stray fields is refused.
   - Two decisions with one id in one subtune are reported with both `[[decision]]` lines.
-- **Next.** `track.toml`, the track's own intent, and `score64.toml`, the settings every track of a target shares, as ADR-014 decides; they land with #25.
+
+**The project and track files** (`score64_project::Project`, #25, ADR-014). A project is a folder for one target:
+
+```text
+score64.toml                 what every track of the target shares
+presets/                     the target's instrument presets (E7)
+tracks/<id>/track.toml       one track's intent
+tracks/<id>/decisions.toml   its decisions
+.score64/                    cache and index, not committed
+```
+
+- **`score64.toml`** (`ProjectFile`): `[target] video` (PAL by default), `[[profile]]` entries added to the built-in profiles (§3.1; redefining a built-in is an error), `[pack]` (`player_page`, `zero_page`, `sound_effects`, optional `hard_restart_adsr`; no defaults, since they come from the target's memory map), `[tools] gt2reloc = { version, reference }` (the banner version and the blake3 of packing the reference fixture with the reference options), and `[validate]` (`expendable_long_rows`, `ranges`).
+- **`track.toml`** (`TrackFile`): an optional `title` and default `profile`, `[[source]]` (`id`, `path`, `blake3`, `kind` = `mix`, `stem` or `midi`), `[[subtune]]` (`name`, optional `profile`, `from` a source, optional `start` and `end`), `[[adaptive]]` sets (§3.1), and `[rules.<stage>]` tables that each stage checks for itself.
+- **Checks** on reading:
+  - source ids, subtune names and adaptive set names are unique;
+  - a subtune's source exists and its range isn't empty;
+  - adaptive layers are the track's subtunes;
+  - profiles are built in or the project's;
+  - `[pack]` is in range (`player_page` ≥ `$02`, `zero_page` in `$02`–`$FE`).
+- **Overrides.** A track may override only `[target] video` and `[pack]` keys. The merged `[pack]` must be complete and is checked again. Any other project table in a track is an unknown key.
+- **Times** are exact-microsecond strings, `[h:]m:ss` with up to six decimals (`"0:12.500"`). Floats are refused. They are written as `m:ss`, or as `h:mm:ss` from an hour, with three decimals for whole milliseconds and six otherwise.
+- **Paths** are relative to the project root, with `/` between parts. None is absolute, empty, `.` or `..`, a Windows device name, a part ending in `.` or a space, or a control or bidirectional-override character. They are compared as written and aren't Unicode-normalised. Ids are letters, digits, `-` and `_`, and never a device name, so a track id is a safe folder name. A folder under `tracks/` with a `track.toml` but an invalid name is an error, and so are two track ids that differ only in case.
+- **Sources** are found by path and identified by blake3 (`Project::check_sources`), hashed as they are read. A source is *missing* when there's no file, *unreadable* when it's a folder, has no permission, or leads out of the project through a link, and *changed* when its hash differs, which names both hashes. Git LFS is optional. `Project::record_hash` records a new hash on purpose, and changes only that value in the file.
+- **Writing.** Every write is atomic (a temporary file, synced, then renamed). A new file (`Project::create`, `Project::create_track`) is written deterministically and must pass the same checks as reading. It never replaces an existing file, because writing back through serde would drop comments and print numbers in decimal; existing files are edited in place. Errors give the file, line and column (in characters).
 
 A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
 

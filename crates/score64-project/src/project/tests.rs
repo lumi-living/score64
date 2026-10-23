@@ -123,6 +123,12 @@ fn the_adr_examples_read_and_write_back() {
 }
 
 #[test]
+fn columns_count_characters() {
+    let (at, _) = error(TrackFile::parse("title = \"ääää\" x\n", p("x")));
+    assert_eq!(at, Some((1, 16)));
+}
+
+#[test]
 fn syntax_errors_and_unknown_keys_give_line_and_column() {
     let (at, m) = error(ProjectFile::parse(
         "schema = 1\n[target]\nvideo = \"pal\"\ncolour = 1\n",
@@ -182,6 +188,22 @@ fn track_checks_point_at_the_item() {
             .1
             .contains("subtune `calm` is declared twice")
     );
+    // Two adaptive sets with one name.
+    let text = format!(
+        "{}\n[[adaptive]]\nname = \"score\"\nlayers = [\"calm\"]\n",
+        track_text("")
+    );
+    let (at, m) = error(TrackFile::parse(&text, p("x")));
+    assert!(m.contains("adaptive set `score` is declared twice"), "{m}");
+    assert_eq!(
+        at.unwrap().0,
+        text.lines()
+            .collect::<Vec<_>>()
+            .iter()
+            .rposition(|l| *l == "[[adaptive]]")
+            .unwrap()
+            + 1
+    );
     // An adaptive layer that isn't a subtune here.
     let text = track_text("").replace(
         "layers = [\"calm\", \"tension\"]",
@@ -234,11 +256,22 @@ fn paths_stay_inside_the_project() {
         "a\\\\b.wav", // TOML `a\\b.wav`, which reads as `a\b.wav`
         "C:/a.wav",
         "",
+        "audio/CON",
+        "aux.wav",
+        "audio/lpt1.txt",
+        "audio./a.wav",
+        "audio/a.wav ",
+        "a\\u0000b.wav",
+        "a\\tb.wav",
+        "a\\u202Eb.wav",
     ] {
         let text = track_text("").replace("audio/main-theme.wav", bad);
         let (_, m) = error(TrackFile::parse(&text, p("x")));
         assert!(m.contains("path"), "{bad}: {m}");
     }
+    // Names that merely start like a device are fine.
+    assert!(ProjectPath::try_from("audio/console.wav".to_string()).is_ok());
+    assert!(ProjectPath::try_from("audio/com10.wav".to_string()).is_ok());
     let ok = ProjectPath::try_from("audio/a b.wav".to_string()).unwrap();
     assert_eq!(
         ok.under(Path::new("/root")),
@@ -253,7 +286,9 @@ fn times_are_exact_and_written_canonically() {
         ("1:14", 74_000_000, "1:14"),
         ("0:00", 0, "0:00"),
         ("0:12.5", 12_500_000, "0:12.500"),
-        ("0:12.000250", 12_000_250, "0:12.00025"),
+        ("0:12.000250", 12_000_250, "0:12.000250"),
+        ("0:12.25", 12_250_000, "0:12.250"),
+        ("0:12.0005", 12_000_500, "0:12.000500"),
         ("12:34.000001", 754_000_001, "12:34.000001"),
         ("1:02:03.25", 3_723_250_000, "1:02:03.250"),
         ("75:00", 4_500_000_000, "1:15:00"),
@@ -273,6 +308,7 @@ fn times_are_exact_and_written_canonically() {
         "1:2:3:4",
         "-0:01",
         "0:1x",
+        "99999999999999999999:00:00",
     ] {
         assert!(bad.parse::<Timestamp>().is_err(), "{bad}");
     }
@@ -280,7 +316,7 @@ fn times_are_exact_and_written_canonically() {
 
 proptest! {
     #[test]
-    fn any_time_reads_back_from_its_text(us in 0u64..100 * 3_600_000_000) {
+    fn any_time_reads_back_from_its_text(us in any::<u64>()) {
         let t = Timestamp::from_micros(us);
         prop_assert_eq!(t.to_string().parse::<Timestamp>().unwrap(), t);
     }
@@ -329,8 +365,76 @@ fn a_track_loads_with_the_projects_values_and_its_overrides() {
         track_text("\n[pack]\nzero_page = 0xFF\n"),
     )
     .unwrap();
-    assert!(error(pr.track(&id("main"))).1.contains("zero_page $FF"));
+    let (at, m) = error(pr.track(&id("main")));
+    assert!(m.contains("zero_page $FF"), "{m}");
+    let text = track_text("\n[pack]\nzero_page = 0xFF\n");
+    assert_eq!(
+        at.unwrap().0,
+        text.lines().position(|l| l == "[pack]").unwrap() + 1
+    );
+    // hard_restart_adsr: the track's, the project's, or none.
+    std::fs::write(
+        root.join("tracks/main/track.toml"),
+        track_text("\n[pack]\nhard_restart_adsr = 0x0A00\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        pr.track(&id("main"))
+            .unwrap()
+            .pack
+            .unwrap()
+            .hard_restart_adsr,
+        Some(0x0A00)
+    );
+    std::fs::write(
+        root.join("score64.toml"),
+        PROJECT.replace(
+            "sound_effects = true",
+            "sound_effects = true\nhard_restart_adsr = 0x0F00",
+        ),
+    )
+    .unwrap();
+    let pr = Project::open(&root).unwrap();
+    assert_eq!(
+        pr.track(&id("main"))
+            .unwrap()
+            .pack
+            .unwrap()
+            .hard_restart_adsr,
+        Some(0x0A00)
+    );
+    std::fs::write(
+        root.join("tracks/main/track.toml"),
+        track_text("\n[pack]\nzero_page = 0xFB\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        pr.track(&id("main"))
+            .unwrap()
+            .pack
+            .unwrap()
+            .hard_restart_adsr,
+        Some(0x0F00)
+    );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_track_overrides_only_its_target_video_and_pack() {
+    for extra in [
+        "\n[validate]\nexpendable_long_rows = 2\n",
+        "\n[tools]\ngt2reloc = { version = \"2.73\", reference = \"x\" }\n",
+        "\n[[profile]]\nname = \"mine\"\n",
+        "\n[target]\nvideo = \"ntsc\"\nchip = \"8580\"\n",
+    ] {
+        let (at, m) = error(TrackFile::parse(&track_text(extra), p("x")));
+        // `profile` is the track's default profile name, so a [[profile]] table is the wrong type rather than unknown.
+        assert!(
+            m.contains("unknown field") || m.contains("invalid type"),
+            "{extra}: {m}"
+        );
+        assert!(at.is_some());
+    }
 }
 
 #[test]
@@ -343,6 +447,17 @@ fn a_track_needs_known_profiles_and_a_complete_pack() {
     let (at, m) = error(pr.track(&id("main")));
     assert!(m.contains("profile `busy`"), "{m}");
     assert!(at.is_some());
+    // The track's own default profile points at its key.
+    let text = track_text("")
+        .replace(
+            "title = \"Main theme\"",
+            "title = \"Main theme\"\nprofile = \"busy\"",
+        )
+        .replace("profile = \"calm\"\n", "");
+    std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
+    let (at, m) = error(pr.track(&id("main")));
+    assert!(m.contains("profile `busy`"), "{m}");
+    assert_eq!(at.unwrap().0, 3);
     // No project [pack]: a track override must give every required key.
     std::fs::write(root.join("score64.toml"), "schema = 1\n").unwrap();
     std::fs::write(
@@ -360,18 +475,31 @@ fn sources_are_checked_against_their_hashes() {
     let root = project("sources", &track_text(""));
     let pr = Project::open(&root).unwrap();
     let mut t = pr.track(&id("main")).unwrap();
+    let mix = || ProjectPath::try_from("audio/main-theme.wav".to_string()).unwrap();
     assert_eq!(
         pr.check_sources(&t),
         [SourceProblem::Missing {
             id: id("mix"),
-            path: ProjectPath::try_from("audio/main-theme.wav".to_string()).unwrap(),
+            path: mix(),
         }]
     );
     assert_eq!(
         pr.check_sources(&t)[0].to_string(),
         "source `mix`: `audio/main-theme.wav` is missing"
     );
-    std::fs::create_dir_all(root.join("audio")).unwrap();
+    // A folder where the file should be is not "missing".
+    std::fs::create_dir_all(root.join("audio/main-theme.wav")).unwrap();
+    match &pr.check_sources(&t)[..] {
+        [p @ SourceProblem::Unreadable { .. }] => {
+            assert!(
+                p.to_string()
+                    .starts_with("source `mix`: `audio/main-theme.wav` can't be read: "),
+                "{p}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    std::fs::remove_dir(root.join("audio/main-theme.wav")).unwrap();
     std::fs::write(root.join("audio/main-theme.wav"), b"sound").unwrap();
     let found = Blake3::of(b"sound");
     match &pr.check_sources(&t)[..] {
@@ -388,11 +516,199 @@ fn sources_are_checked_against_their_hashes() {
         }
         other => panic!("{other:?}"),
     }
-    // Recording the new hash, on purpose, and writing the track.
-    assert!(t.file.record_hash(&id("mix"), found));
-    assert!(!t.file.record_hash(&id("stems"), Blake3::of(b"")));
-    pr.write_track(&t).unwrap();
-    let t = pr.track(&id("main")).unwrap();
-    assert!(pr.check_sources(&t).is_empty());
+    // Recording the new hash, on purpose, changes only that value: comments and hex stay.
+    let path = root.join("tracks/main/track.toml");
+    let before = format!(
+        "# Main theme, from the April mix.\n{}\n[pack]\nzero_page = 0xFB # the game's pair\n",
+        track_text("")
+    );
+    std::fs::write(&path, &before).unwrap();
+    let mut t2 = pr.track(&id("main")).unwrap();
+    assert!(pr.record_hash(&mut t2, &id("mix"), found.clone()).unwrap());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        before.replace(HASH, found.as_str())
+    );
+    assert_eq!(t2.file.sources[0].blake3, found);
+    assert!(pr.check_sources(&pr.track(&id("main")).unwrap()).is_empty());
+    assert!(
+        !pr.record_hash(&mut t, &id("stems"), Blake3::of(b""))
+            .unwrap()
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_source_may_not_leave_the_project_through_a_link() {
+    let root = project("links", &track_text(""));
+    let outside = root.with_extension("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(outside.join("main-theme.wav"), b"sound").unwrap();
+    std::os::unix::fs::symlink(&outside, root.join("audio")).unwrap();
+    let pr = Project::open(&root).unwrap();
+    let t = pr.track(&id("main")).unwrap();
+    match &pr.check_sources(&t)[..] {
+        [p @ SourceProblem::Unreadable { .. }] => {
+            assert!(p.to_string().contains("leads out of the project"), "{p}")
+        }
+        other => panic!("{other:?}"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn new_files_are_written_deterministically_and_never_over_old_ones() {
+    let root = std::env::temp_dir().join(format!("score64-project-create-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let file = ProjectFile::parse(PROJECT, p("x")).unwrap();
+    let pr = Project::create(&root, file.clone()).unwrap();
+    assert!(matches!(
+        Project::create(&root, file),
+        Err(Error::Io { .. })
+    ));
+    let track = TrackFile::parse(&track_text(""), p("x")).unwrap();
+    let t = pr.create_track(&id("main"), &track).unwrap();
+    assert_eq!(t.file, track);
+    let written = std::fs::read_to_string(root.join("tracks/main/track.toml")).unwrap();
+    assert_eq!(written, track.to_toml().unwrap());
+    assert_eq!(
+        TrackFile::parse(&written, p("x"))
+            .unwrap()
+            .to_toml()
+            .unwrap(),
+        written,
+        "deterministic"
+    );
+    assert!(matches!(
+        pr.create_track(&id("main"), &track),
+        Err(Error::Io { .. })
+    ));
+    // A file the readers would refuse is never written.
+    let mut bad = track.clone();
+    bad.sources.push(bad.sources[0].clone());
+    assert!(error(bad.to_toml()).1.contains("declared twice"));
+    assert!(pr.create_track(&id("other"), &bad).is_err());
+    assert!(!root.join("tracks/other/track.toml").exists());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn track_folders_must_be_track_ids() {
+    let root = project("ids", &track_text(""));
+    let pr = Project::open(&root).unwrap();
+    // A folder without a track.toml is not a track.
+    std::fs::create_dir_all(root.join("tracks/notes and drafts")).unwrap();
+    assert_eq!(pr.track_ids().unwrap(), [id("main")]);
+    std::fs::write(
+        root.join("tracks/notes and drafts/track.toml"),
+        track_text(""),
+    )
+    .unwrap();
+    let (_, m) = error(pr.track_ids());
+    assert!(
+        m.contains("\"notes and drafts\" isn't a valid track id"),
+        "{m}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn ids_are_safe_folder_names() {
+    for bad in [
+        "con",
+        "COM1",
+        "nul",
+        "Lpt9",
+        "",
+        "-a",
+        "a b",
+        "ä",
+        &"a".repeat(65),
+    ] {
+        assert!(Id::new(bad).is_err(), "{bad}");
+    }
+    for ok in ["main", "com10", "console", "a-b_c", "1", &"a".repeat(64)] {
+        assert!(Id::new(ok).is_ok(), "{ok}");
+    }
+}
+
+/// What a new file looks like: the ADR's examples written back. Numbers are written in decimal and comments aren't
+/// kept, which is why existing files are edited in place.
+#[test]
+fn new_files_look_like_this() {
+    let project = ProjectFile::parse(PROJECT, p("x"))
+        .unwrap()
+        .to_toml()
+        .unwrap();
+    assert_eq!(project, PROJECT_WRITTEN);
+    let track = TrackFile::parse(&track_text(""), p("x"))
+        .unwrap()
+        .to_toml()
+        .unwrap();
+    assert_eq!(track, TRACK_WRITTEN);
+}
+
+const PROJECT_WRITTEN: &str = r#"schema = 1
+
+[[profile]]
+name = "calm"
+
+[profile.v1]
+usage = "music"
+roles = ["bed"]
+filter = true
+
+[profile.v2]
+usage = "effects"
+filter = false
+
+[profile.v3]
+usage = "effects"
+filter = false
+
+[pack]
+player_page = 16
+zero_page = 248
+sound_effects = true
+
+[tools.gt2reloc]
+version = "2.73"
+reference = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+
+[validate]
+expendable_long_rows = 4
+"#;
+
+const TRACK_WRITTEN: &str = r#"schema = 1
+title = "Main theme"
+
+[[source]]
+id = "mix"
+path = "audio/main-theme.wav"
+blake3 = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12"
+kind = "mix"
+
+[[subtune]]
+name = "calm"
+profile = "calm"
+from = "mix"
+start = "0:12.500"
+end = "1:14"
+
+[[subtune]]
+name = "tension"
+from = "mix"
+
+[[adaptive]]
+name = "score"
+layers = ["calm", "tension"]
+
+[adaptive.switch]
+every_bars = 2
+
+[rules.reduce]
+min_note_rows = 1
+"#;

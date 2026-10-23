@@ -19,9 +19,9 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 |---|---|---|
 | `-Dx` | Sound-effect support on/off (implies buffered SID writes) | Always `-D1` for game builds |
 | `-Hx` | Store author info at start+$20…+$3F and enable timing marks | `-H1` for adaptive sets |
-| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | From project config |
+| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | `[pack] player_page` (ADR-014) |
 | `-Zxx` | Zero-page location (needs 2 consecutive bytes; default `FC`) | From the game's zero-page map. The default `$FC–$FD` overlaps the common `$FB–$FE` pointer convention used by many C64 programs, so Score64 always passes `-Z` explicitly |
-| `-Axx` | Hard-restart ADSR value (default `0F00`) | From the instrument preset set |
+| `-Axx` | Hard-restart ADSR value (default `0F00`) | `[pack] hard_restart_adsr` (ADR-014); gt2reloc's default when absent |
 | `-Bx` | Buffered SID writes | Implied by `-D1` |
 | `-Cx` | Zero-page ghost registers | Avoid with sound effects (shared register state can leave a wrong pulse width after an effect) |
 | `-Jx` | Full buffering | Avoid with sound effects (same reason) |

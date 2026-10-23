@@ -25,8 +25,10 @@ use serde::{Deserialize, Serialize};
 
 use score64_core::{Decision, DecisionId, SubtuneName};
 
+use crate::textfile::Schema;
+
 /// The layout version this build reads and writes.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = crate::textfile::SCHEMA;
 
 /// A `decisions.toml`: its decisions, sorted by subtune and then id when written.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -38,30 +40,6 @@ pub struct DecisionsFile {
     /// The decisions.
     #[serde(default)]
     pub decision: Vec<Decision>,
-}
-
-/// The layout version, 1: a newer file is an error rather than a partial read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "u32", into = "u32")]
-struct Schema;
-
-impl TryFrom<u32> for Schema {
-    type Error = String;
-    fn try_from(v: u32) -> Result<Self, String> {
-        if v == SCHEMA {
-            Ok(Schema)
-        } else {
-            Err(format!(
-                "decisions schema {v} is not supported; this build reads {SCHEMA}"
-            ))
-        }
-    }
-}
-
-impl From<Schema> for u32 {
-    fn from(_: Schema) -> u32 {
-        SCHEMA
-    }
 }
 
 /// Why a `decisions.toml` could not be read or written.

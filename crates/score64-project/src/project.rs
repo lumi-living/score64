@@ -23,39 +23,15 @@ use score64_core::{AdaptiveSet, Profile, ProfileName, Profiles, SubtuneName, Vid
 use score64_core::validate::RoleRanges;
 
 use crate::decisions::DecisionsFile;
-use crate::textfile::{headers, line_col, write_atomic};
+use crate::textfile::{Schema, headers, is_device_name, line_col, write_atomic};
 
 /// The layout version these files are read and written in.
-pub const SCHEMA: u32 = 1;
+pub const SCHEMA: u32 = crate::textfile::SCHEMA;
 
 /// The project file's name, at the project root.
 pub const PROJECT_FILE: &str = "score64.toml";
 /// A track's file, in `tracks/<id>/`.
 pub const TRACK_FILE: &str = "track.toml";
-
-/// The layout version, 1: a newer file is an error rather than a partial read.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "u32", into = "u32")]
-struct Schema;
-
-impl TryFrom<u32> for Schema {
-    type Error = String;
-    fn try_from(v: u32) -> Result<Self, String> {
-        if v == SCHEMA {
-            Ok(Schema)
-        } else {
-            Err(format!(
-                "schema {v} is not supported; this build reads {SCHEMA}"
-            ))
-        }
-    }
-}
-
-impl From<Schema> for u32 {
-    fn from(_: Schema) -> u32 {
-        SCHEMA
-    }
-}
 
 /// Why a project or track file could not be read or written.
 #[derive(Debug)]
@@ -130,7 +106,9 @@ impl From<Blake3> for String {
     }
 }
 
-/// A path inside the project, relative to its root, with `/` between parts: never absolute, never `..`, never empty.
+/// A path inside the project, relative to its root, with `/` between parts: never absolute, never `..`, never empty,
+/// and with parts every system can store (no Windows device names, no part ending in `.` or a space, no control or
+/// bidirectional-override characters). Paths are compared as written, byte for byte; they are not Unicode-normalised.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProjectPath(String);
@@ -164,6 +142,19 @@ impl TryFrom<String> for ProjectPath {
         {
             return bad("must stay inside the project, with no empty, `.` or `..` parts");
         }
+        if s.chars().any(|c| {
+            c.is_control() || matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        }) {
+            return bad("has a control or bidirectional-override character");
+        }
+        if let Some(part) = s
+            .split('/')
+            .find(|p| p.ends_with('.') || p.ends_with(' ') || is_device_name(p))
+        {
+            return bad(&format!(
+                "has a part, {part:?}, that Windows can't store (a device name, or one ending in `.` or a space)"
+            ));
+        }
         Ok(ProjectPath(s))
     }
 }
@@ -175,7 +166,8 @@ impl From<ProjectPath> for String {
 }
 
 /// A short identifier in a file (a source id, a track id): letters, digits, `-` and `_`, starting with a letter or
-/// digit, at most 64 characters, so it is also a safe directory name.
+/// digit, at most 64 characters, and not a Windows device name (`con`, `com1`, ...), so it is also a safe directory
+/// name on every system (as the cache's names are, TAD §4).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Id(String);
@@ -199,12 +191,14 @@ impl TryFrom<String> for Id {
             && s.len() <= 64
             && s.as_bytes()[0].is_ascii_alphanumeric()
             && s.bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            && !is_device_name(&s);
         if ok {
             Ok(Id(s))
         } else {
             Err(format!(
-                "id {s:?} must be letters, digits, `-` and `_`, starting with a letter or digit, at most 64 long"
+                "id {s:?} must be letters, digits, `-` and `_`, starting with a letter or digit, at most 64 long, and not a \
+                 Windows device name"
             ))
         }
     }
@@ -217,7 +211,8 @@ impl From<Id> for String {
 }
 
 /// A time in a source, exact to the microsecond, written `[h:]m:ss` with up to six decimals (`"0:12.500"`,
-/// `"1:14"`, `"1:02:03.000250"`). Never a float, so a range is exact and diffs cleanly (ADR-014).
+/// `"1:14"`, `"1:02:03.000250"`). Never a float, so a range is exact and diffs cleanly (ADR-014). Any `u64` of
+/// microseconds is written and read back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct Timestamp(u64);
@@ -249,8 +244,8 @@ impl std::str::FromStr for Timestamp {
             !t.is_empty() && t.len() <= max && t.bytes().all(|b| b.is_ascii_digit())
         };
         let (whole, fraction) = seconds.split_once('.').unwrap_or((seconds, ""));
-        if !digits(hours, 4)
-            || !digits(minutes, 4)
+        if !digits(hours, 20)
+            || !digits(minutes, 20)
             || whole.len() != 2
             || !digits(whole, 2)
             || (seconds.contains('.') && !digits(fraction, 6))
@@ -266,13 +261,20 @@ impl std::str::FromStr for Timestamp {
             return Err(bad());
         }
         let micros: u64 = format!("{fraction:0<6}").parse().map_err(|_| bad())?;
-        Ok(Timestamp(((h * 60 + m) * 60 + sec) * 1_000_000 + micros))
+        h.checked_mul(60)
+            .and_then(|t| t.checked_add(m))
+            .and_then(|t| t.checked_mul(60))
+            .and_then(|t| t.checked_add(sec))
+            .and_then(|t| t.checked_mul(1_000_000))
+            .and_then(|t| t.checked_add(micros))
+            .map(Timestamp)
+            .ok_or_else(|| format!("time {s:?} is too long"))
     }
 }
 
 impl fmt::Display for Timestamp {
-    /// The canonical form: `m:ss`, or `h:mm:ss` from an hour on; a fraction only when there is one, with at least
-    /// three digits and no trailing zeros past them.
+    /// The canonical form: `m:ss`, or `h:mm:ss` from an hour on; a fraction only when there is one, with three
+    /// digits when the time is whole milliseconds and six otherwise.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (secs, micros) = (self.0 / 1_000_000, self.0 % 1_000_000);
         let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
@@ -282,11 +284,11 @@ impl fmt::Display for Timestamp {
             write!(f, "{m}:{s:02}")?;
         }
         if micros > 0 {
-            let mut frac = format!("{micros:06}");
-            while frac.len() > 3 && frac.ends_with('0') {
-                frac.pop();
+            if micros % 1000 == 0 {
+                write!(f, ".{:03}", micros / 1000)?;
+            } else {
+                write!(f, ".{micros:06}")?;
             }
-            write!(f, ".{frac}")?;
         }
         Ok(())
     }
@@ -346,7 +348,8 @@ impl Pack {
         }
         if !(0x02..=0xFE).contains(&self.zero_page) {
             return Err(format!(
-                "[pack] zero_page ${:02X}: the pair must lie in $02-$FF",
+                "[pack] zero_page ${:02X}: the pair must start in $02–$FE, clear of the 6510 port at $00–$01 and with both \
+                 bytes in zero page",
                 self.zero_page
             ));
         }
@@ -534,6 +537,17 @@ fn parse<T: for<'de> Deserialize<'de>>(text: &str, path: &Path) -> Result<T, Err
     })
 }
 
+/// The line of the first `[table]` header or `key =` line, for errors about that table or key.
+fn line_of(text: &str, start: &str) -> Option<usize> {
+    text.lines()
+        .position(|l| {
+            let l = l.trim_start();
+            l.starts_with(start)
+                && (start.starts_with('[') || l[start.len()..].trim_start().starts_with('='))
+        })
+        .map(|i| i + 1)
+}
+
 fn invalid(path: &Path, line: Option<usize>, message: String) -> Error {
     Error::Invalid {
         path: path.to_path_buf(),
@@ -546,6 +560,13 @@ fn to_toml<T: Serialize>(value: &T, path: &Path) -> Result<String, Error> {
     toml::to_string(value).map_err(|e| invalid(path, None, e.to_string()))
 }
 
+fn io(path: &Path) -> impl FnOnce(std::io::Error) -> Error + '_ {
+    move |error| Error::Io {
+        path: path.to_path_buf(),
+        error,
+    }
+}
+
 fn write(path: &Path, text: &str) -> Result<(), Error> {
     write_atomic(path, text).map_err(|(path, error)| Error::Io { path, error })
 }
@@ -555,11 +576,8 @@ impl ProjectFile {
     pub fn parse(text: &str, path: &Path) -> Result<Self, Error> {
         let file: ProjectFile = parse(text, path)?;
         if let Some(pack) = &file.pack {
-            let line = text
-                .lines()
-                .position(|l| l.trim_start().starts_with("[pack]"))
-                .map(|i| i + 1);
-            pack.check().map_err(|m| invalid(path, line, m))?;
+            pack.check()
+                .map_err(|m| invalid(path, line_of(text, "[pack]"), m))?;
         }
         let lines = headers(text, "[[profile]]");
         file.profiles()
@@ -572,9 +590,13 @@ impl ProjectFile {
         Profiles::with(self.profile.iter().cloned())
     }
 
-    /// The file's text.
+    /// The file's text, for a new file. It passes the same checks as [`ProjectFile::parse`]. Comments and number
+    /// bases aren't kept: an existing file is edited in place instead.
     pub fn to_toml(&self) -> Result<String, Error> {
-        to_toml(self, Path::new(PROJECT_FILE))
+        let path = Path::new(PROJECT_FILE);
+        let text = to_toml(self, path)?;
+        Self::parse(&text, path)?;
+        Ok(text)
     }
 }
 
@@ -633,7 +655,15 @@ impl TrackFile {
                 ));
             }
         }
+        let mut set_names = BTreeSet::new();
         for (i, set) in file.adaptive.iter().enumerate() {
+            if !set_names.insert(set.name()) {
+                return Err(invalid(
+                    path,
+                    at(&sets, i),
+                    format!("adaptive set `{}` is declared twice", set.name()),
+                ));
+            }
             if let Some(l) = set.layers().iter().find(|l| !names.contains(l)) {
                 return Err(invalid(
                     path,
@@ -649,21 +679,39 @@ impl TrackFile {
         Ok(file)
     }
 
-    /// The file's text.
+    /// The file's text, for a new file. It passes the same checks as [`TrackFile::parse`]. Comments and number
+    /// bases aren't kept: an existing file is edited in place instead ([`Project::record_hash`]).
     pub fn to_toml(&self) -> Result<String, Error> {
-        to_toml(self, Path::new(TRACK_FILE))
+        let path = Path::new(TRACK_FILE);
+        let text = to_toml(self, path)?;
+        Self::parse(&text, path)?;
+        Ok(text)
     }
+}
 
-    /// Record `hash` as source `id`'s content, after its file changed on purpose. False if there is no such source.
-    pub fn record_hash(&mut self, id: &Id, hash: Blake3) -> bool {
-        match self.sources.iter_mut().find(|s| &s.id == id) {
-            Some(s) => {
-                s.blake3 = hash;
-                true
-            }
-            None => false,
-        }
+/// `text` with source `id`'s `blake3` value replaced by `hash`, and nothing else changed; `None` if no source has
+/// that id.
+fn replace_hash(text: &str, path: &Path, id: &Id, hash: &Blake3) -> Result<Option<String>, Error> {
+    #[derive(Deserialize)]
+    struct Sources {
+        #[serde(default)]
+        source: Vec<SourceSpan>,
     }
+    #[derive(Deserialize)]
+    struct SourceSpan {
+        id: Id,
+        blake3: toml::Spanned<String>,
+    }
+    let sources: Sources = parse(text, path)?;
+    Ok(sources.source.iter().find(|s| &s.id == id).map(|s| {
+        let span = s.blake3.span();
+        format!(
+            "{}\"{}\"{}",
+            &text[..span.start],
+            hash.as_str(),
+            &text[span.end..]
+        )
+    }))
 }
 
 /// A source that isn't as the track says.
@@ -675,6 +723,16 @@ pub enum SourceProblem {
         id: Id,
         /// Its path.
         path: ProjectPath,
+    },
+    /// Its file is there but can't be read: a folder, no permission, or a path that leads out of the project
+    /// through a symbolic link.
+    Unreadable {
+        /// The source.
+        id: Id,
+        /// Its path.
+        path: ProjectPath,
+        /// What went wrong.
+        reason: String,
     },
     /// Its file's content has changed since the track was made.
     Changed {
@@ -700,6 +758,12 @@ impl fmt::Display for SourceProblem {
                     path.as_str()
                 )
             }
+            SourceProblem::Unreadable { id, path, reason } => write!(
+                f,
+                "source `{}`: `{}` can't be read: {reason}",
+                id.as_str(),
+                path.as_str()
+            ),
             SourceProblem::Changed {
                 id,
                 path,
@@ -728,10 +792,8 @@ pub struct Project {
 /// A track, loaded with its decisions and the project's values resolved.
 #[derive(Clone, Debug)]
 pub struct Track {
-    /// Its id: its directory's name.
+    /// Its id: its directory's name under `tracks/`.
     pub id: Id,
-    /// Its directory.
-    pub dir: PathBuf,
     /// `track.toml`.
     pub file: TrackFile,
     /// `decisions.toml`, empty when there is none yet.
@@ -775,24 +837,42 @@ impl Project {
         };
         let mut ids = Vec::new();
         for entry in entries {
-            let entry = entry.map_err(|error| Error::Io {
-                path: dir.clone(),
-                error,
-            })?;
-            if entry.path().join(TRACK_FILE).is_file()
-                && let Ok(id) = Id::new(&entry.file_name().to_string_lossy())
-            {
-                ids.push(id);
+            let entry = entry.map_err(io(&dir))?;
+            if !entry.path().join(TRACK_FILE).is_file() {
+                continue;
             }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let id = Id::new(&name).map_err(|m| {
+                invalid(
+                    &entry.path(),
+                    None,
+                    format!("track folder {name:?} isn't a valid track id: {m}"),
+                )
+            })?;
+            ids.push(id);
         }
         ids.sort();
+        let mut folded = BTreeMap::new();
+        for id in &ids {
+            if let Some(other) = folded.insert(id.as_str().to_ascii_lowercase(), id) {
+                return Err(invalid(
+                    &dir,
+                    None,
+                    format!(
+                        "tracks `{}` and `{}` differ only in case, which some systems can't tell apart",
+                        other.as_str(),
+                        id.as_str()
+                    ),
+                ));
+            }
+        }
         Ok(ids)
     }
 
     /// Load track `id`: `tracks/<id>/track.toml`, its `decisions.toml` if there is one, and its resolved settings.
     /// Its profiles must be the project's or built-in.
     pub fn track(&self, id: &Id) -> Result<Track, Error> {
-        let dir = self.root.join("tracks").join(id.as_str());
+        let dir = self.track_dir(id);
         let path = dir.join(TRACK_FILE);
         let text = read(&path)?;
         let file = TrackFile::parse(&text, &path)?;
@@ -801,13 +881,15 @@ impl Project {
             .profiles()
             .map_err(|m| invalid(&self.root.join(PROJECT_FILE), None, m))?;
         let subtune_lines = headers(&text, "[[subtune]]");
-        let named = file.profile.iter().map(|p| (p, None)).chain(
-            file.subtunes.iter().enumerate().filter_map(|(i, s)| {
+        let named = file
+            .profile
+            .iter()
+            .map(|p| (p, line_of(&text, "profile")))
+            .chain(file.subtunes.iter().enumerate().filter_map(|(i, s)| {
                 s.profile
                     .as_ref()
                     .map(|p| (p, subtune_lines.get(i).copied()))
-            }),
-        );
+            }));
         for (p, line) in named {
             if profiles.get(p).is_none() {
                 return Err(invalid(
@@ -829,10 +911,9 @@ impl Project {
             .and_then(|t| t.video)
             .unwrap_or(self.file.target.video);
         let pack = resolve_pack(self.file.pack.as_ref(), file.pack.as_ref())
-            .map_err(|m| invalid(&path, None, m))?;
+            .map_err(|m| invalid(&path, line_of(&text, "[pack]"), m))?;
         Ok(Track {
             id: id.clone(),
-            dir,
             file,
             decisions,
             video,
@@ -840,43 +921,97 @@ impl Project {
         })
     }
 
-    /// Every source of `track` that is missing or whose content changed since the track recorded its hash.
+    /// `tracks/<id>/`.
+    pub fn track_dir(&self, id: &Id) -> PathBuf {
+        self.root.join("tracks").join(id.as_str())
+    }
+
+    /// Every source of `track` that is missing, unreadable, or whose content changed since the track recorded its
+    /// hash. Each file is hashed as it is read, so a long recording isn't held in memory.
     pub fn check_sources(&self, track: &Track) -> Vec<SourceProblem> {
         track
             .file
             .sources
             .iter()
-            .filter_map(|s| match std::fs::read(s.path.under(&self.root)) {
-                Err(_) => Some(SourceProblem::Missing {
-                    id: s.id.clone(),
-                    path: s.path.clone(),
-                }),
-                Ok(bytes) => {
-                    let found = Blake3::of(&bytes);
-                    (found != s.blake3).then(|| SourceProblem::Changed {
-                        id: s.id.clone(),
-                        path: s.path.clone(),
+            .filter_map(|s| {
+                let (id, path) = (s.id.clone(), s.path.clone());
+                match self.hash_source(&s.path) {
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        Some(SourceProblem::Missing { id, path })
+                    }
+                    Err(e) => Some(SourceProblem::Unreadable {
+                        id,
+                        path,
+                        reason: e.to_string(),
+                    }),
+                    Ok(found) => (found != s.blake3).then(|| SourceProblem::Changed {
+                        id,
+                        path,
                         expected: s.blake3.clone(),
                         found,
-                    })
+                    }),
                 }
             })
             .collect()
     }
 
-    /// Write the project file.
-    pub fn write(&self) -> Result<(), Error> {
-        write(&self.root.join(PROJECT_FILE), &self.file.to_toml()?)
+    /// The blake3 of the file at `path`, which must resolve to a file inside the project.
+    fn hash_source(&self, path: &ProjectPath) -> std::io::Result<Blake3> {
+        let file = path.under(&self.root);
+        let (real, root) = (file.canonicalize()?, self.root.canonicalize()?);
+        if !real.starts_with(&root) {
+            return Err(std::io::Error::other(format!(
+                "it leads out of the project, to {}",
+                real.display()
+            )));
+        }
+        let mut hasher = blake3::Hasher::new();
+        hasher.update_reader(std::fs::File::open(&real)?)?;
+        Ok(Blake3(hasher.finalize().to_hex().to_string()))
     }
 
-    /// Write `track`'s `track.toml`.
-    pub fn write_track(&self, track: &Track) -> Result<(), Error> {
-        std::fs::create_dir_all(&track.dir).map_err(|error| Error::Io {
-            path: track.dir.clone(),
-            error,
-        })?;
-        write(&track.dir.join(TRACK_FILE), &track.file.to_toml()?)
+    /// Record `hash` as source `id`'s content in `track`, after its file changed on purpose: only that value changes
+    /// in `track.toml`, so its comments and layout stay. False if the track has no such source.
+    pub fn record_hash(&self, track: &mut Track, id: &Id, hash: Blake3) -> Result<bool, Error> {
+        let path = self.track_dir(&track.id).join(TRACK_FILE);
+        let text = read(&path)?;
+        let Some(new) = replace_hash(&text, &path, id, &hash)? else {
+            return Ok(false);
+        };
+        let file = TrackFile::parse(&new, &path)?;
+        write(&path, &new)?;
+        track.file = file;
+        Ok(true)
     }
+
+    /// Create a project at `root` with `file` as its `score64.toml`; an error if there is one already.
+    pub fn create(root: &Path, file: ProjectFile) -> Result<Self, Error> {
+        let path = root.join(PROJECT_FILE);
+        create_new(&path, &file.to_toml()?)?;
+        Ok(Project {
+            root: root.to_path_buf(),
+            file,
+        })
+    }
+
+    /// Create track `id` with `file` as its `track.toml`; an error if it exists already.
+    pub fn create_track(&self, id: &Id, file: &TrackFile) -> Result<Track, Error> {
+        let dir = self.track_dir(id);
+        std::fs::create_dir_all(&dir).map_err(io(&dir))?;
+        create_new(&dir.join(TRACK_FILE), &file.to_toml()?)?;
+        self.track(id)
+    }
+}
+
+/// Write `text` at `path`, which must not exist yet.
+fn create_new(path: &Path, text: &str) -> Result<(), Error> {
+    if path.exists() {
+        return Err(io(path)(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "already exists",
+        )));
+    }
+    write(path, text)
 }
 
 /// The project's `[pack]` with a track's overrides: none if neither has one; an error if the track overrides keys
