@@ -229,11 +229,11 @@ Decision ids name what they're about, so they stay the same when notes elsewhere
 They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
 **Overrides** (`reduce::monophonise_with`, #167): the resolved decisions of a model or a person for the voice apply as the rule runs, rather than being patched onto its result.
-- A `drop_note` takes its note out before step 1, so the rule's other choices follow from the line without it.
-- A `trim_note` sets its note's length once the line is built. It can be shorter than the rule's, or as long as the gap to the next note; one that would overlap is unapplied (`overlaps`). It replaces the rule's own trim of that note.
+- A `drop_note` takes its note out before step 1, so the rule's other choices follow from the line without it. It takes the note from its source span when it names one; of identical notes otherwise, the one the rule would drop. A drop, a trim and a fresh start of one note are separate slots, so a drop gives way (`overruled`) to a stronger trim or fresh start of that note.
+- A `trim_note` sets its note's length once the line is built, and only shortens: longer than the rule left it is unapplied (`lengthens`). It replaces the rule's own trim of that note. Shorter than `min_rows` is a person's call; an unreviewed model's is unapplied (`out_of_range`).
 - A `retrigger` makes its note fresh, so the rule records no tie of its own there.
 
-A note an override names that isn't there is unapplied (`no_such_note`), and a note an override changed records the override's id. The rules' own decisions in the list are ignored: the rule makes them afresh.
+A note an override names that isn't there is unapplied (`no_such_note`). A note an override changed records the override's id in place of this rule's (the last to change it, in slot order); an id from an earlier rule stays. The rules' own decisions in the list are ignored, since the rule makes them afresh, and the order of the overrides doesn't matter.
 
 **Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
 - **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
@@ -294,14 +294,14 @@ Manual decisions override LLM suggestions, which override rules. `score64_core::
 
   Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
 - **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
-- **Checked first.** `decide::check(decisions, &song, sources)` runs before `resolve`, so a decision that can't apply never holds a slot against one that can (#167). A decision can't apply when it names:
+- **Checked first.** `decide::check(decisions, &song, sources)` runs before `resolve`, so a decision that can't apply never holds a slot against one that can (#167). `sources` lists each subtune's parts. A decision can't apply when it names:
   - a subtune that isn't in the song;
   - a bar, or a row, past the subtune's end;
   - a row outside its own bar;
-  - an octave shift beyond ±7, a chord root above 11, or chord intervals that don't start at 0 and rise;
-  - a lead source that isn't one of the parts.
+  - an octave shift beyond ±7, a chord root above 11, chord intervals that don't start at 0 and rise, or a chord whose top note is past G#7 even on its lowest root;
+  - a lead source that isn't one of its own subtune's parts.
 
-  Each one comes back with its `Unapplied` reason. Whether a note-level decision's note exists is left to the reduction that applies it.
+  Each one comes back whole with its `Unapplied` reason, since an id is only unique within its subtune. Whether a note-level decision's note exists is left to the reduction that applies it. The rules only ever make decisions that pass, as a property test checks, as long as parts are clipped to the subtune before they're reduced.
 - **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
 
 A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).

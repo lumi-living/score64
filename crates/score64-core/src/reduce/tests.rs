@@ -854,15 +854,24 @@ fn trims_and_fresh_starts_in_force_set_the_note() {
         &[
             person("short-c", trim_of(0, "C-4", 2)),
             person("long-d", trim_of(4, "D-4", 8)),
+            person("long-e", trim_of(12, "E-4", 100)),
         ],
     );
-    // C-4 shortened, so D-4's tie lost its note and the rule restarts it; D-4 lengthened to the gap.
+    // C-4 shortened, so D-4's tie lost its note and the rule restarts it. A trim only shortens: D-4 into the gap,
+    // and the last note past its own end (or the subtune's), are refused.
     assert_eq!(
         shape(&r.notes),
         [
             (0, 2, "C-4".into()),
-            (4, 8, "D-4".into()),
+            (4, 4, "D-4".into()),
             (12, 4, "E-4".into())
+        ]
+    );
+    assert_eq!(
+        unapplied(&r),
+        [
+            ("long-d", Unapplied::Lengthens),
+            ("long-e", Unapplied::Lengthens)
         ]
     );
     assert_eq!(
@@ -875,7 +884,6 @@ fn trims_and_fresh_starts_in_force_set_the_note() {
             .iter()
             .any(|p| matches!(p, Proposal::Retrigger { row: 4, .. }))
     );
-    assert!(r.unapplied.is_empty());
     // A fresh start in force: D-4 starts fresh with the person's id, and the rule records no tie of its own.
     let r = monophonise_with(
         vec![note(0, 2, "C-4", 0.9), legato(note(4, 4, "D-4", 0.9))],
@@ -937,7 +945,7 @@ fn overrides_that_cant_apply_say_why() {
         unapplied(&r),
         [
             ("gone", Unapplied::NoSuchNote),
-            ("into-d", Unapplied::Overlaps),
+            ("into-d", Unapplied::Lengthens),
             ("absent", Unapplied::NoSuchNote),
             ("nowhere", Unapplied::NoSuchNote),
         ]
@@ -1024,6 +1032,219 @@ proptest! {
         prop_assert!(r.unapplied.len() <= overrides.len());
         for w in r.notes.windows(2) {
             prop_assert!(w[0].row + w[0].length.get() <= w[1].row, "overlap {w:?}");
+        }
+    }
+}
+
+#[test]
+fn a_forced_drop_of_identical_twins_takes_the_one_the_rule_would() {
+    let n = name();
+    // Two C-4s of one length on one row: the rule keeps the fresh, confident one and drops the other as a repeat.
+    let mut twin = legato(note(0, 4, "C-4", 0.5));
+    twin.instrument = Some(PresetId("other".into()));
+    let soup = vec![note(0, 4, "C-4", 0.9), twin];
+    let plain = monophonise(soup.clone(), &at(&n), &MonoRules::default());
+    let r = monophonise_with(
+        soup.clone(),
+        &at(&n),
+        &MonoRules::default(),
+        &[person("agree", drop_of(0, 4, "C-4"))],
+    );
+    // Agreeing with the rule changes nothing in the line.
+    assert_eq!(r.notes, plain.notes);
+    // With a source span, the drop takes exactly that note.
+    let span = |k: u8| SourceRef::new(ContentHash([k; 32]), 0, 1).unwrap();
+    let mut a = note(0, 4, "C-4", 0.9);
+    a.source = Some(span(1));
+    let mut b = note(0, 4, "C-4", 0.5);
+    b.source = Some(span(2));
+    let mut by_span = drop_of(0, 4, "C-4");
+    if let Proposal::DropNote { source, .. } = &mut by_span {
+        *source = Some(span(1));
+    }
+    let r = monophonise_with(
+        vec![a, b],
+        &at(&n),
+        &MonoRules::default(),
+        &[person("first", by_span)],
+    );
+    assert_eq!(r.notes.len(), 1);
+    assert_eq!(r.notes[0].source, Some(span(2)));
+}
+
+#[test]
+fn a_models_drop_gives_way_to_a_persons_trim_or_fresh_start() {
+    let n = name();
+    let mut model_drop = person("model-drop", drop_of(0, 8, "C-4"));
+    model_drop.provenance = Provenance::Llm {
+        model: "any".into(),
+        prompt: ContentHash([1; 32]),
+    };
+    let soup = vec![note(0, 8, "C-4", 0.9), note(8, 4, "D-4", 0.9)];
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[model_drop, person("short-c", trim_of(0, "C-4", 4))],
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 4, "C-4".into()), (8, 4, "D-4".into())]
+    );
+    assert_eq!(unapplied(&r), [("model-drop", Unapplied::Overruled)]);
+}
+
+#[test]
+fn the_rules_trim_stays_where_no_trim_applied() {
+    let n = name();
+    // The rule trims both C-4 (to 4) and E-4 (to 4); only C-4 has a trim in force, and a second trim for E-4 can't
+    // apply (it lengthens).
+    let soup = vec![
+        note(0, 8, "C-4", 0.9),
+        note(4, 8, "E-4", 0.9),
+        note(8, 4, "G-4", 0.9),
+    ];
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("c2", trim_of(0, "C-4", 2)),
+            person("e6", trim_of(4, "E-4", 6)),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("e6", Unapplied::Lengthens)]);
+    let trims: Vec<u32> = r
+        .decisions
+        .iter()
+        .filter_map(|d| match d.proposal {
+            Proposal::TrimNote { row, .. } => Some(row),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(trims, [4], "only E-4 keeps the rule's trim");
+    assert_eq!(r.notes[0].decision.as_ref().map(|d| d.as_str()), Some("c2"));
+    assert_eq!(
+        r.notes[1].decision.as_ref().map(|d| d.as_str()),
+        Some("mono-trim-v1-r4")
+    );
+    // A trim to the rule's own length replaces the rule's trim, and the note records the override.
+    let soup = vec![note(0, 8, "C-4", 0.9), note(4, 4, "E-4", 0.9)];
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[person("c4", trim_of(0, "C-4", 4))],
+    );
+    assert!(r.decisions.is_empty(), "{:?}", r.decisions);
+    assert_eq!(r.notes[0].decision.as_ref().map(|d| d.as_str()), Some("c4"));
+}
+
+#[test]
+fn an_earlier_rules_id_and_unchanged_notes_keep_what_they_record() {
+    let n = name();
+    let mut folded = note(0, 8, "C-4", 0.9);
+    folded.decision = Some(DecisionId::new("octave-v1-b0").unwrap());
+    let r = monophonise_with(
+        vec![folded, note(12, 4, "D-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("c2", trim_of(0, "C-4", 2)),
+            // Already fresh, and already 4 long: these change nothing, so D-4 records nothing.
+            person("fresh-d", retrigger_of(12, "D-4")),
+            person("same-d", trim_of(12, "D-4", 4)),
+        ],
+    );
+    assert_eq!(shape(&r.notes)[0], (0, 2, "C-4".into()));
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(|d| d.as_str()),
+        Some("octave-v1-b0")
+    );
+    assert_eq!(r.notes[1].decision, None);
+    assert!(r.unapplied.is_empty());
+}
+
+#[test]
+fn below_the_minimum_is_a_persons_call() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(4).unwrap(),
+        ..MonoRules::default()
+    };
+    let soup = vec![note(0, 8, "C-4", 0.9), note(8, 4, "D-4", 0.9)];
+    let mut by_model = person("model", trim_of(0, "C-4", 1));
+    by_model.provenance = Provenance::Llm {
+        model: "any".into(),
+        prompt: ContentHash([1; 32]),
+    };
+    let r = monophonise_with(soup.clone(), &at(&n), &rules, &[by_model.clone()]);
+    assert_eq!(unapplied(&r), [("model", Unapplied::OutOfRange)]);
+    // Reviewed, it is the person's.
+    by_model.reviewed = true;
+    let r = monophonise_with(soup.clone(), &at(&n), &rules, &[by_model]);
+    assert_eq!(shape(&r.notes)[0], (0, 1, "C-4".into()));
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &rules,
+        &[person("mine", trim_of(0, "C-4", 1))],
+    );
+    assert_eq!(shape(&r.notes)[0], (0, 1, "C-4".into()));
+}
+
+proptest! {
+    /// Overrides in any order give the same result, and every id a note records is a decision of this call, an
+    /// override that applied, or one the note came in with.
+    #[test]
+    fn overrides_in_any_order_and_ids_that_exist(
+        soup in strategies::note_soup(),
+        rules in any_rules(),
+        picks in proptest::collection::vec((any::<proptest::sample::Index>(), 0u8..3, 1u32..12, any::<bool>()), 0..6),
+        seed in any::<u64>(),
+    ) {
+        prop_assume!(!soup.is_empty());
+        let n = name();
+        let overrides: Vec<Decision> = picks
+            .iter()
+            .enumerate()
+            .map(|(k, (i, kind, len, model))| {
+                let o = &soup[i.index(soup.len())];
+                let pitch = o.pitch.to_string();
+                let p = match kind {
+                    0 => drop_of(o.row, o.length.get(), &pitch),
+                    1 => trim_of(o.row, &pitch, *len),
+                    _ => retrigger_of(o.row, &pitch),
+                };
+                let mut d = person(&format!("o{k}"), p);
+                if *model {
+                    d.provenance = Provenance::Llm { model: "any".into(), prompt: ContentHash([1; 32]) };
+                }
+                d
+            })
+            .collect();
+        let r = monophonise_with(soup.clone(), &at(&n), &rules, &overrides);
+        let mut shuffled = overrides.clone();
+        let mut state = seed;
+        for i in (1..shuffled.len()).rev() {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            shuffled.swap(i, (state >> 33) as usize % (i + 1));
+        }
+        let again = monophonise_with(soup, &at(&n), &rules, &shuffled);
+        prop_assert_eq!(&r.notes, &again.notes);
+        prop_assert_eq!(&r.decisions, &again.decisions);
+        let mut a = r.unapplied.clone();
+        let mut b = again.unapplied.clone();
+        a.sort_by(|x, y| x.0.cmp(&y.0));
+        b.sort_by(|x, y| x.0.cmp(&y.0));
+        prop_assert_eq!(a, b);
+        let refused: Vec<&DecisionId> = r.unapplied.iter().map(|(id, _)| id).collect();
+        for kept in &r.notes {
+            if let Some(id) = &kept.decision {
+                let ok = r.decisions.iter().any(|d| &d.id == id)
+                    || overrides.iter().any(|d| &d.id == id && !refused.contains(&id));
+                prop_assert!(ok, "{id:?} is neither a decision of the call nor an applied override");
+            }
         }
     }
 }
