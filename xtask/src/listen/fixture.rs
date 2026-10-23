@@ -25,12 +25,13 @@ pub struct Case {
 }
 
 /// Every built-in case's name.
-pub const NAMES: [&str; 5] = [
+pub const NAMES: [&str; 6] = [
     "sixteen-steps",
     "sixteen-steps-adaptive",
     "combat-filtered",
     "ties-keyoffs-arp",
     "loop-tempo",
+    "bass-arps",
 ];
 
 /// The built-in case called `name`.
@@ -97,6 +98,17 @@ pub fn case(name: &str) -> Option<Case> {
                 the first must keep the loop row's slower tempo, because the export sets it there. **Known:** the \
                 gaps are not fully silent. The oscillator keeps running after a key-off and leaks a faint tone at \
                 the note's pitch (#186).",
+        },
+        "bass-arps" => Case {
+            name: "bass-arps",
+            song: bass_arps(),
+            adaptive: vec![],
+            notes: "`sixteen-steps`' `main` with **no arp voice**: its chords go on the bass instead, through \
+                `reduce::arpeggiate_on_bass` (#164). The bass (voice 3) keeps its notes on beats 1 and 3 and plays \
+                the bar's chord as an arpeggio on beats 2 and 4, rooted near the bass note before it. **Listen \
+                for:** the harmony still coming through with one voice fewer; the bass line still clear on the \
+                strong beats; no clicks or dropouts where the arpeggio starts and stops. A/B against \
+                `sixteen-steps-main`, which has the chords on a voice of their own.",
         },
         _ => return None,
     })
@@ -455,6 +467,55 @@ fn sixteen_steps() -> Song {
         subtune("main", 6, 128, vec![melody("lead"), chords, bass]),
         subtune("combat", 6, 128, vec![melody("lead-combat"), pluck, drums]),
     ])
+}
+
+/// `sixteen-steps`' `main` without its arp voice, the chords put on the bass's weak beats.
+fn bass_arps() -> Song {
+    use score64_core::reduce::{
+        BassArpRules, Chord, ChordQuality, ChordSpan, Placement, arpeggiate_on_bass,
+    };
+    let mut song = sixteen_steps();
+    song.subtunes.truncate(1);
+    let main = &mut song.subtunes[0];
+    main.voices.retain(|v| v.voice.get() != 2);
+    let spans: Vec<ChordSpan> = (0..8u32)
+        .map(|bar| {
+            let (root, major) = CHORDS[bar as usize];
+            ChordSpan {
+                row: bar * 16,
+                length: NonZeroU32::new(16).expect("non-zero"),
+                chord: Chord {
+                    root: root % 12,
+                    quality: if major {
+                        ChordQuality::Major
+                    } else {
+                        ChordQuality::Minor
+                    },
+                },
+                confidence: Confidence::new(1.0).expect("in range"),
+            }
+        })
+        .collect();
+    let bass = main
+        .voices
+        .iter_mut()
+        .find(|v| v.voice.get() == 3)
+        .expect("the bass");
+    let at = Placement {
+        subtune: &main.name,
+        voice: bass.voice,
+        rows_per_bar: main.rows_per_bar,
+    };
+    let line = arpeggiate_on_bass(
+        bass.notes.clone(),
+        &spans,
+        &at,
+        &BassArpRules::default(),
+        score64_core::validate::RoleRanges::default().bass,
+    );
+    bass.notes = line.notes;
+    bass.arps = line.arps;
+    song
 }
 
 fn ties_keyoffs_arp() -> Song {

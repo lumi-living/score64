@@ -6,7 +6,8 @@
 //! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles'
 //! ranges. [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of their own or into another line.
 //! [`find_loop`] (#44) proposes where a subtune loops back to.
-//! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios.
+//! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios; [`arpeggiate_on_bass`] (#164)
+//! puts it on the bass's weak beats when no voice is free.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,6 +19,8 @@ use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, 
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
 pub use crate::decide::Unapplied;
+mod bass_arps;
+pub use bass_arps::{BASS_ARPS, BassArpRoot, BassArpRules, arpeggiate_on_bass};
 mod chords;
 mod lead;
 mod looping;

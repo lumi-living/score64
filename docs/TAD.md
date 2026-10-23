@@ -206,6 +206,12 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 - **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
   - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
   - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
+- **On the bass's weak beats** (`reduce::arpeggiate_on_bass`, rule `bass-arps@1`, #164). When no voice is free for an arp, the bass plays its notes on the strong beats and the chords as arpeggios on the weak ones.
+  - **Where.** Each weak beat inside a chord span gets the span's chord, from the beat's first row to its end, or to the span's end if that's sooner. The weak beats and the rows in a beat are settings: beats 2 and 4 of four-row beats by default.
+  - **The bass.** Bass notes starting in that beat are dropped (`interleave`), and one sounding into it is trimmed to end there; neither resumes after the arpeggio. A tie that lost its note starts fresh.
+  - **The root.** The chord's root nearest the bass note before it, either inside the bass range or an octave above the bass (a setting), always low enough for the whole chord to stay playable.
+  - **Decisions.** Each arpeggio is a `Chord` decision (`bassarp-chord-v<voice>-r<row>`, as sure as its span), which its root note and arpeggio record. Drops, trims and restarts are certain, with ids `bassarp-<kind>-…` as for monophonise. Beats without a chord keep the bass as it was.
+  - **Checked.** A property: any clean bass line with any detected chords gives a line that validates with no errors, with every change made by a decision.
   - **GoatTracker encoding:** `score64_formats::gt2::wave::arpeggio` writes an arp event's intervals as a looping wavetable program, reusing identical ones. The `.sng` export (#47) points the voice at it with `8XY` on the event's row, and back at the instrument's own program where the event ends while the note sounds on.
 
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
