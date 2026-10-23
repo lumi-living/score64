@@ -210,7 +210,7 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 - **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
   - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
   - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
-  - GoatTracker's wavetable encoding of an arpeggio belongs to the `.sng` writer (#47).
+  - **GoatTracker encoding:** `score64_formats::gt2::wave::arpeggio` writes an arp event's intervals as a looping wavetable program, reusing identical ones. The `.sng` writer (#47) points the note's row at it with `8XY`.
 
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.

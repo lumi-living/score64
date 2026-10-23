@@ -321,7 +321,8 @@ fn orderlist(entries: &[u8], restart: u8) -> String {
     for &e in entries {
         parts.push(match e {
             0x00..=0xCF => format!("{e:02X}"),
-            0xD0..=0xDF => format!("R{:X}", e - 0xD0),
+            // Shown as the editor does: $D0 is R1 (once), $DF is R0 (16 times).
+            0xD0..=0xDF => format!("R{:X}", (e - 0xD0 + 1) & 0x0F),
             0xE0..=0xEF => format!("-{:X}", 0xF0 - u16::from(e)),
             0xF0..=0xFE => format!("+{:X}", e - 0xF0),
             0xFF => "RST?".into(),
@@ -518,6 +519,14 @@ pub fn sfx(data: &[u8]) -> Result<String, AnnotateError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn orderlist_commands_are_shown_as_the_editor_shows_them() {
+        assert_eq!(
+            orderlist(&[0xD0, 0xDE, 0xDF, 0xF0, 0xFE, 0xE1, 0x07], 0),
+            "R1 RF R0 +0 +E -F 07 RST 00"
+        );
+    }
 
     #[test]
     fn notes_and_waveforms() {
