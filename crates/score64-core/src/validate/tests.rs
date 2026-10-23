@@ -730,34 +730,353 @@ fn rule_9_hard_restart() {
     );
 }
 
-#[test]
-fn rule_8_pack_budget() {
-    let budget = PackBudget {
-        max_bytes: 4096,
+fn budget() -> PackBudget {
+    PackBudget {
+        first: 0x1000,
+        last: 0x1FFF,
         zero_page: 0xF8,
+        sound_effects: true,
+        max_play_cycles: None,
+    }
+}
+
+/// A tune at $1000 of 3000 bytes that does everything right.
+fn facts() -> PackFacts {
+    PackFacts {
+        start: 0x1000,
+        size: 3000,
+        jump_table: [Some(0x1009), Some(0x1040), Some(0x10A0)],
+        zero_page_used: [0xF8, 0xF9].into(),
+        pages_written_outside: [].into(),
+        traced_window: Some((0x1000, 0x1FFF)),
+        max_play_cycles: Some(1500),
+    }
+}
+
+fn pack_messages(f: &PackFacts, b: &PackBudget) -> Vec<String> {
+    let p = check_pack(f, b);
+    assert!(
+        p.iter()
+            .all(|p| p.rule == Rule::Pack && p.severity == Severity::Error)
+    );
+    p.into_iter().map(|p| p.message).collect()
+}
+
+const NONE: [&str; 0] = [];
+
+#[test]
+fn rule_8_a_tune_inside_its_window_passes() {
+    assert_eq!(pack_messages(&facts(), &budget()), NONE);
+    // Exactly filling the window, with only part of the pair used.
+    let f = PackFacts {
+        size: 0x1000,
+        zero_page_used: [0xF9].into(),
+        ..facts()
+    };
+    assert_eq!(pack_messages(&f, &budget()), NONE);
+}
+
+#[test]
+fn rule_8_an_untraced_pack_fails() {
+    // Empty sets from no trace at all would pass every check; the missing trace is the problem.
+    let f = PackFacts {
+        zero_page_used: [].into(),
+        traced_window: None,
+        ..facts()
+    };
+    let p = check_pack(&f, &budget());
+    assert_eq!(
+        p.iter().map(|p| p.message.as_str()).collect::<Vec<_>>(),
+        [
+            "the player wasn't traced, so its zero page and its writes outside the window weren't measured"
+        ]
+    );
+    assert!(p[0].hint.contains("emulator helper"));
+}
+
+#[test]
+fn rule_8_memory_window() {
+    let too_big = PackFacts {
+        size: 0x1001,
+        ..facts()
     };
     assert_eq!(
-        check_pack(
-            PackFacts {
-                bytes: 4000,
-                zero_page: 0xF8
-            },
-            budget
-        ),
-        []
+        pack_messages(&too_big, &budget()),
+        ["the tune takes $1000–$2000 (4097 bytes), outside the window $1000–$1FFF"]
     );
-    let p = check_pack(
-        PackFacts {
-            bytes: 5000,
-            zero_page: 0xFB,
-        },
-        budget,
-    );
-    assert_eq!(p.len(), 2);
     assert!(
-        p[1].message.contains("$FB–$FC") && p[1].message.contains("$F8–$F9"),
-        "{}",
-        p[1].message
+        check_pack(&too_big, &budget())[0]
+            .hint
+            .contains("larger window")
+    );
+    let early = PackFacts {
+        start: 0x0F00,
+        jump_table: [Some(0x0F09), Some(0x0F40), Some(0x0FA0)],
+        ..facts()
+    };
+    let p = check_pack(&early, &budget());
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].message.contains("$0F00–$1AB7") && p[0].hint.contains("player page"));
+    // The top of memory: $F000 + $1000 bytes ends at $FFFF.
+    let top = PackFacts {
+        start: 0xF000,
+        size: 0x1000,
+        jump_table: [Some(0xF009); 3],
+        traced_window: Some((0xF000, 0xFFFF)),
+        ..facts()
+    };
+    let b = PackBudget {
+        first: 0xF000,
+        last: 0xFFFF,
+        ..budget()
+    };
+    assert_eq!(pack_messages(&top, &b), NONE);
+    // An empty tune is one problem, not also three jump-table ones.
+    let empty = PackFacts { size: 0, ..facts() };
+    assert_eq!(
+        pack_messages(&empty, &budget()),
+        ["the packed tune is empty"]
+    );
+    // Facts from outside are never trusted to be sane: no overflow, and past $FFFF is its own problem.
+    let past = PackFacts {
+        start: 0xFF00,
+        size: 0x200,
+        traced_window: Some((0xF000, 0xFFFF)),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&past, &b),
+        ["the tune at $FF00 is 512 bytes, which runs past $FFFF"]
+    );
+    let huge = PackFacts {
+        start: 0xFFFF,
+        size: u32::MAX,
+        traced_window: Some((0xF000, 0xFFFF)),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&huge, &b),
+        ["the tune at $FFFF is 4294967295 bytes, which runs past $FFFF"]
+    );
+    // An inverted window is the only problem reported against it.
+    let b = PackBudget {
+        first: 0x2000,
+        last: 0x1000,
+        ..budget()
+    };
+    let f = PackFacts {
+        pages_written_outside: [0x30].into(),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &b),
+        ["the memory window $2000–$1000 ends before it starts"]
+    );
+}
+
+#[test]
+fn rule_8_jump_table() {
+    let f = PackFacts {
+        jump_table: [Some(0x1009), None, Some(0x2000)],
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &budget()),
+        [
+            "no JMP at $1003, the play entry",
+            "the sound-effect entry at $1006 jumps to $2000, outside the tune",
+        ]
+    );
+    // Without effects, start+6 isn't the target's business.
+    let f = PackFacts {
+        jump_table: [Some(0x1009), Some(0x1040), None],
+        ..facts()
+    };
+    let b = PackBudget {
+        sound_effects: false,
+        ..budget()
+    };
+    assert_eq!(pack_messages(&f, &b), NONE);
+    let p = check_pack(&f, &budget());
+    assert_eq!(p.len(), 1);
+    assert!(p[0].hint.contains("-D1"));
+    // Into the tune: its last byte is inside, one past it and one before it are not.
+    let f = PackFacts {
+        jump_table: [Some(0x0FFF), Some(0x1BB8), Some(0x1BB7)],
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &budget()),
+        [
+            "the init entry at $1000 jumps to $0FFF, outside the tune",
+            "the play entry at $1003 jumps to $1BB8, outside the tune",
+        ]
+    );
+    // Not into the jump table itself: with effects it ends at start+8, without at start+5.
+    let f = PackFacts {
+        jump_table: [Some(0x1000), Some(0x1008), Some(0x1009)],
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &budget()),
+        [
+            "the init entry at $1000 jumps to $1000, inside the jump table",
+            "the play entry at $1003 jumps to $1008, inside the jump table",
+        ]
+    );
+    let f = PackFacts {
+        jump_table: [Some(0x1006), Some(0x1005), None],
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &b),
+        ["the play entry at $1003 jumps to $1005, inside the jump table"]
+    );
+    // The table must fit: 9 bytes with effects, 6 without.
+    // (A tune that small can only jump into its own table, so the entries are left out: at the edge, each entry is
+    // checked; one byte short, only the size is reported.)
+    let short = |size| PackFacts {
+        size,
+        jump_table: [None; 3],
+        ..facts()
+    };
+    assert_eq!(pack_messages(&short(9), &budget()).len(), 3);
+    assert!(
+        pack_messages(&short(9), &budget())
+            .iter()
+            .all(|m| m.starts_with("no JMP"))
+    );
+    assert_eq!(
+        pack_messages(&short(8), &budget()),
+        ["the tune is 8 bytes, too short for its jump table (9 bytes with the sound-effect entry)"]
+    );
+    assert_eq!(pack_messages(&short(6), &b).len(), 2);
+    assert_eq!(
+        pack_messages(&short(5), &b),
+        ["the tune is 5 bytes, too short for its jump table (6 bytes)"]
+    );
+    // At the top of memory the message names no address past $FFFF.
+    let top = PackFacts {
+        start: 0xFFFF,
+        size: 1,
+        traced_window: Some((0xF000, 0xFFFF)),
+        ..facts()
+    };
+    let tb = PackBudget {
+        first: 0xF000,
+        last: 0xFFFF,
+        ..budget()
+    };
+    assert_eq!(
+        pack_messages(&top, &tb),
+        ["the tune is 1 byte, too short for its jump table (9 bytes with the sound-effect entry)"]
+    );
+}
+
+#[test]
+fn rule_8_zero_page_and_writes_outside() {
+    let f = PackFacts {
+        zero_page_used: [0x02, 0xF8, 0xF9, 0xFB].into(),
+        pages_written_outside: [0x03, 0xC0].into(),
+        ..facts()
+    };
+    let p = check_pack(&f, &budget());
+    assert_eq!(
+        p.iter().map(|p| p.message.as_str()).collect::<Vec<_>>(),
+        [
+            "the player uses zero page $02, $FB outside the configured $F8–$F9",
+            "the player writes outside its window $1000–$1FFF, in pages $03xx, $C0xx",
+        ]
+    );
+    assert!(p[0].hint.contains("-Z"));
+    // The 6510's port is never part of the pair: a pair at $00, $01 or $FF (wrapping onto $00) is a budget error,
+    // and a player using $00/$01 is reported. $02 and $FE are the first and last pairs.
+    let f = PackFacts {
+        zero_page_used: [0xFF, 0x00].into(),
+        ..facts()
+    };
+    let b = PackBudget {
+        zero_page: 0xFF,
+        ..budget()
+    };
+    assert_eq!(
+        pack_messages(&f, &b),
+        [
+            "the configured zero page $FF isn't a pair in $02–$FF: $00/$01 are the 6510's port",
+            "the player uses zero page $00 outside the configured $FF–$00",
+        ]
+    );
+    for (zp, used, problems) in [
+        (0x00, [0x00, 0x01], 2),
+        (0x01, [0x01, 0x02], 2),
+        (0x02, [0x02, 0x03], 0),
+        (0xFE, [0xFE, 0xFF], 0),
+    ] {
+        let f = PackFacts {
+            zero_page_used: used.into(),
+            ..facts()
+        };
+        let b = PackBudget {
+            zero_page: zp,
+            ..budget()
+        };
+        assert_eq!(pack_messages(&f, &b).len(), problems, "zero page ${zp:02X}");
+    }
+    // A write to a SID mirror or a second SID's address is reported like any other.
+    let f = PackFacts {
+        pages_written_outside: [0xD5].into(),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &budget()),
+        ["the player writes outside its window $1000–$1FFF, in page $D5xx"]
+    );
+    // The writes must have been measured against the budget's window.
+    let f = PackFacts {
+        traced_window: Some((0x1000, 0x2FFF)),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &budget()),
+        ["the trace measured writes outside $1000–$2FFF, not the window $1000–$1FFF"]
+    );
+}
+
+#[test]
+fn rule_8_raster_time() {
+    let b = PackBudget {
+        max_play_cycles: Some(1500),
+        ..budget()
+    };
+    assert_eq!(pack_messages(&facts(), &b), NONE);
+    let slow = PackFacts {
+        max_play_cycles: Some(1501),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&slow, &b),
+        ["the longest play call takes 1501 cycles, over the budget of 1500"]
+    );
+    let unmeasured = PackFacts {
+        max_play_cycles: None,
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&unmeasured, &b),
+        ["the play routine's time wasn't measured, and the budget is 1500 cycles"]
+    );
+    // No budget: not checked.
+    assert_eq!(pack_messages(&slow, &budget()), NONE);
+}
+
+#[test]
+fn rule_8_facts_serialise() {
+    let json = serde_json::to_string(&facts()).unwrap();
+    assert_eq!(serde_json::from_str::<PackFacts>(&json).unwrap(), facts());
+    let b = budget();
+    assert_eq!(
+        serde_json::from_str::<PackBudget>(&serde_json::to_string(&b).unwrap()).unwrap(),
+        b
     );
 }
 

@@ -39,7 +39,9 @@ pub use score::{
 pub use transcription::{
     DroppedNote, QuantiseReport, QuantisedPart, SourceNote, TranscribedPart, Unplaced,
 };
-pub use validate::{Context, InstrumentFacts, Problem, Rule, check_pack, validate};
+pub use validate::{
+    Context, InstrumentFacts, PackBudget, PackFacts, Problem, Rule, check_pack, validate,
+};
 
 #[cfg(test)]
 mod properties;
