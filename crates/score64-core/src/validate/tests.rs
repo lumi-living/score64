@@ -451,6 +451,21 @@ fn rule_5_a_layer_shared_by_sets_must_switch_alike() {
         .collect();
     assert_eq!(e.len(), 1, "{p:?}");
     assert!(e[0].message.contains("`a`, `b`, `c`"), "{}", e[0].message);
+    // Only the third differs: still found.
+    ctx.adaptive[1] = set("b", &["calm"], Switch::EveryBar);
+    assert_eq!(errors(&ctx), ["calm"]);
+    // A set without the layer switching at a stray mark's row doesn't excuse it.
+    ctx.adaptive = vec![
+        set("explore", &["calm"], every(2)),
+        set("other", &["tension"], Switch::EveryBar),
+    ];
+    let p = validate(&song, &ctx);
+    assert!(
+        p.iter().any(|p| p.severity == Severity::Warning
+            && p.subtune.as_ref().map(|s| s.as_str()) == Some("calm")
+            && p.row == Some(16)),
+        "{p:?}"
+    );
 }
 
 #[test]

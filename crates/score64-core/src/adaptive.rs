@@ -353,6 +353,20 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_mark_written_twice_is_one_problem() {
+        let mut s = song(&["calm"]);
+        s.subtunes[0].marks = vec![0, 8, 8, 16];
+        let set = AdaptiveSet::new("s", vec![n("calm")]).unwrap();
+        assert_eq!(
+            set.check(&s),
+            [LayerProblem::OffSwitch {
+                layer: n("calm"),
+                row: 8
+            }]
+        );
+    }
+
+    #[test]
     fn sets_declare_their_switch_points() {
         let layers = || vec![n("calm"), n("tension")];
         let mut s = song(&["calm", "tension"]);
