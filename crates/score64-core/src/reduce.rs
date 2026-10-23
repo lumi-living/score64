@@ -139,12 +139,13 @@ pub fn monophonise(
 ///   can't apply: those are separate slots, so `resolve` keeps all three, and a stronger decision about the note
 ///   means it should stay. It takes the note from its source span when it names one; of identical notes otherwise,
 ///   the one the rule would drop.
-/// - Of several decisions for one slot (as when `resolve` hasn't run), the strongest that can apply wins and the
-///   others are `overruled` or `outranked`, as `resolve` would choose.
+/// - Of several decisions for one slot (as when `resolve` hasn't run), the strongest claims it, whether or not it then
+///   applies, and the others are `overruled` or `outranked`: the result is the one `resolve` and then this rule give.
 ///
 /// A note an override names that isn't there (a different note is in its place, or the rule dropped it) is reported
 /// as `no_such_note`. The rule records no decision of its own for what an override did. A note an override changed
-/// records the override's id in place of this rule's; an id from an earlier rule stays. The order of `overrides` doesn't matter.
+/// records the override's id in place of this rule's; an id from an earlier rule stays. The order of `overrides`
+/// doesn't matter.
 pub fn monophonise_with(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
@@ -163,8 +164,8 @@ pub fn monophonise_with(
             _ => false,
         })
         .collect();
-    // In slot order, strongest first, so the order they come in never matters. Of several for one slot, the first
-    // that can apply wins and the rest lose to it, as `resolve` would choose.
+    // In slot order, strongest first, so the order they come in never matters. Of several for one slot, the strongest
+    // claims it and the rest lose to it, as `resolve` would choose.
     mine.sort_by(|a, b| {
         a.slot()
             .cmp(&b.slot())
@@ -191,6 +192,8 @@ pub fn monophonise_with(
             unapplied.push((d.id.clone(), crate::decide::lost_to(d, w)));
             continue;
         }
+        // The strongest claims its slot whether or not it then applies, as `resolve` would.
+        won.insert(d.slot(), d);
         let stronger = mine.iter().any(|o| {
             o.rank() > d.rank()
                 && matches!(o.proposal,
@@ -212,7 +215,6 @@ pub fn monophonise_with(
         match found {
             Some(i) => {
                 notes.remove(i);
-                won.insert(d.slot(), d);
             }
             None => unapplied.push((d.id.clone(), Unapplied::NoSuchNote)),
         }
@@ -327,6 +329,7 @@ pub fn monophonise_with(
                     unapplied.push((d.id.clone(), crate::decide::lost_to(d, w)));
                     continue;
                 }
+                won.insert(d.slot(), d);
                 let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
                     unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
@@ -342,7 +345,6 @@ pub fn monophonise_with(
                     continue;
                 }
                 trimmed.push((row, pitch));
-                won.insert(d.slot(), d);
                 // The override takes the place of the rule's trim, so the note records it when it changes the
                 // length or when the rule's trim had set it.
                 let rules_trim = n.decision.is_some() && own(&n.decision, &log);
@@ -356,11 +358,11 @@ pub fn monophonise_with(
                     unapplied.push((d.id.clone(), crate::decide::lost_to(d, w)));
                     continue;
                 }
+                won.insert(d.slot(), d);
                 let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
                     unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
                 };
-                won.insert(d.slot(), d);
                 if n.attack != Attack::Fresh {
                     n.attack = Attack::Fresh;
                     if own(&n.decision, &log) {

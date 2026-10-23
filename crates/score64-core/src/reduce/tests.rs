@@ -1344,3 +1344,113 @@ fn a_stronger_fresh_start_keeps_the_note_and_another_pitch_doesnt() {
     assert!(!unapplied(&r).contains(&("m-drop", Unapplied::Overruled)));
     assert!(r.notes.iter().all(|x| x.pitch.to_string() != "C-4"));
 }
+
+#[test]
+fn the_strongest_keeps_its_slot_even_when_it_cant_apply() {
+    let n = name();
+    let soup = vec![note(0, 8, "C-4", 0.9), note(8, 4, "D-4", 0.9)];
+    // A person's trim that would lengthen C-4 still holds the slot: the model's trim doesn't take it, and C-4 keeps
+    // the rule's length, as `resolve` and then the rule would give.
+    let overrides = [
+        person("p-long", trim_of(0, "C-4", 10)),
+        as_model(person("m-short", trim_of(0, "C-4", 2))),
+    ];
+    let r = monophonise_with(soup.clone(), &at(&n), &MonoRules::default(), &overrides);
+    assert_eq!(shape(&r.notes)[0], (0, 8, "C-4".into()));
+    assert_eq!(
+        sorted(unapplied(&r)),
+        [
+            ("m-short", Unapplied::Overruled),
+            ("p-long", Unapplied::Lengthens)
+        ]
+    );
+    // A person's trim that would lengthen still keeps the note against a model's drop.
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            as_model(person("m-drop", drop_of(0, 8, "C-4"))),
+            person("p-long", trim_of(0, "C-4", 10)),
+        ],
+    );
+    assert_eq!(
+        sorted(unapplied(&r)),
+        [
+            ("m-drop", Unapplied::Overruled),
+            ("p-long", Unapplied::Lengthens)
+        ]
+    );
+    assert_eq!(r.notes[0].pitch.to_string(), "C-4");
+}
+
+#[test]
+fn slots_are_per_note_and_a_second_fresh_start_loses_even_on_a_fresh_note() {
+    let n = name();
+    // Two drops on one row, of different notes: both apply.
+    let soup = vec![
+        note(0, 4, "C-4", 0.9),
+        note(0, 4, "E-4", 0.9),
+        note(0, 2, "C-4", 0.9),
+    ];
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("no-e", drop_of(0, 4, "E-4")),
+            person("no-short-c", drop_of(0, 2, "C-4")),
+        ],
+    );
+    assert!(r.unapplied.is_empty(), "{:?}", r.unapplied);
+    assert_eq!(shape(&r.notes), [(0, 4, "C-4".into())]);
+    // A note that's already fresh: the first fresh start claims the slot (changing nothing), the second is outranked.
+    let r = monophonise_with(
+        vec![note(0, 4, "C-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a-fresh", retrigger_of(0, "C-4")),
+            person("b-fresh", retrigger_of(0, "C-4")),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("b-fresh", Unapplied::Outranked)]);
+}
+
+proptest! {
+    /// Applying the overrides directly gives what `resolve` and then the rule give.
+    #[test]
+    fn overrides_apply_as_resolve_would_choose(
+        soup in strategies::note_soup(),
+        rules in any_rules(),
+        picks in proptest::collection::vec((any::<proptest::sample::Index>(), 0u8..3, 1u32..12, any::<bool>()), 0..6),
+    ) {
+        prop_assume!(!soup.is_empty());
+        let n = name();
+        let overrides: Vec<Decision> = picks
+            .iter()
+            .enumerate()
+            .map(|(k, (i, kind, len, model))| {
+                let o = &soup[i.index(soup.len())];
+                let pitch = o.pitch.to_string();
+                let p = match kind {
+                    0 => drop_of(o.row, o.length.get(), &pitch),
+                    1 => trim_of(o.row, &pitch, *len),
+                    _ => retrigger_of(o.row, &pitch),
+                };
+                let d = person(&format!("o{k}"), p);
+                if *model { as_model(d) } else { d }
+            })
+            .collect();
+        let direct = monophonise_with(soup.clone(), &at(&n), &rules, &overrides);
+        let chosen = crate::decide::resolve(overrides).chosen;
+        let resolved = monophonise_with(soup, &at(&n), &rules, &chosen);
+        prop_assert_eq!(direct.notes, resolved.notes);
+        prop_assert_eq!(direct.decisions, resolved.decisions);
+    }
+}
+
+fn sorted<T>(mut v: Vec<(&str, T)>) -> Vec<(&str, T)> {
+    v.sort_by_key(|(id, _)| *id);
+    v
+}
