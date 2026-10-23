@@ -22,6 +22,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
+use score64_formats::packed::{Container, Payload};
+
 use crate::sidecar::{SidecarError, file_blake3, find_on_path, run_with_timeout};
 
 /// Where the player keeps its two zero-page bytes: `address` and `address + 1`.
@@ -151,12 +153,41 @@ pub struct Packed {
     pub path: PathBuf,
     /// Its format.
     pub format: Format,
-    /// The packed size gt2reloc reports (player and data, without a file header), for the size budget.
+    /// Where the player loads (the player page, `-W`).
+    pub start: u16,
+    /// The packed size gt2reloc reports (player and data, without a file header), cross-checked by
+    /// [`Packed::payload`], for rule 8.
     pub size: u32,
     /// The version from gt2reloc's banner.
     pub version: String,
     /// The blake3 of the gt2reloc program that packed it, lowercase hex, for provenance.
     pub program_blake3: String,
+}
+
+impl Packed {
+    /// The packed bytes, read back from the file: they must load at the player page and be exactly the size gt2reloc
+    /// reported, or it's a [`PackError::Mismatch`]. The budget gate (rule 8) reads its facts from these.
+    pub fn payload(&self) -> Result<Payload, PackError> {
+        let bytes = std::fs::read(&self.path).map_err(PackError::Io)?;
+        let container = match self.format {
+            Format::Prg => Container::Prg,
+            Format::Sid => Container::Sid,
+            Format::Bin => Container::Bin { load: self.start },
+        };
+        let payload = Payload::read(&bytes, container)
+            .map_err(|e| PackError::Mismatch(format!("{}: {e}", self.path.display())))?;
+        if payload.load != self.start || payload.data.len() as u64 != u64::from(self.size) {
+            return Err(PackError::Mismatch(format!(
+                "{} holds {} bytes at ${:04X}; gt2reloc reported {} at ${:04X}",
+                self.path.display(),
+                payload.data.len(),
+                payload.load,
+                self.size,
+                self.start
+            )));
+        }
+        Ok(payload)
+    }
 }
 
 /// Why packing failed.
@@ -402,6 +433,7 @@ impl Gt2Reloc {
                 Ok(Packed {
                     path: out.to_path_buf(),
                     format,
+                    start: u16::from(options.player_page) << 8,
                     size,
                     version: report.version.expect("checked"),
                     program_blake3,
