@@ -141,6 +141,15 @@ fn handle(session: &mut Option<Session>, request: Request) -> (Reply, bool) {
             };
             (result(s.model(chip)), false)
         }
+        Request::Trace {
+            zero_page,
+            outside,
+            watch,
+        } => (result(s.trace(zero_page, outside, watch)), false),
+        Request::Report => match s.report() {
+            Ok(t) => (Reply::Traced(t), false),
+            Err(f) => (error(f.code, f.message), false),
+        },
         Request::Quit => (Reply::Ok, true),
     }
 }
