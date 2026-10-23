@@ -36,6 +36,23 @@ pub const KEY_ON: u8 = 0xBF;
 /// The end mark of an orderlist (followed by the restart position) and of a pattern.
 pub const END: u8 = 0xFF;
 
+/// The orderlist entry that repeats the next pattern `times` times (1–16; `R0`, `$D0`, means 16).
+pub fn repeat(times: u8) -> Option<u8> {
+    match times {
+        16 => Some(0xD0),
+        1..=15 => Some(0xD0 + times),
+        _ => None,
+    }
+}
+
+/// The orderlist entry that transposes the following patterns by `semitones` (−15 to +14). The player adds the entry
+/// minus `$F0`, so `$F0` is no transpose and `$E1` is −15 (`gplay.c`).
+pub fn transpose(semitones: i8) -> Option<u8> {
+    (-15..=14)
+        .contains(&semitones)
+        .then(|| (0xF0_i16 + i16::from(semitones)) as u8)
+}
+
 /// One voice's orderlist in one subtune.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Orderlist {
@@ -64,6 +81,16 @@ pub struct Row {
 pub struct Pattern {
     /// The rows, in order.
     pub rows: Vec<Row>,
+    /// The end row's bytes after its `$FF`. GoatTracker's editor writes zeros; they are kept as read, so any file
+    /// writes back byte for byte.
+    pub end: [u8; 3],
+}
+
+impl Pattern {
+    /// A pattern of `rows`, with a zero end row.
+    pub fn new(rows: Vec<Row>) -> Self {
+        Pattern { rows, end: [0; 3] }
+    }
 }
 
 /// A song file.
@@ -178,12 +205,10 @@ impl Sng {
             pulse: Table::default(),
             filter: Table::default(),
             speed: Table::default(),
-            patterns: vec![Pattern {
-                rows: vec![Row {
-                    note: REST,
-                    ..Row::default()
-                }],
-            }],
+            patterns: vec![Pattern::new(vec![Row {
+                note: REST,
+                ..Row::default()
+            }])],
         }
     }
 
@@ -243,10 +268,11 @@ impl Sng {
                         data: b[3],
                     })
                     .collect();
-                if rows.pop().map(|end| end.note) != Some(END) {
-                    return Err(SngError::NoPatternEnd(r.at.saturating_sub(4)));
-                }
-                Ok(Pattern { rows })
+                let end = match rows.pop() {
+                    Some(end) if end.note == END => [end.instrument, end.command, end.data],
+                    _ => return Err(SngError::NoPatternEnd(r.at.saturating_sub(4))),
+                };
+                Ok(Pattern { rows, end })
             })
             .collect::<Result<Vec<_>, _>>()?;
         if r.at != data.len() {
@@ -314,6 +340,14 @@ impl Sng {
                 })?;
             }
         }
+        for (table, name) in [&self.wave, &self.pulse, &self.filter, &self.speed]
+            .into_iter()
+            .zip(TABLES)
+        {
+            if table.rows.len() > 255 {
+                return too_many(&format!("{name} rows"), table.rows.len(), 255);
+            }
+        }
         for (k, i) in self.instruments.iter().enumerate() {
             for (pointer, table, name) in [
                 (i.wave, &self.wave, TABLES[0]),
@@ -340,7 +374,8 @@ impl Sng {
             ));
         }
         match list.entries.last() {
-            None => return Err("the orderlist is empty".into()),
+            // GoatTracker saves empty orderlists, but gt2reloc drops their subtune, so Score64 doesn't write them.
+            None => return Err("the orderlist is empty, which Score64 doesn't write".into()),
             Some(&last) if last >= 0xD0 => {
                 return Err(format!(
                     "the last entry is ${last:02X}, not a pattern number"
@@ -348,12 +383,36 @@ impl Sng {
             }
             _ => {}
         }
-        for &e in &list.entries {
-            if e == END {
-                return Err("an entry is $FF, the end mark".into());
-            }
-            if e < 0xD0 && usize::from(e) >= self.patterns.len() {
-                return Err(format!("pattern {e:02X} does not exist"));
+        // Before each pattern number: at most one transpose, then at most one repeat. The player reads them in that
+        // order, and the editor halts playback on any other (readme §3.1).
+        let (mut transposed, mut repeated) = (false, false);
+        for (i, &e) in list.entries.iter().enumerate() {
+            match e {
+                END => return Err("an entry is $FF, the end mark".into()),
+                0xE0 => {
+                    return Err(format!(
+                        "entry {i}: transpose $E0 is not defined (down 1 to 15 is $EF to $E1)"
+                    ));
+                }
+                0x00..=0xCF => {
+                    if usize::from(e) >= self.patterns.len() {
+                        return Err(format!("pattern {e:02X} does not exist"));
+                    }
+                    (transposed, repeated) = (false, false);
+                }
+                0xD0..=0xDF if repeated => {
+                    return Err(format!("entry {i}: two repeats before one pattern"));
+                }
+                0xD0..=0xDF => repeated = true,
+                _ if repeated => {
+                    return Err(format!(
+                        "entry {i}: a transpose after a repeat; the transpose must come first"
+                    ));
+                }
+                _ if transposed => {
+                    return Err(format!("entry {i}: two transposes before one pattern"));
+                }
+                _ => transposed = true,
             }
         }
         if usize::from(list.restart) >= n {
@@ -408,7 +467,8 @@ impl Sng {
             for r in &p.rows {
                 out.extend([r.note, r.instrument, r.command, r.data]);
             }
-            out.extend([END, 0, 0, 0]);
+            out.push(END);
+            out.extend(p.end);
         }
         Ok(out)
     }

@@ -1,6 +1,6 @@
 # GoatTracker 2 files
 
-Byte layouts of GoatTracker 2's own files, as Score64 reads and writes them. The source is the GoatTracker 2 readme, section 6.2 (instruments) and section 6.1 (songs), read from v2.72's readme (<https://raw.githubusercontent.com/leafo/goattracker2/master/readme.txt>, a mirror; GTS5 has been unchanged since v2.59).
+Byte layouts of GoatTracker 2's own files, as Score64 reads and writes them. The source is the GoatTracker 2 readme, section 6.2 (instruments) and section 6.1 (songs), read from v2.72's readme (<https://raw.githubusercontent.com/leafo/goattracker2/master/readme.txt>, a mirror; its history says v2.59 introduced GTS5).
 
 ## Instruments (`.ins`, `GTI5`)
 
@@ -54,17 +54,21 @@ Nothing follows the last pattern.
 **Orderlist entries:**
 - `$00`–`$CF`: a pattern number.
 - `$D0`–`$DF`: repeat the next pattern (`R1`–`RF`, and `R0` means 16 times).
-- `$E0`–`$FE`: transpose, up 0–14 or down 1–15 halftones. The readme doesn't give the byte-to-amount mapping; Score64 does not write transposes yet.
+- `$E1`–`$FE`: transpose by the entry minus `$F0` (`$F0` none, `$FE` +14, `$E1` −15). The readme gives the ranges, up 0–14 and down 1–15; the mapping is the player's (`gplay.c`). `$E0` would be −16, outside the range, and Score64 refuses it.
+- Before each pattern number, at most one transpose, then at most one repeat. The readme says transpose must come first, and the player reads one of each in that order; the editor halts playback otherwise.
 - At most 254 entries before the end mark. The last must be a pattern number, and the restart position must lie inside the list.
+- GoatTracker saves an empty orderlist (no entries) for an unused subtune, and `gt2reloc` drops that subtune when packing. Score64 reads such files but doesn't write them: its own rule, not GoatTracker's.
 
 **Pattern rows:** note, instrument, command, command data.
 - **Note:** `$60`–`$BC` (C-0 to G#7), `$BD` rest, `$BE` key off, `$BF` key on.
 - **Instrument:** `$01`–`$3F`, or `$00` for no change.
 - **Command:** `$0`–`$F`.
-- At most 128 rows, plus the end row. Score64 writes the end row as `$FF 00 00 00` and doesn't keep its last three bytes on reading; what GoatTracker's editor puts there is not checked.
+- At most 128 rows, plus the end row. GoatTracker's editor writes the end row as `$FF 00 00 00`, but loading keeps whatever the file has, so Score64 keeps those three bytes too.
 
 **Evidence.**
+- **GoatTracker's own loader and saver agree:** `src/gsong.c` (`loadsong`, `savesong`) in leafo/goattracker2 reads and writes the orderlist length, pattern row count and instrument count as above (checked in the #181 review).
 - **GoatTracker's packer read this layout.** `gt2reloc` packed `sixteen-steps.sng` (`fixtures/gt2-original/README.md`), and the result plays as composed. Every length rule above is exercised: a wrong orderlist length or pattern row count would misplace every byte after it.
 - **Byte-for-byte round trip.** `Sng` reads the fixture and writes it back identically (`gt2::sng::tests`). A property test round-trips any song within the limits.
 - **A consistency check:** the fixture was written by the project's `fixtures/_tools/gtsng.py`, and `score64_formats::annotate::sng` reads the same layout. Both were written here from the same readme, so neither is independent evidence. The differential test against pygoattracker comes with #47.
-- **The limits** (32 subtunes, 254 orderlist entries, 208 patterns, 128 rows, 63 instruments) are from the readme, sections 3.1–3.3.
+- **The limits** (32 subtunes, 254 orderlist entries, 208 patterns, 128 rows, 63 instruments) are from the readme, sections 3.1–3.3. Instrument 63 can carry a tempo setting (the readme's v2.5 history entry); how is not transcribed here, so a writer should leave instrument 63 unused for now.
+- **Versions:** the readme mirror is v2.72; the fixture's `gtsng.py` was written against the 2.77 readme; the installed `gt2reloc` reports v2.73 (#177).

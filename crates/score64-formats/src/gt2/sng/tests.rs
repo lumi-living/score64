@@ -63,10 +63,15 @@ fn missing_end_marks_are_found() {
     // The first orderlist's end mark, after its 8 entries.
     let mut no_ol_end = bytes.clone();
     no_ol_end[0x65 + 1 + 8] = 0x00;
-    assert!(matches!(
+    // The offset is where the end mark should be.
+    assert_eq!(
         Sng::read(&no_ol_end),
-        Err(SngError::NoOrderlistEnd(_))
-    ));
+        Err(SngError::NoOrderlistEnd(0x65 + 1 + 8))
+    );
+    // A length of 0 can't hold an end mark.
+    let mut zero = bytes.clone();
+    zero[0x65] = 0;
+    assert!(matches!(Sng::read(&zero), Err(SngError::NoOrderlistEnd(_))));
     // Pattern 00's end row is its 17th, after its length byte at $2AB.
     let mut no_pat_end = bytes.clone();
     no_pat_end[0x2AB + 1 + 16 * 4] = REST;
@@ -101,6 +106,20 @@ fn check_finds_what_goattracker_refuses() {
         invalid(&s).contains("not a pattern number"),
         "the first repeat command"
     );
+    // Before a pattern: at most one transpose, then at most one repeat (readme §3.1).
+    for (bad, why) in [
+        (vec![0xD1, 0xF3, 0x00], "transpose after a repeat"),
+        (vec![0xF3, 0xF4, 0x00], "two transposes"),
+        (vec![0xD2, 0xD3, 0x00], "two repeats"),
+        (vec![0xE0, 0x00], "transpose $E0"),
+    ] {
+        let mut s = good.clone();
+        s.subtunes[0][1].entries = bad;
+        assert!(invalid(&s).contains(why), "{why}");
+    }
+    let mut s = good.clone();
+    s.subtunes[0][1].entries = vec![0xF3, 0xD2, 0x00, 0xE1, 0x01, 0xD0, 0x02, 0x03];
+    assert!(s.check().is_ok(), "{:?}", s.check());
     let mut s = good.clone();
     s.subtunes[0][1].restart = 8;
     assert!(invalid(&s).contains("restart position 8"));
@@ -139,6 +158,15 @@ fn check_finds_what_goattracker_refuses() {
     let mut s = good.clone();
     s.instruments[0].wave = s.wave.rows.len() as u8 + 1;
     assert!(invalid(&s).contains("instrument 01 points past the end of the wavetable"));
+    let mut s = good.clone();
+    s.instruments[1].pulse = s.pulse.rows.len() as u8 + 1;
+    assert!(invalid(&s).contains("instrument 02 points past the end of the pulsetable"));
+    let mut s = good.clone();
+    s.instruments[1].filter = s.filter.rows.len() as u8 + 1;
+    assert!(invalid(&s).contains("instrument 02 points past the end of the filtertable"));
+    let mut s = good.clone();
+    s.wave.rows.resize(256, (0, 0));
+    assert!(invalid(&s).contains("256 wavetable rows"));
     let mut s = good.clone();
     s.instruments[2].vibrato = s.speed.rows.len() as u8 + 1;
     assert!(invalid(&s).contains("instrument 03 points past the end of the speedtable"));
@@ -179,9 +207,36 @@ fn the_empty_song_is_valid_and_header_text_round_trips() {
     assert_eq!(s.name[31], 0);
     s.author = header_field("Ünïcode");
     assert_eq!(header_text(&s.author), "?n?code");
+    let mut raw = [0; 32];
+    raw[..4].copy_from_slice(&[b'A', 0x80, 0x1F, b'Z']);
+    assert_eq!(header_text(&raw), "A??Z");
     let bytes = s.write().unwrap();
     assert_eq!(Sng::read(&bytes).unwrap(), s);
     assert!(crate::annotate::sng(&bytes).is_ok());
+}
+
+#[test]
+fn the_end_row_is_kept_as_read() {
+    let mut bytes = fixture();
+    // Pattern 00's end row, after its 16 rows.
+    let end = 0x2AB + 1 + 16 * 4;
+    bytes[end + 1..end + 4].copy_from_slice(&[0x01, 0x02, 0x03]);
+    let song = Sng::read(&bytes).unwrap();
+    assert_eq!(song.patterns[0].end, [0x01, 0x02, 0x03]);
+    assert_eq!(song.write().unwrap(), bytes);
+}
+
+#[test]
+fn orderlist_commands_encode_as_the_player_reads_them() {
+    assert_eq!(repeat(1), Some(0xD1));
+    assert_eq!(repeat(15), Some(0xDF));
+    assert_eq!(repeat(16), Some(0xD0));
+    assert_eq!((repeat(0), repeat(17)), (None, None));
+    assert_eq!(transpose(0), Some(0xF0));
+    assert_eq!(transpose(14), Some(0xFE));
+    assert_eq!(transpose(-1), Some(0xEF));
+    assert_eq!(transpose(-15), Some(0xE1));
+    assert_eq!((transpose(-16), transpose(15)), (None, None));
 }
 
 fn row(instruments: usize) -> impl Strategy<Value = Row> {
@@ -229,13 +284,24 @@ fn song() -> impl Strategy<Value = Sng> {
                     first_wave: rest[2],
                     name,
                 });
-            let orderlist = (
-                proptest::collection::vec(prop_oneof![0..patterns as u8, 0xD0u8..=0xFE], 0..=6),
+            // Items in the player's order: an optional transpose, an optional repeat, a pattern.
+            let item = (
+                proptest::option::of(-15i8..=14),
+                proptest::option::of(1u8..=16),
                 0..patterns as u8,
+            )
+                .prop_map(|(t, r, p)| {
+                    let mut e: Vec<u8> = t.map(|t| transpose(t).unwrap()).into_iter().collect();
+                    e.extend(r.map(|r| repeat(r).unwrap()));
+                    e.push(p);
+                    e
+                });
+            let orderlist = (
+                proptest::collection::vec(item, 1..=4),
                 any::<prop::sample::Index>(),
             )
-                .prop_map(|(mut entries, last, restart)| {
-                    entries.push(last);
+                .prop_map(|(items, restart)| {
+                    let entries: Vec<u8> = items.concat();
                     let restart = restart.index(entries.len()) as u8;
                     Orderlist { entries, restart }
                 });
@@ -246,8 +312,11 @@ fn song() -> impl Strategy<Value = Sng> {
                 proptest::collection::vec(instrument, instruments),
                 Just((wave, pulse, filter, speed)),
                 proptest::collection::vec(
-                    proptest::collection::vec(row(instruments), 1..=MAX_ROWS)
-                        .prop_map(|rows| Pattern { rows }),
+                    (
+                        proptest::collection::vec(row(instruments), 1..=MAX_ROWS),
+                        any::<[u8; 3]>(),
+                    )
+                        .prop_map(|(rows, end)| Pattern { rows, end }),
                     patterns,
                 ),
             )
