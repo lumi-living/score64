@@ -276,7 +276,7 @@ A decision never changes the song by itself. An engine command (`writes_project`
   - An unknown field, a bad value or a TOML error is reported with its file, line and column. One inside a `proposal` or `provenance` table points at that table's header.
   - A manual provenance with stray fields is refused.
   - Two decisions with one id in one subtune are reported with both `[[decision]]` lines.
-- **Not yet.** `track.toml`, the track's own intent (sources, profile, video standard, rule settings), needs its own ADR first.
+- **Not yet.** `track.toml`, the track's own intent, and `score64.toml`, the settings every track of a game shares: proposed in ADR-014 (Proposed), not yet decided.
 
 A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
 
