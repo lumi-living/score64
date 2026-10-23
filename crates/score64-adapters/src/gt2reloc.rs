@@ -155,6 +155,8 @@ pub struct Packed {
     pub size: u32,
     /// The version from gt2reloc's banner.
     pub version: String,
+    /// The blake3 of the gt2reloc program that packed it, lowercase hex, for provenance.
+    pub program_blake3: String,
 }
 
 /// Why packing failed.
@@ -192,6 +194,20 @@ pub enum PackError {
     },
     /// gt2reloc reported something other than what was asked for, or wrote nothing.
     Mismatch(String),
+    /// The gt2reloc program isn't the pinned build: its blake3 differs.
+    Binary {
+        /// The program's blake3.
+        found: String,
+        /// The pinned blake3.
+        pinned: String,
+    },
+    /// The packed file couldn't replace the output, for example because another program has it open.
+    Replace {
+        /// The output.
+        path: PathBuf,
+        /// What went wrong.
+        error: std::io::Error,
+    },
 }
 
 impl fmt::Display for PackError {
@@ -227,6 +243,15 @@ impl fmt::Display for PackError {
                 ),
             },
             PackError::Mismatch(why) => write!(f, "gt2reloc: {why}"),
+            PackError::Binary { found, pinned } => write!(
+                f,
+                "gt2reloc's blake3 is {found}; the project pins {pinned} (another build, or another version)"
+            ),
+            PackError::Replace { path, error } => write!(
+                f,
+                "could not replace {}: {error} (is it open in another program, such as an emulator?)",
+                path.display()
+            ),
         }
     }
 }
@@ -249,6 +274,7 @@ impl From<SidecarError> for PackError {
 pub struct Gt2Reloc {
     program: PathBuf,
     pinned: String,
+    binary: Option<String>,
     timeout: Duration,
 }
 
@@ -275,8 +301,27 @@ impl Gt2Reloc {
         Gt2Reloc {
             program,
             pinned: pinned.to_string(),
+            binary: None,
             timeout: Duration::from_secs(60),
         }
+    }
+
+    /// Also pin the program itself by its blake3 (hex, any case). The banner can't tell builds apart (the 2.77 source
+    /// prints v2.73), so this is the stronger pin; every pack checks it before running.
+    pub fn with_blake3(mut self, hex: &str) -> Self {
+        self.binary = Some(hex.to_ascii_lowercase());
+        self
+    }
+
+    /// The program's blake3, lowercase hex. A bare name is looked up on `PATH`.
+    pub fn program_blake3(&self) -> Result<String, PackError> {
+        let path = if self.program.components().count() > 1 {
+            self.program.clone()
+        } else {
+            find_on_path(&self.program.to_string_lossy()).ok_or(PackError::NotFound)?
+        };
+        let bytes = std::fs::read(&path).map_err(PackError::Io)?;
+        Ok(blake3::hash(&bytes).to_hex().to_string())
     }
 
     /// Change the time limit (default 60 seconds; packing takes well under one).
@@ -314,6 +359,15 @@ impl Gt2Reloc {
         if !dir.is_dir() {
             return Err(PackError::NoOutputDir(dir.to_path_buf()));
         }
+        let program_blake3 = self.program_blake3()?;
+        if let Some(pinned) = &self.binary
+            && *pinned != program_blake3
+        {
+            return Err(PackError::Binary {
+                found: program_blake3,
+                pinned: pinned.clone(),
+            });
+        }
         // A working directory of its own beside the output, with short fixed names: gt2reloc crashes on a song path
         // over 59 bytes or an output path over 255. Removed when this returns, panics included.
         let guard = WorkDir::create(out)?;
@@ -333,12 +387,16 @@ impl Gt2Reloc {
                     Ok(m) if m.len() > 0 => {}
                     _ => return Err(PackError::Mismatch("no output written".into())),
                 }
-                std::fs::rename(&packed, out).map_err(PackError::Io)?;
+                std::fs::rename(&packed, out).map_err(|error| PackError::Replace {
+                    path: out.to_path_buf(),
+                    error,
+                })?;
                 Ok(Packed {
                     path: out.to_path_buf(),
                     format,
                     size,
                     version: report.version.expect("checked"),
+                    program_blake3,
                 })
             })
     }

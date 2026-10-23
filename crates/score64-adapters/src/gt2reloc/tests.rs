@@ -153,20 +153,36 @@ fn main() {
 fn fake_exe() -> &'static Path {
     static EXE: OnceLock<PathBuf> = OnceLock::new();
     EXE.get_or_init(|| {
-        let dir =
-            std::env::temp_dir().join(format!("score64-fake-gt2reloc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("fake.rs");
-        std::fs::write(&src, FAKE).unwrap();
+        // Keyed by the source, so every run reuses one build instead of leaving a folder per run.
+        let key = &blake3::hash(FAKE.as_bytes()).to_hex()[..16];
+        let dir = std::env::temp_dir().join(format!("score64-fake-gt2reloc-{key}"));
         let exe = dir.join(format!("fake{}", std::env::consts::EXE_SUFFIX));
+        if exe.is_file() {
+            return exe;
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        // Built under a name of this process's own, then renamed, so concurrent test runs never see half a build.
+        let src = dir.join(format!("fake-{}.rs", std::process::id()));
+        std::fs::write(&src, FAKE).unwrap();
+        let part = dir.join(format!(
+            "fake-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
         let status = Command::new(rustc)
             .args(["--edition", "2021", "-O", "-o"])
-            .arg(&exe)
+            .arg(&part)
             .arg(&src)
             .status()
             .unwrap();
         assert!(status.success(), "compiling the fake gt2reloc");
+        let _ = std::fs::remove_file(&src);
+        // Another run may have finished first; either build is the same.
+        if std::fs::rename(&part, &exe).is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        assert!(exe.is_file());
         exe
     })
 }
@@ -336,6 +352,36 @@ fn a_relative_program_path_is_made_absolute() {
         Gt2Reloc::at("gt2reloc", "2.73").program,
         Path::new("gt2reloc")
     );
+}
+
+#[test]
+fn the_program_can_be_pinned_by_its_hash() {
+    let b = Bench::new("pin", "ok");
+    let hash = Gt2Reloc::at(&b.exe, "2.73").program_blake3().unwrap();
+    assert_eq!(
+        hash,
+        blake3::hash(&std::fs::read(&b.exe).unwrap())
+            .to_hex()
+            .to_string()
+    );
+    // The right hash, in any case: it packs and records the hash.
+    let packed = Gt2Reloc::at(&b.exe, "2.73")
+        .with_blake3(&hash.to_ascii_uppercase())
+        .pack(&b.song, &b.dir.join("tune.sid"), &options())
+        .unwrap();
+    assert_eq!(packed.program_blake3, hash);
+    // Another hash: refused before anything runs.
+    std::fs::remove_file(b.dir.join("args.txt")).unwrap();
+    let other = "0".repeat(64);
+    match Gt2Reloc::at(&b.exe, "2.73").with_blake3(&other).pack(
+        &b.song,
+        &b.dir.join("again.sid"),
+        &options(),
+    ) {
+        Err(PackError::Binary { found, pinned }) => assert_eq!((found, pinned), (hash, other)),
+        other => panic!("{other:?}"),
+    }
+    assert!(!b.dir.join("args.txt").exists(), "gt2reloc was not started");
 }
 
 /// The real gt2reloc, if it is installed (CI does not install it): the fixture song packs to the size the #20 spike

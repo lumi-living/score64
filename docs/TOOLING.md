@@ -31,7 +31,7 @@ External tools (gt2reloc, VICE, sidplayfp, the optional sidecar) are only needed
 Versions used by the #20 spike ([report](research/2026-10-18-packed-player-spike.md)); macOS with Homebrew shown.
 
 - **gt2reloc**: build it from the GoatTracker 2.77 source (SourceForge `goattracker2`). It links SDL 1.2: `brew install sdl12-compat`, then in `src/` run `CFLAGS="-I$(brew --prefix)/include" make ../linux/gt2reloc ../linux/ins2snd2` and copy both binaries onto your `PATH`.
-  - **Finding and pinning it.** Score64 finds it through `SCORE64_GT2RELOC`, or else on `PATH`. It has no version flag, so the pinned version is the one its banner names. The binary built this way prints `GoatTracker v2.73 Packer/Relocator` (observed 2026-10-23), so the pin is `2.73`. The banner can't tell this build from a real 2.73, so it is a weak pin.
+  - **Finding and pinning it.** Score64 finds it through `SCORE64_GT2RELOC`, or else on `PATH`. It has no version flag, so the pinned version is the one its banner names. The binary built this way prints `GoatTracker v2.73 Packer/Relocator` (observed 2026-10-23), so the pin is `2.73`. The banner can't tell this build from a real 2.73, so the adapter can also pin the program itself by its blake3 (`Gt2Reloc::with_blake3`; get the value with `b3sum`, or from a pack's `program_blake3`). A binary hash is per platform and per build, so it belongs in a machine's or CI's settings rather than the shared project file. Every pack records the hash in its result for provenance.
   - **Quirks the adapter guards against** (observed with that binary):
     - A missing song, or a file that isn't a song, packs an empty tune and exits 0. Some junk bytes make it crash instead.
     - A malformed option is ignored, and the default is used.
