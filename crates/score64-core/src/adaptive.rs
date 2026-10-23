@@ -151,8 +151,13 @@ impl AdaptiveSet {
         added
     }
 
-    /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, or a
-    /// declared switch row past a layer's end.
+    /// The rows of `layer` where this set lets the game switch, inside the layer.
+    pub fn switch_rows(&self, layer: &Subtune) -> Vec<u32> {
+        self.switch.points(layer).0
+    }
+
+    /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, a mark
+    /// that isn't a switch point, or a declared switch row past a layer's end.
     pub fn check(&self, song: &Song) -> Vec<LayerProblem> {
         let mut out = Vec::new();
         let first = song.subtune(&self.layers[0]).map(|(i, _)| i);
@@ -173,9 +178,17 @@ impl AdaptiveSet {
                 });
             }
             let (points, outside) = self.switch.points(subtune);
-            for row in points {
+            for &row in &points {
                 if !subtune.marks.contains(&row) {
                     out.push(LayerProblem::Mark {
+                        layer: layer.clone(),
+                        row,
+                    });
+                }
+            }
+            for &row in &subtune.marks {
+                if row < subtune.length.get() && !points.contains(&row) {
+                    out.push(LayerProblem::OffSwitch {
                         layer: layer.clone(),
                         row,
                     });
@@ -212,6 +225,14 @@ pub enum LayerProblem {
     },
     /// The switch point at `row` of `layer` has no timing mark.
     Mark {
+        /// The layer.
+        layer: SubtuneName,
+        /// The row.
+        row: u32,
+    },
+    /// `layer` has a timing mark at `row`, which is not one of the set's switch points. It gets no `DXY` and does
+    /// nothing ([`AdaptiveSet::timing_marks`]).
+    OffSwitch {
         /// The layer.
         layer: SubtuneName,
         /// The row.
@@ -355,6 +376,11 @@ mod tests {
                 LayerProblem::Mark {
                     layer: n("calm"),
                     row: 40
+                },
+                // Calm's bar-2 mark is not one of these switch points.
+                LayerProblem::OffSwitch {
+                    layer: n("calm"),
+                    row: 32
                 },
                 LayerProblem::PastEnd {
                     layer: n("tension"),

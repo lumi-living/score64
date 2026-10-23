@@ -5,6 +5,7 @@ use std::num::{NonZeroU8, NonZeroU32};
 use proptest::prelude::*;
 
 use super::*;
+use crate::adaptive::Switch;
 use crate::profile::{VoiceRule, builtin};
 use crate::provenance::Confidence;
 use crate::score::{
@@ -354,6 +355,73 @@ fn rule_5_declared_adaptive_sets() {
     let mut s = theme();
     s.subtunes[0].marks.clear();
     assert_eq!(validate(&s, &self::ctx()), []);
+}
+
+#[test]
+fn rule_5_marks_off_switch_points_are_warnings() {
+    // `tension` switching every two bars: its bar-1 mark (row 16) does nothing.
+    let (song, mut ctx) = layered();
+    ctx.adaptive = vec![
+        AdaptiveSet::with_switch(
+            "score",
+            vec![sname("calm"), sname("tension"), sname("peak")],
+            Switch::EveryBars(NonZeroU32::new(2).unwrap()),
+        )
+        .unwrap(),
+    ];
+    let p = validate(&song, &ctx);
+    assert_eq!(p.len(), 3, "one per layer: {p:?}");
+    assert!(p.iter().all(|p| p.rule == Rule::TimingMarks
+        && p.severity == Severity::Warning
+        && p.row == Some(16)
+        && p.bar == Some(1)));
+    assert!(p[0].message.contains("doesn't switch"), "{}", p[0].message);
+    // Not a problem outside the set, and gone once the marks are only at switch points.
+    assert!(
+        !p.iter()
+            .any(|p| p.subtune.as_ref().map(|s| s.as_str()) == Some("title"))
+    );
+    let mut s = song;
+    for t in &mut s.subtunes[1..] {
+        t.marks = vec![0];
+    }
+    assert_eq!(validate(&s, &ctx), []);
+}
+
+#[test]
+fn rule_5_a_layer_shared_by_sets_must_switch_alike() {
+    let (song, mut ctx) = layered();
+    let every = |n| Switch::EveryBars(NonZeroU32::new(n).unwrap());
+    let set = |name: &str, layers: &[&str], switch| {
+        AdaptiveSet::with_switch(name, layers.iter().map(|l| sname(l)).collect(), switch).unwrap()
+    };
+    // Two sets sharing `calm`, both switching every bar: fine.
+    ctx.adaptive = vec![
+        set("explore", &["calm", "tension"], Switch::EveryBar),
+        set("fight", &["calm"], Switch::EveryBar),
+    ];
+    assert_eq!(validate(&song, &ctx), []);
+    // One switches every two bars: `calm` would need two sets of timing-mark values.
+    ctx.adaptive[1] = set("fight", &["calm"], every(2));
+    let conflicts: Vec<_> = validate(&song, &ctx)
+        .into_iter()
+        .filter(|p| p.severity == Severity::Error)
+        .collect();
+    assert_eq!(conflicts.len(), 1, "{conflicts:?}");
+    assert_eq!(
+        conflicts[0].subtune.as_ref().map(|s| s.as_str()),
+        Some("calm")
+    );
+    assert!(
+        conflicts[0]
+            .message
+            .contains("adaptive sets `explore` and `fight`"),
+        "{}",
+        conflicts[0].message
+    );
+    // Rows that differ only in how they're declared are the same switch points.
+    ctx.adaptive[1] = set("fight", &["calm"], Switch::Rows(vec![0, 16]));
+    assert_eq!(validate(&song, &ctx), []);
 }
 
 #[test]
