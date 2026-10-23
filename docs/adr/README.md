@@ -19,3 +19,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [012](ADR-012-command-engine-crate.md) | The command engine is its own crate and owns the emulator helper | Accepted |
 | [013](ADR-013-command-outcomes-and-exit-codes.md) | Commands decide failure; CLI exit codes; a provisional validation context file | Accepted |
 | [014](ADR-014-project-and-track-files.md) | Project and track files: `score64.toml` and `track.toml` | Accepted |
+| [015](ADR-015-song-level-filter-events.md) | Song-level filter events in the score | Proposed |
