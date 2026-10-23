@@ -9,7 +9,7 @@ use crate::provenance::{Confidence, DropReason, Proposal};
 use crate::score::{ArpEvent, Attack, Note, Pitch};
 use crate::validate::PitchRange;
 
-use super::{Arpeggio, ChordSpan, Log, Placement};
+use super::{Arpeggio, ChordSpan, Log, Placement, Skyline, canonical};
 
 /// The rule name and version [`arpeggiate_on_bass`] records in its decisions.
 pub const BASS_ARPS: &str = "bass-arps@1";
@@ -33,7 +33,8 @@ pub enum BassArpRoot {
 pub struct BassArpRules {
     /// Rows in a beat.
     pub rows_per_beat: NonZeroU8,
-    /// The weak beats of a bar, counted from 1: where the arpeggios go.
+    /// The weak beats of a bar, counted from 1: where the arpeggios go. Beat 0, repeats and beats past the bar are
+    /// ignored.
     pub weak_beats: Vec<u8>,
     /// Where each arpeggio's root sits.
     pub root: BassArpRoot,
@@ -59,9 +60,13 @@ impl Default for BassArpRules {
 /// ([`Proposal::Retrigger`]). Each arpeggio's root comes from the chord root, nearest the bass note before it (or the
 /// middle of `range` when none comes before), inside `range` ([`BassArpRoot::InRange`]) or an octave above the bass
 /// ([`BassArpRoot::OctaveAbove`]), always low enough for the whole chord to stay playable. Each arpeggio is one
-/// [`Proposal::Chord`] decision (`bassarp-chord-v<voice>-r<row>`, as sure as the span), which its root note and
-/// arpeggio record; the drops, trims and restarts are certain, with ids `bassarp-<kind>-…` as for monophonise. Beats
-/// without a chord keep the bass as it is. The bass is expected one note at a time (after `monophonise`).
+/// [`Proposal::Chord`] decision (`bassarp-chord-v<voice>-r<row>`), which its root note and arpeggio record. That
+/// decision, and the drops, trims and restarts its arpeggio causes, are as sure as the span: a shaky chord makes no
+/// certain cuts. A tie already broken in the input, after a bass note, restarts for certain. Ids are
+/// `bassarp-<kind>-…` as for monophonise. Beats without a chord keep the bass as it is. Of spans overlapping on a weak
+/// beat, the one starting first takes it (then the shorter, the lower root, the simpler quality, the surer). The bass
+/// is expected one note at a time (after `monophonise`). The result does not depend on the order of `bass` or
+/// `spans`.
 pub fn arpeggiate_on_bass(
     bass: impl IntoIterator<Item = Note>,
     spans: &[ChordSpan],
@@ -71,7 +76,14 @@ pub fn arpeggiate_on_bass(
 ) -> Arpeggio {
     let mut log = Log::new(at, BASS_ARPS, "bassarp");
     let mut notes: Vec<Note> = bass.into_iter().collect();
-    notes.sort_by_key(|n| (n.row, std::cmp::Reverse(n.pitch)));
+    // A total order, highest first on a row, so the last note before a beat is the lowest of its row.
+    notes.sort_by(|a, b| canonical(a, b, Skyline::Highest));
+    let mut spans: Vec<&ChordSpan> = spans.iter().collect();
+    spans.sort_by(|a, b| {
+        (a.row, a.length, a.chord.root, a.chord.quality)
+            .cmp(&(b.row, b.length, b.chord.root, b.chord.quality))
+            .then(b.confidence.get().total_cmp(&a.confidence.get()))
+    });
     let bar = u32::from(at.rows_per_bar.get());
     let beat = u32::from(rules.rows_per_beat.get());
     // Each weak beat inside a span: its rows, and the span.
@@ -88,15 +100,19 @@ pub fn arpeggiate_on_bass(
                 else {
                     continue;
                 };
-                let start = b * bar + offset;
+                let start = (b * bar).saturating_add(offset);
                 if start < s0 || start >= s1 {
                     continue;
                 }
-                let end = (start + beat).min((b + 1) * bar).min(s1);
+                let end = start
+                    .saturating_add(beat)
+                    .min((b + 1).saturating_mul(bar))
+                    .min(s1);
                 windows.push((start, end, span));
             }
         }
     }
+    // Stable, so of the spans sharing a beat the first in order keeps it.
     windows.sort_by_key(|w| w.0);
     windows.dedup_by_key(|w| w.0);
 
@@ -108,11 +124,12 @@ pub fn arpeggiate_on_bass(
     };
     let mut roots = Vec::with_capacity(windows.len());
     for &(start, end, span) in &windows {
+        let sure = span.confidence;
         // The bass notes starting in the beat go; one sounding into it ends there.
         let mut kept = Vec::with_capacity(notes.len());
         for n in notes.drain(..) {
             if n.row >= start && n.row < end {
-                log.drop(&n, DropReason::Interleave, Confidence::CERTAIN);
+                log.drop(&n, DropReason::Interleave, sure);
             } else {
                 kept.push(n);
             }
@@ -121,7 +138,7 @@ pub fn arpeggiate_on_bass(
         let before = notes.iter_mut().filter(|n| n.row < start).last();
         let anchor = before.as_ref().map(|n| i16::from(n.pitch.semitone()));
         if let Some(n) = before
-            && n.row + n.length.get() > start
+            && n.row.saturating_add(n.length.get()) > start
         {
             let length = NonZeroU32::new(start - n.row).expect("starts before the beat");
             let id = log.id("trim", n.row);
@@ -135,7 +152,7 @@ pub fn arpeggiate_on_bass(
                     length,
                     source: n.source,
                 },
-                Confidence::CERTAIN,
+                sure,
             );
             n.length = length;
             n.decision.get_or_insert(id);
@@ -168,7 +185,7 @@ pub fn arpeggiate_on_bass(
                 root: span.chord.root,
                 intervals: tones.to_vec(),
             },
-            span.confidence,
+            sure,
         );
         let length = NonZeroU32::new(end - start).expect("a beat has rows");
         roots.push(Note {
@@ -178,7 +195,7 @@ pub fn arpeggiate_on_bass(
             attack: Attack::Fresh,
             instrument: None,
             source: None,
-            confidence: span.confidence,
+            confidence: sure,
             decision: Some(id.clone()),
         });
         out.arps.push(ArpEvent {
@@ -188,17 +205,22 @@ pub fn arpeggiate_on_bass(
             decision: Some(id),
         });
     }
-    // The bass and the roots, one line; a tie stays only straight after the note it's tied to.
+    // The bass and the roots, one line; a tie stays only straight after the note it's tied to. One straight after
+    // a root restarts as surely as that root's chord.
     let mut line: Vec<(bool, Note)> = notes
         .into_iter()
         .map(|n| (false, n))
         .chain(roots.into_iter().map(|n| (true, n)))
         .collect();
     line.sort_by_key(|(_, n)| n.row);
-    let mut previous: Option<(bool, u32)> = None; // (a root?, end row)
+    let mut previous: Option<(bool, u32, Confidence)> = None; // (a root?, end row, confidence)
     for (root, n) in &mut line {
-        let tied = previous == Some((false, n.row));
+        let tied = previous.is_some_and(|(r, end, _)| !r && end == n.row);
         if !*root && n.attack == Attack::Legato && !tied {
+            let sure = match previous {
+                Some((true, _, c)) => c,
+                _ => Confidence::CERTAIN,
+            };
             let id = log.id("tie", n.row);
             let id = log.record(
                 id,
@@ -209,12 +231,12 @@ pub fn arpeggiate_on_bass(
                     pitch: n.pitch,
                     source: n.source,
                 },
-                Confidence::CERTAIN,
+                sure,
             );
             n.attack = Attack::Fresh;
             n.decision.get_or_insert(id);
         }
-        previous = Some((*root, n.row.saturating_add(n.length.get())));
+        previous = Some((*root, n.row.saturating_add(n.length.get()), n.confidence));
     }
     out.notes = line.into_iter().map(|(_, n)| n).collect();
     out.decisions = log.decisions;

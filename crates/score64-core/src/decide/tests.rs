@@ -862,7 +862,8 @@ mod rules_pass_check {
                     input.extend(soup.iter().cloned());
                     all.extend(monophonise(input.clone(), &at, &mono).decisions);
                     let lowest = MonoRules { skyline: Skyline::Lowest, ..mono };
-                    all.extend(monophonise(input, &at, &lowest).decisions);
+                    let bass = monophonise(input, &at, &lowest);
+                    all.extend(bass.decisions);
                     all.extend(fold_octaves(line.notes.clone(), &at, &line.roles, &RoleRanges::default()).decisions);
                     all.extend(
                         fold_octaves(soup.clone(), &at, &Roles::constant(Role::Lead), &RoleRanges::default()).decisions,
@@ -879,6 +880,8 @@ mod rules_pass_check {
                     every.extend(soup.iter().cloned());
                     let spans = detect_chords(&every, NonZeroU8::new(beat).unwrap(), st.length);
                     all.extend(arpeggiate(&spans, &at, RoleRanges::default().arp).decisions);
+                    let weak = BassArpRules { rows_per_beat: NonZeroU8::new(beat).unwrap(), ..BassArpRules::default() };
+                    all.extend(arpeggiate_on_bass(bass.notes, &spans, &at, &weak, RoleRanges::default().bass).decisions);
                 }
                 let soup_source = ContentHash([0xEE; 32]);
                 sources.entry(st.name.clone()).or_default().push(soup_source);
