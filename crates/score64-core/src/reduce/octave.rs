@@ -106,7 +106,11 @@ pub fn fold_octaves(
             n.decision.get_or_insert_with(|| id.clone());
         }
     }
-    Reduced { notes, decisions }
+    Reduced {
+        notes,
+        decisions,
+        unapplied: Vec::new(),
+    }
 }
 
 /// `p` moved by `octaves`, if GoatTracker can still play it.

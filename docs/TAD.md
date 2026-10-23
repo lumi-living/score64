@@ -223,6 +223,13 @@ Decision ids name what they're about, so they stay the same when notes elsewhere
 
 They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
+**Overrides** (`reduce::monophonise_with`, #167): the resolved decisions of a model or a person for the voice apply as the rule runs, rather than being patched onto its result.
+- A `drop_note` takes its note out before step 1, so the rule's other choices follow from the line without it. It takes the note from its source span when it names one; of identical notes otherwise, the one the rule would drop. A drop, a trim and a fresh start of one note are separate slots, so a drop gives way (`overruled`) to a stronger trim or fresh start of that note, even one that then can't apply: a stronger decision about the note means it stays.
+- A `trim_note` sets its note's length once the line is built, and only shortens: longer than the rule left it is unapplied (`lengthens`). It replaces the rule's own trim of that note. Shorter than `min_rows` is a person's call; an unreviewed model's is unapplied (`out_of_range`).
+- A `retrigger` makes its note fresh, so the rule records no tie of its own there.
+
+A note an override names that isn't there is unapplied (`no_such_note`). A note an override changed records the override's id in place of this rule's; an id from an earlier rule stays. Of several decisions for one slot, the strongest claims it whether or not it then applies, so the result is the one `resolve` and then the rule give. The rules' own decisions in the list are ignored, since the rule makes them afresh, and the order of the overrides doesn't matter.
+
 **Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
 - **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
 - **Choosing the shift.** Only shifts that keep every note playable count. Among those it picks the one that leaves the fewest notes outside the range of the role at their row. On a tie, it moves nothing if that's as good, so a bar moves only to bring notes in. Next it prefers the previous bar's shift, if the bars are next to each other and in the same role, so the line doesn't jump an octave at a bar line. Then it takes the smallest.
