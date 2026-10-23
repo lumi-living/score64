@@ -126,6 +126,31 @@ impl AdaptiveSet {
         &self.switch
     }
 
+    /// Add a timing mark at every switch point of every layer that has none (`docs/reference/player.md`: the game
+    /// switches layers when a mark changes start+$3F), keeping each layer's marks sorted. Returns the rows added, by
+    /// layer; running it again adds nothing. Layers the song lacks are skipped (rule 5 reports them).
+    pub fn place_marks(&self, song: &mut Song) -> Vec<(SubtuneName, Vec<u32>)> {
+        let mut added = Vec::new();
+        for layer in &self.layers {
+            let Some(subtune) = song.subtunes.iter_mut().find(|s| &s.name == layer) else {
+                continue;
+            };
+            let (points, _) = self.switch.points(subtune);
+            let new: Vec<u32> = points
+                .into_iter()
+                .filter(|r| !subtune.marks.contains(r))
+                .collect();
+            subtune.marks.extend(&new);
+            subtune.marks.sort_unstable();
+            subtune.marks.dedup();
+            if new.is_empty() {
+                continue;
+            }
+            added.push((layer.clone(), new));
+        }
+        added
+    }
+
     /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, or a
     /// declared switch row past a layer's end.
     pub fn check(&self, song: &Song) -> Vec<LayerProblem> {
@@ -384,3 +409,73 @@ mod tests {
         );
     }
 }
+
+/// The lowest timing-mark value: a `DXY` command with a lower parameter sets the master volume instead
+/// (`docs/reference/player.md`).
+pub const FIRST_MARK_VALUE: u8 = 0x10;
+
+/// One timing mark as the player writes it: a `DXY` command with this parameter on this row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TimingMark {
+    /// The row.
+    pub row: u32,
+    /// The parameter, copied to start+$3F when playback reaches the row.
+    pub value: u8,
+}
+
+/// A layer's timing marks with their values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TimingMarks {
+    /// The marks at the set's switch points, in row order: these are the `DXY` commands to write.
+    pub marks: Vec<TimingMark>,
+    /// The layer's marks that are not switch points, which get no `DXY`: a change of start+$3F there would let the
+    /// game switch where the set does not allow it.
+    pub off_switch: Vec<u32>,
+    /// Whether every pass round the loop changes start+$3F at each mark it reaches. False when the loop (from
+    /// `loop_row` to the end) holds fewer than two marks: it writes the same value every time, or none, so only the
+    /// first pass shows a change.
+    pub loop_changes: bool,
+}
+
+impl AdaptiveSet {
+    /// The `DXY` values for `layer`'s marks at this set's switch points: `$10` and `$11` in turn, so each one changes
+    /// start+$3F. When the song loops back to a mark with the same value as its last one, the last takes `$12`, so the
+    /// jump back changes it too. Switch points without a mark get none (rule 5 reports them; [`Self::place_marks`]
+    /// adds them).
+    pub fn timing_marks(&self, layer: &Subtune) -> TimingMarks {
+        let (points, _) = self.switch.points(layer);
+        let (rows, off_switch): (Vec<u32>, Vec<u32>) =
+            layer.marks.iter().partition(|r| points.contains(r));
+        let mut rows = rows;
+        rows.sort_unstable();
+        rows.dedup();
+        let mut marks: Vec<TimingMark> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, &row)| TimingMark {
+                row,
+                value: FIRST_MARK_VALUE + (i % 2) as u8,
+            })
+            .collect();
+        let in_loop = marks.iter().filter(|m| m.row >= layer.loop_row).count();
+        let first_in_loop = marks.iter().position(|m| m.row >= layer.loop_row);
+        if let (Some(first), true) = (first_in_loop, in_loop >= 2) {
+            let last = marks.len() - 1;
+            if marks[first].value == marks[last].value {
+                marks[last].value = FIRST_MARK_VALUE + 2;
+            }
+        }
+        TimingMarks {
+            loop_changes: in_loop >= 2 || marks.is_empty(),
+            marks,
+            off_switch,
+        }
+    }
+}
+
+#[cfg(test)]
+mod mark_tests;

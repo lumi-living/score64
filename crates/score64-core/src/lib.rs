@@ -25,7 +25,7 @@ pub mod strategies;
 pub mod transcription;
 pub mod validate;
 
-pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
+pub use adaptive::{AdaptiveSet, FIRST_MARK_VALUE, LayerProblem, Switch, TimingMark, TimingMarks};
 pub use decide::{Rank, Resolution, Slot, resolve};
 pub use grid::{BeatGrid, Quantised, TempoSnap, VideoStandard, snap_tempo};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
