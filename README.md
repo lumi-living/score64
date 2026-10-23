@@ -65,13 +65,14 @@ See [docs/PDD.md §Roadmap](docs/PDD.md#roadmap) and the [epics](docs/github/EPI
 
 ## Building
 
-Not yet — the workspace is being scaffolded (M0). Once it exists:
-
 ```sh
 cargo run -p score64-app                 # Score64 Studio
-cargo build --release -p score64-cli     # CLI
+cargo build --release -p score64-cli     # the score64 CLI
+cargo build --release -p score64-emu     # the emulator helper the CLI and app start
 ```
+
+Release archives come from dist, one per program: `score64-cli`, `score64-app` and `score64-emu`. Extract them into one directory: `score64` and Score64 Studio look for `score64-emu` beside themselves, then on `PATH`, unless `SCORE64_EMU` names it ([docs/TOOLING.md](docs/TOOLING.md#releases)).
 
 ## Licence
 
-MIT for the workspace ([LICENSE](LICENSE)), except `crates/score64-emu`, which is GPL-3.0-or-later ([crates/score64-emu/LICENSE](crates/score64-emu/LICENSE)), and `crates/residfp-sys`, GPL-2.0-or-later, because accurate SID emulation is GPL-licensed. Third-party notices: [THIRD_PARTY.md](THIRD_PARTY.md).
+MIT for the workspace ([LICENSE](LICENSE)), except `crates/score64-emu`, which is GPL-3.0-or-later ([crates/score64-emu/COPYING](crates/score64-emu/COPYING)), and `crates/residfp-sys`, GPL-2.0-or-later, because accurate SID emulation is GPL-licensed. Third-party notices: [THIRD_PARTY.md](THIRD_PARTY.md).

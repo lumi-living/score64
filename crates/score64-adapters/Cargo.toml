@@ -16,6 +16,9 @@ process-wrap = { workspace = true }
 serde_json = { workspace = true }
 score64-formats = { workspace = true }
 
+[dev-dependencies]
+score64-core = { workspace = true }
+
 [lints]
 workspace = true
 

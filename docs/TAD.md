@@ -16,13 +16,13 @@ The validator in `score64-core` rejects a song that:
 2. places a note off the row grid,
 3. exceeds the voice count of its profile,
 4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width (and warns about lead, bass or long notes there),
-5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
-6. violates the role's pitch range after octave folding (a warning),
+5. breaks a declared adaptive set: a layer missing or out of order, a declared switch point without a timing mark, or a layer shared by sets that switch at different rows (and warns about marks where no set switches) (§3.1),
+6. violates the role's pitch range after octave folding (a warning), or plays an arpeggio note above B-7, the player's highest (an error),
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
 8. packs larger than the configured budget, or uses zero page outside the configured pair,
 9. gives an instrument a gate timer that is not below the tempo on a row it plays, or turns a note's gate off before it can sound (and warns when a note keeps only one or two gated frames, or when a fresh note's instrument has gate-off disabled so it won't retrigger; see `reference/sid.md` §Hard restart).
 
-`score64_core::validate(song, &Context)` checks rules 1–6 and 9 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste: pitch ranges by role, lead or bass on an expendable voice, long notes on an expendable voice, notes a hard restart leaves with only one or two gated frames, and fresh notes whose instrument can't retrigger them (gate-off disabled). The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `score64 validate <song> [--context <file>] [--json]` (the engine's `validate` command) prints every problem with its severity. It exits 0 when there are no errors, warnings included; 1 when there are errors; and 2 when the command itself fails. Until the project files (E4) carry the context, an optional **validation context file** supplies it. That's a provisional format, replaced by E4. It's JSON or TOML (by extension, any case), and it holds:
+`score64_core::validate(song, &Context)` checks rules 1–6 and 9 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste or of tidiness: pitch ranges by role, timing marks that no set switches on, lead or bass on an expendable voice, long notes on an expendable voice, notes a hard restart leaves with only one or two gated frames, and fresh notes whose instrument can't retrigger them (gate-off disabled). The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `score64 validate <song> [--context <file>] [--json]` (the engine's `validate` command) prints every problem with its severity. It exits 0 when there are no errors, warnings included; 1 when there are errors; and 2 when the command itself fails. Until the project files (E4) carry the context, an optional **validation context file** supplies it. That's a provisional format, replaced by E4. It's JSON or TOML (by extension, any case), and it holds:
 
 - `schema = 1` (absent means 1; newer versions are refused);
 - `[[profile]]` entries (as in §3.1);
@@ -37,8 +37,8 @@ Unknown keys are errors. Instrument facts move to the presets (E7) when those ex
 - **Rule 2:** rows are integers, so "off the grid" means outside the subtune or out of order: notes, arpeggios, tempo changes, loop row, marks and role spans.
 - **Rule 3** checks each voice against its subtune's profile (§3.1), including the role of every span. A profile name that isn't defined is a problem; the profile checks are skipped for that subtune, but the others still run.
 - **Rule 4** applies each voice's filter permission, and requires explicit pulse widths on expendable voices. An instrument without facts is an error, because it can't be checked. On expendable voices the rule also warns about lead or bass, and about notes longer than `Context::expendable_long_rows` (4 rows, one beat, by default): after an effect the voice is silent until its next note (#119).
-- **Rule 5** applies each declared adaptive set (§3.1): layer order, and a timing mark at every declared switch point.
-- **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere.
+- **Rule 5** applies each declared adaptive set (§3.1): layer order, and a timing mark at every declared switch point. A mark at a row where no set with that layer switches is a warning: it gets no `DXY` and does nothing. A subtune may be a layer of several sets only if they switch at the same rows, since otherwise it would need two sets of timing-mark values (an error).
+- **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere. It is an **error** for an arpeggio note to pass B-7: the player adds the interval to the note, and its frequency table ends there.
 - **Rule 7** waits for the sound-effect model (E13).
 - **Rule 8** is `check_pack(PackFacts, PackBudget)`, run after packing.
 - **Rule 9** follows GoatTracker's gate timer. Instrument facts state it (0–63), along with whether gate-off and hard restart happen. Frames are counted with the tempo map (`Subtune::frames`), so tempo changes between notes are respected.
@@ -132,11 +132,14 @@ Roles can be narrowed per voice so the validator catches, say, a lead line in a 
 
 **A profile belongs to a subtune**, by name. `Subtune.profile` overrides `Song.profile`, which is the default (`Song::profile_of`), because one packed file can mix subtunes with different voice rules.
 
-**Adaptive sets** are declared by the project as an ordered list of layers, each a subtune by name, for example `calm`, `tension`, `pulse`, `peak`. Core checks the song against each set (`AdaptiveSet::check`, rule 5):
+**Adaptive sets** are declared by the project as an ordered list of layers, each a subtune by name, for example `calm`, `tension`, `pulse`, `peak`. Core checks the song against each set (`AdaptiveSet::check`, rule 5), and the sets against each other (`validate`):
 
 - every layer exists;
 - the layers sit at consecutive positions in the declared order, so the game can step through them by subtune number;
 - every **switch point** the set declares has a timing mark in every layer, so the game knows when it may switch. A set switches on every bar by default (`switch = "every_bar"`), or on every N bars (`switch = { every_bars = 4 }`), or on explicit rows only (`switch = { rows = [0, 64, 128] }`). Explicit rows past a layer's end are problems too.
+
+- a mark at a row where no set containing the layer switches gets no `DXY` and does nothing, which is a warning; and
+- a subtune may be a layer of several sets only if they switch at the same rows in it, since it can carry only one set of timing-mark values (an error naming every set involved).
 
 A song may hold other subtunes before or after a set, such as a title tune.
 
@@ -146,7 +149,7 @@ A song may hold other subtunes before or after a set, such as a title tune.
 - A layer's marks that aren't switch points get no `DXY`, so the byte changes only where the set allows a switch.
 - If the loop goes back to a mark with the same value as the last one, the last takes `$12`, so the jump back changes the byte too.
 - A loop with fewer than two marks can't change the byte on every pass, and `loop_changes` says so.
-- The `.sng` writer (#47) writes these as `DXY` commands.
+- The `.sng` export (`score64_formats::gt2::export`, #47) writes these as `DXY` commands. A packed song needs `-H1` for them to reach start+`$3F`.
 
 *Unverified until #47 checks them in x64sc:*
 - what start+`$3F` does across a loop jump and across init;
@@ -207,7 +210,7 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 - **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
   - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
   - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
-  - GoatTracker's wavetable encoding of an arpeggio belongs to the `.sng` writer (#47).
+  - **GoatTracker encoding:** `score64_formats::gt2::wave::arpeggio` writes an arp event's intervals as a looping wavetable program, reusing identical ones. The `.sng` export (#47) points the voice at it with `8XY` on the event's row, and back at the instrument's own program where the event ends while the note sounds on.
 
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
@@ -230,6 +233,35 @@ They're unique within the subtune when each voice is monophonised once, with all
 - **Notes that still don't fit** stay where they are, and rule 6 warns about them.
 - **Full-range roles never move.** Notes whose role may use the whole range (drums and texture, by default) are left alone and don't count. That's a property of the ranges, so narrowing the drums' range folds drums too, just as rule 6 then checks them.
 - **Decisions.** Each bar with a non-zero shift is one `Octave` decision, `octave-v<voice>-b<bar>`. Its confidence is the share of the bar's folded notes in range after the shift. The input can come in any order.
+
+### 3.2.1 Writing a GoatTracker song
+
+`score64_formats::gt2::export(song, library, adaptive, header)` turns a validated score into an `Sng` (#47). The library maps preset ids to GoatTracker instruments with their own tables, in `.ins` form; the presets (#49) will fill it. It refuses, rather than writes wrong: notes or tempo changes past the end, overlapping notes or arpeggios, a legato note with nothing to tie to (on the loop row, after the jump back too), a note sounding across the loop row (after the jump back it couldn't be), and an arpeggio ending on a tie (that row's command slot holds the tie, so the program couldn't be stopped).
+
+- **Patterns.** Each voice's rows are cut at every bar start and at the loop row, into pieces of at most 128 rows. So all three orderlists stay in step, and the restart position is the pattern that starts at the loop row. Identical patterns are shared across voices and subtunes, up to GoatTracker's 208.
+- **Notes.**
+  - A fresh note plays with its instrument.
+  - A legato note ties with `3` `00` and no instrument, so it isn't retriggered (#137).
+  - A note followed by silence ends with a key-off. One followed directly by another note leaves the gate to that note's hard restart.
+  - A note that runs to the end, when the loop row is silent, gets a key-off on the loop row, so it stops after the jump back.
+- **Song-wide commands.** These go on the first voice with a free command slot, after the voices' own commands; a row with none is an error:
+  - the tempo (`Fxx`, all voices) on row 0, at each tempo change, and on the loop row when the tempo there differs from the tempo at the end;
+  - each timing mark of an adaptive layer (`DXY`, values from `AdaptiveSet::timing_marks`). `Exported::timing_marks` says the song must be packed with `-H1`.
+- **Arpeggios** use `8XY` and §3.2's wavetable programs, one frame a step.
+  - Every note sounding during the event gets the pointer: the one under its start, and each fresh note inside it, since a new note resets the wave pointer. A tie keeps the program running.
+  - Where the event ends while a note sounds on, the voice goes back to that note's instrument's program, unless another arpeggio starts there.
+  - A note plus an interval must stay at or below B-7 (rule 6 checks it), and the instrument's first wavetable row must give a gated waveform.
+- **Instruments** are numbered by first use, up to 62; 63 stays free because it can carry a tempo setting. Their tables move into the song's: pointers, `$FF` jump targets, and the wavetable's command rows (`1`–`4XY` and `EXY` into the speedtable, `9XY` the pulsetable, `AXY` the filtertable), as gt2reloc relocates them.
+- **Not yet checked:** that the library's gate timers and gate-off flags match the instrument facts the validator used (#49), and that the adaptive sets passed here are the validator's.
+- **Evidence.** `crates/score64-adapters/tests/sng_export.rs` exports scores, packs them with the real `gt2reloc` and plays them in the emulator helper. It checks:
+  - the notes' frequency ratios;
+  - the tie holding the gate;
+  - each key-off;
+  - the tempo (5 frames a row, not GoatTracker's default 6);
+  - every frame of an arpeggio, from its first row to its last;
+  - after a jump back to a silent loop row, the last note stopped and the loop row's tempo restored.
+
+  In those renders the gate timer closes the gate 2 frames before a key-off's row. The test runs where `gt2reloc` is installed, which CI isn't. Listening on 6581 and 8580, and VICE, are still to do.
 
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
@@ -285,7 +317,7 @@ A version is an immutable run, identified by a hash of intent + input hashes + t
 ```
 crates/
   score64-core       pure model, profiles, reduction, validator
-  score64-formats    .sng/.ins/sound-effect bytes, MIDI, WAV
+  score64-formats    .sng/.ins/sound-effect bytes, MIDI, WAV; the score as a GoatTracker song (depends on core)
   score64-project    track files, decisions, cache, index, audio.lock
   score64-analysis   features, onsets, fidelity metrics, effect feature curves
   score64-adapters   transcribers, beat tracker, deciders, gt2reloc, VICE, C64 Ultimate, sidecar, helper client
@@ -338,7 +370,8 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
 | Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Any note soup monophonises to a line with no errors, every note kept or dropped by a decision, whatever the input order (#40); octave folding only moves pitches, by whole octaves, never leaves a bar with more notes out of range, and picks each bar's best playable shift (#41) |
 | Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
-| Differential | Ports against originals: `.sng` writer vs pygoattracker; Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
+| GoatTracker | The `.sng` layer against GoatTracker itself. `crates/score64-adapters/tests/sng_export.rs` packs exported songs with the real `gt2reloc` and plays them in the emulator helper (#185); it runs where `gt2reloc` is installed and skips visibly elsewhere, CI included. The layout was read against GoatTracker's `gsong.c` in review (#181). Listening sets for `needs-vice-check` PRs come from `cargo xtask listen` (`docs/TOOLING.md`) |
+| Differential | Ports against originals: Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |
 | Audio regression (slow) | Reference tracks: melody similarity, onset F1, voice-3 dropout, both chips |
 | Hardware harness (slow) | KickAssembler test programs in VICE: raster time, zero-page guard, sound-effect mailbox, subtune switching on timing marks |

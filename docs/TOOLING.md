@@ -31,7 +31,7 @@ External tools (gt2reloc, VICE, sidplayfp, the optional sidecar) are only needed
 Versions used by the #20 spike ([report](research/2026-10-18-packed-player-spike.md)); macOS with Homebrew shown.
 
 - **gt2reloc**: build it from the GoatTracker 2.77 source (SourceForge `goattracker2`). It links SDL 1.2: `brew install sdl12-compat`, then in `src/` run `CFLAGS="-I$(brew --prefix)/include" make ../linux/gt2reloc ../linux/ins2snd2` and copy both binaries onto your `PATH`.
-  - **Finding and pinning it.** Score64 finds it through `SCORE64_GT2RELOC`, or else on `PATH`. It has no version flag, so the pinned version is the one its banner names. The binary built this way prints `GoatTracker v2.73 Packer/Relocator` (observed 2026-10-23), so the pin is `2.73`. The banner can't tell this build from a real 2.73, so it is a weak pin.
+  - **Finding and pinning it.** Score64 finds it through `SCORE64_GT2RELOC`, or else on `PATH`. It has no version flag, so the pinned version is the one its banner names. The binary built this way prints `GoatTracker v2.73 Packer/Relocator` (observed 2026-10-23), so the pin is `2.73`. The banner can't tell this build from a real 2.73, so the adapter can also pin the program itself by its blake3 (`Gt2Reloc::with_blake3`; get the value with `b3sum`, or from any pack's `program_blake3`, which every pack records for provenance). A binary hash differs per platform and per build, so where a project keeps it is still open: ADR-014 (Proposed) puts the gt2reloc pin in the shared `score64.toml`, which suits the banner but not a per-platform hash. A portable alternative is the hash of a fixture song packed with fixed options. A program is hashed and then run, so a swap between the two isn't caught, and a wrapper script is pinned rather than the program it starts.
   - **Quirks the adapter guards against** (observed with that binary):
     - A missing song, or a file that isn't a song, packs an empty tune and exits 0. Some junk bytes make it crash instead.
     - A malformed option is ignored, and the default is used.
@@ -41,6 +41,46 @@ Versions used by the #20 spike ([report](research/2026-10-18-packed-player-spike
 - **VICE** 3.10: `brew install vice` (gives `x64sc` and `vsid`). `-sounddev dump` logs SID writes in any mode. `-sounddev wav` only writes audio in real time (not `-warp`) and only on a clean exit, for example `quit` through `-remotemonitor`.
 - **KickAssembler** 5.25 (Java) for test drivers such as `crates/score64-emu/spikes/packed-player/sfx-driver.asm`: download from <http://theweb.dk/KickAssembler/> and run `java -jar KickAss.jar`.
 - **uv** 0.12 runs the Python sidecar (`sidecar/`): one locked project used for differential tests, fixture generation and the spike analysis scripts. Run scripts with `uv run --frozen --project sidecar python ...`; see `sidecar/README.md`.
+
+### Listening sets for `needs-vice-check` PRs
+
+A PR that changes what the packed player plays (labelled `needs-vice-check`) gets a listening set before it merges:
+
+```
+cargo xtask listen --pr <n> [case ...]
+cargo xtask listen --pr <n> --score <song.toml|json> --instruments <folder of <preset id>.ins>
+```
+
+It writes to `scratch/<n>-listen/`, which git ignores. For each case it:
+- exports the score through `score64_formats::gt2::export`;
+- packs it with the pinned `gt2reloc`, with sound-effect support (`.sfx`, `-D1`) and without (`.nosfx`);
+- wraps the `.sfx` file so it fires the fixture's three effects on voice 3 every 37 frames (`.sfx+fx`). A plain `.sfx` file plays no effects;
+- renders every subtune for 60 s with the emulator helper and with sidplayfp, on the 6581 and the 8580;
+- writes `LISTEN.md`.
+
+LISTEN.md has:
+- what to listen for, and a timeline per subtune: when each tie, key-off, arpeggio, tempo change and loop comes;
+- measurements: helper vs sidplayfp, `.sfx` vs `.nosfx`, and the effects' level against the music.
+
+The built-in cases (all of them by default) are `sixteen-steps`, `sixteen-steps-adaptive`, `combat-filtered`, `ties-keyoffs-arp` and `loop-tempo` (`xtask/src/listen/fixture.rs`). It needs `gt2reloc` and builds the helper itself. sidplayfp is used if it's on `PATH`. `--gt2reloc-blake3` pins a specific binary; without it the installed one is pinned and its hash recorded.
+
+## Releases
+
+Release archives are built by [dist](https://github.com/axodotdev/cargo-dist) 0.33.0, configured in `dist-workspace.toml` (as in Convert64). It makes one archive per program, for macOS (arm64 and x86_64), Windows and Linux:
+
+| Archive | Contains |
+|---|---|
+| `score64-cli-<target>` | `score64`, `LICENSE` (MIT), `README.md` |
+| `score64-app-<target>` | `score64-app` (Score64 Studio), `LICENSE`, `README.md` |
+| `score64-emu-<target>` | `score64-emu`, its GPL-3.0-or-later `LICENSE`, `THIRD_PARTY.md` (vendored reSIDfp), `README.md` |
+
+dist builds one archive per package and can't combine packages. The helper must stay its own GPL package (ADR-002), so it ships separately. **Extract all the archives into one directory.** `score64` and `score64-app` look for `score64-emu` in this order (`Helper::locate`): `SCORE64_EMU`, then beside themselves, then on `PATH`. `score64-mcp` joins the releases when it has tools (E14).
+
+- **Real releases:** `release.yml`, generated by `dist generate`, runs only on version tags. Never edit it by hand; change `dist-workspace.toml` and run `dist generate` again.
+- **Test builds:** the manual `dist build (manual)` workflow (`dist-build.yml`, `workflow_dispatch`) builds every target and uploads workflow artifacts only. It makes no tag and no release.
+- **Locally:** `dist build --artifacts=local --target=aarch64-apple-darwin` writes to `target/distrib/`.
+
+The archives are unsigned and not notarised. Signed bundles, installers and licence notices inside the app are E17 (#109, #143).
 
 ## Reference material
 

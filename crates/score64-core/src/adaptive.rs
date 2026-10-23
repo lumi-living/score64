@@ -151,8 +151,13 @@ impl AdaptiveSet {
         added
     }
 
-    /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, or a
-    /// declared switch row past a layer's end.
+    /// The rows of `layer` where this set lets the game switch, inside the layer.
+    pub fn switch_rows(&self, layer: &Subtune) -> Vec<u32> {
+        self.switch.points(layer).0
+    }
+
+    /// Every way `song` breaks this set: a layer missing or out of place, a switch point without a timing mark, a mark
+    /// that isn't a switch point, or a declared switch row past a layer's end.
     pub fn check(&self, song: &Song) -> Vec<LayerProblem> {
         let mut out = Vec::new();
         let first = song.subtune(&self.layers[0]).map(|(i, _)| i);
@@ -173,9 +178,19 @@ impl AdaptiveSet {
                 });
             }
             let (points, outside) = self.switch.points(subtune);
-            for row in points {
+            for &row in &points {
                 if !subtune.marks.contains(&row) {
                     out.push(LayerProblem::Mark {
+                        layer: layer.clone(),
+                        row,
+                    });
+                }
+            }
+            // Each mark once; marks past the end are rule 2's.
+            let marks: std::collections::BTreeSet<u32> = subtune.marks.iter().copied().collect();
+            for row in marks {
+                if row < subtune.length.get() && !points.contains(&row) {
+                    out.push(LayerProblem::OffSwitch {
                         layer: layer.clone(),
                         row,
                     });
@@ -212,6 +227,14 @@ pub enum LayerProblem {
     },
     /// The switch point at `row` of `layer` has no timing mark.
     Mark {
+        /// The layer.
+        layer: SubtuneName,
+        /// The row.
+        row: u32,
+    },
+    /// `layer` has a timing mark at `row`, which is not one of the set's switch points. It gets no `DXY` and does
+    /// nothing ([`AdaptiveSet::timing_marks`]).
+    OffSwitch {
         /// The layer.
         layer: SubtuneName,
         /// The row.
@@ -330,6 +353,20 @@ mod tests {
     }
 
     #[test]
+    fn a_stray_mark_written_twice_is_one_problem() {
+        let mut s = song(&["calm"]);
+        s.subtunes[0].marks = vec![0, 8, 8, 16];
+        let set = AdaptiveSet::new("s", vec![n("calm")]).unwrap();
+        assert_eq!(
+            set.check(&s),
+            [LayerProblem::OffSwitch {
+                layer: n("calm"),
+                row: 8
+            }]
+        );
+    }
+
+    #[test]
     fn sets_declare_their_switch_points() {
         let layers = || vec![n("calm"), n("tension")];
         let mut s = song(&["calm", "tension"]);
@@ -355,6 +392,11 @@ mod tests {
                 LayerProblem::Mark {
                     layer: n("calm"),
                     row: 40
+                },
+                // Calm's bar-2 mark is not one of these switch points.
+                LayerProblem::OffSwitch {
+                    layer: n("calm"),
+                    row: 32
                 },
                 LayerProblem::PastEnd {
                     layer: n("tension"),

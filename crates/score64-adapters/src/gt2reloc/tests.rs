@@ -153,20 +153,37 @@ fn main() {
 fn fake_exe() -> &'static Path {
     static EXE: OnceLock<PathBuf> = OnceLock::new();
     EXE.get_or_init(|| {
-        let dir =
-            std::env::temp_dir().join(format!("score64-fake-gt2reloc-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let src = dir.join("fake.rs");
-        std::fs::write(&src, FAKE).unwrap();
-        let exe = dir.join(format!("fake{}", std::env::consts::EXE_SUFFIX));
+        // Keyed by the source and the compiler, so every run reuses one build instead of leaving a folder per run.
         let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-        let status = Command::new(rustc)
+        let version = Command::new(&rustc).arg("-V").output().unwrap().stdout;
+        let key = &blake3::hash(&[FAKE.as_bytes(), &version].concat()).to_hex()[..16];
+        let dir = std::env::temp_dir().join(format!("score64-fake-gt2reloc-{key}"));
+        let exe = dir.join(format!("fake{}", std::env::consts::EXE_SUFFIX));
+        if exe.is_file() {
+            return exe;
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        // Built under a name of this process's own, then renamed, so concurrent test runs never see half a build.
+        let src = dir.join(format!("fake-{}.rs", std::process::id()));
+        std::fs::write(&src, FAKE).unwrap();
+        let part = dir.join(format!(
+            "fake-{}{}",
+            std::process::id(),
+            std::env::consts::EXE_SUFFIX
+        ));
+        let status = Command::new(&rustc)
             .args(["--edition", "2021", "-O", "-o"])
-            .arg(&exe)
+            .arg(&part)
             .arg(&src)
             .status()
             .unwrap();
         assert!(status.success(), "compiling the fake gt2reloc");
+        let _ = std::fs::remove_file(&src);
+        // Another run may have finished first. Its build works the same (the bytes differ only by the source's name).
+        if std::fs::rename(&part, &exe).is_err() {
+            let _ = std::fs::remove_file(&part);
+        }
+        assert!(exe.is_file());
         exe
     })
 }
@@ -331,11 +348,115 @@ fn a_relative_program_path_is_made_absolute() {
     let g = Gt2Reloc::at("tools/gt2reloc", "2.73");
     assert!(g.program.is_absolute(), "{:?}", g.program);
     assert!(g.program.ends_with("tools/gt2reloc"));
-    // A bare name is looked up on PATH, so it stays as it is.
+    // A bare name is looked up on PATH once, here, so what runs is what was hashed.
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
     assert_eq!(
-        Gt2Reloc::at("gt2reloc", "2.73").program,
-        Path::new("gt2reloc")
+        Gt2Reloc::at(shell, "2.73").program,
+        crate::sidecar::find_on_path(shell).unwrap()
     );
+    // One that isn't there stays bare, and packing says it isn't found.
+    let missing = Gt2Reloc::at("score64-no-such-program", "2.73");
+    assert_eq!(missing.program, Path::new("score64-no-such-program"));
+    assert!(matches!(missing.program_blake3(), Err(PackError::NotFound)));
+}
+
+#[test]
+fn the_program_can_be_pinned_by_its_hash() {
+    let b = Bench::new("pin", "ok");
+    let hash = Gt2Reloc::at(&b.exe, "2.73").program_blake3().unwrap();
+    assert_eq!(
+        hash,
+        blake3::hash(&std::fs::read(&b.exe).unwrap())
+            .to_hex()
+            .to_string()
+    );
+    // The right hash, in any case: it packs and records the hash.
+    let packed = Gt2Reloc::at(&b.exe, "2.73")
+        .with_blake3(&hash.to_ascii_uppercase())
+        .unwrap()
+        .pack(&b.song, &b.dir.join("tune.sid"), &options())
+        .unwrap();
+    assert_eq!(packed.program_blake3, hash);
+    // Another hash: refused before anything runs.
+    std::fs::remove_file(b.dir.join("args.txt")).unwrap();
+    let other = "0".repeat(64);
+    match Gt2Reloc::at(&b.exe, "2.73")
+        .with_blake3(&other)
+        .unwrap()
+        .pack(&b.song, &b.dir.join("again.sid"), &options())
+    {
+        Err(PackError::Binary { found, pinned }) => {
+            assert_eq!((found, pinned), (hash.clone(), other))
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(!b.dir.join("args.txt").exists(), "gt2reloc was not started");
+    // Surrounding spaces are fine.
+    assert!(
+        Gt2Reloc::at(&b.exe, "2.73")
+            .with_blake3(&format!(" {hash}\n"))
+            .is_ok()
+    );
+    // Not a blake3: refused when set, not as a confusing mismatch later.
+    for bad in [
+        "abc".to_string(),
+        format!("{hash}  gt2reloc"),
+        "g".repeat(64),
+    ] {
+        assert!(
+            matches!(
+                Gt2Reloc::at(&b.exe, "2.73").with_blake3(&bad),
+                Err(PackError::Option(_))
+            ),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn an_unpinned_pack_records_the_programs_hash() {
+    let b = Bench::new("record", "ok");
+    let packed = b.pack("tune.sid").unwrap();
+    let want = blake3::hash(&std::fs::read(&b.exe).unwrap())
+        .to_hex()
+        .to_string();
+    assert_eq!(packed.program_blake3, want);
+}
+
+#[test]
+fn an_output_that_cant_be_replaced_says_so() {
+    let b = Bench::new("replace", "ok");
+    // A directory where the output goes: the rename into place fails.
+    std::fs::create_dir(b.dir.join("tune.sid")).unwrap();
+    match b.pack("tune.sid") {
+        Err(e @ PackError::Replace { .. }) => {
+            let PackError::Replace { path, error } = &e else {
+                unreachable!()
+            };
+            assert_eq!(path, &b.dir.join("tune.sid"));
+            // The emulator hint is only for a permission error.
+            let hinted = e.to_string().contains("open in another program");
+            assert_eq!(hinted, error.kind() == std::io::ErrorKind::PermissionDenied);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn path_lookup_skips_files_that_cant_run() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = std::env::temp_dir().join(format!("score64-path-lookup-{}", std::process::id()));
+    let (a, c) = (dir.join("a"), dir.join("c"));
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&c).unwrap();
+    std::fs::write(a.join("tool"), b"not a program").unwrap();
+    std::fs::write(c.join("tool"), b"#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(c.join("tool"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths([&a, &c]).unwrap();
+    let found = crate::sidecar::find_in(&path, "tool");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(found, Some(c.join("tool")));
 }
 
 /// The real gt2reloc, if it is installed (CI does not install it): the fixture song packs to the size the #20 spike
