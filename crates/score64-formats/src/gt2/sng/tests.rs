@@ -228,9 +228,9 @@ fn the_end_row_is_kept_as_read() {
 
 #[test]
 fn orderlist_commands_encode_as_the_player_reads_them() {
-    assert_eq!(repeat(1), Some(0xD1));
-    assert_eq!(repeat(15), Some(0xDF));
-    assert_eq!(repeat(16), Some(0xD0));
+    assert_eq!(repeat(1), Some(0xD0));
+    assert_eq!(repeat(2), Some(0xD1));
+    assert_eq!(repeat(16), Some(0xDF));
     assert_eq!((repeat(0), repeat(17)), (None, None));
     assert_eq!(transpose(0), Some(0xF0));
     assert_eq!(transpose(14), Some(0xFE));

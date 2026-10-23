@@ -53,7 +53,7 @@ Nothing follows the last pattern.
 
 **Orderlist entries:**
 - `$00`–`$CF`: a pattern number.
-- `$D0`–`$DF`: repeat the next pattern (`R1`–`RF`, and `R0` means 16 times).
+- `$D0`–`$DF`: play the next pattern the entry minus `$D0`, plus one, times. `$D0` plays it once, `$DF` 16 times. The editor shows them as `R1`–`RF` and `R0` (`gplay.c`, `gdisplay.c`, checked in the #181 review).
 - `$E1`–`$FE`: transpose by the entry minus `$F0` (`$F0` none, `$FE` +14, `$E1` −15). The readme gives the ranges, up 0–14 and down 1–15; the mapping is the player's (`gplay.c`). `$E0` would be −16, outside the range, and Score64 refuses it.
 - Before each pattern number, at most one transpose, then at most one repeat. The readme says transpose must come first, and the player reads one of each in that order; the editor halts playback otherwise.
 - At most 254 entries before the end mark. The last must be a pattern number, and the restart position must lie inside the list.

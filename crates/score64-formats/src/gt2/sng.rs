@@ -36,13 +36,11 @@ pub const KEY_ON: u8 = 0xBF;
 /// The end mark of an orderlist (followed by the restart position) and of a pattern.
 pub const END: u8 = 0xFF;
 
-/// The orderlist entry that repeats the next pattern `times` times (1–16; `R0`, `$D0`, means 16).
+/// The orderlist entry that plays the next pattern `times` times (1–16): `$D0` once, `$DF` 16 times. The player
+/// plays it the entry minus `$D0`, plus one, times; the editor shows `$D0`–`$DE` as `R1`–`RF` and `$DF` as `R0`
+/// (`gplay.c`, `gdisplay.c`).
 pub fn repeat(times: u8) -> Option<u8> {
-    match times {
-        16 => Some(0xD0),
-        1..=15 => Some(0xD0 + times),
-        _ => None,
-    }
+    (1..=16).contains(&times).then(|| 0xD0 + times - 1)
 }
 
 /// The orderlist entry that transposes the following patterns by `semitones` (−15 to +14). The player adds the entry
