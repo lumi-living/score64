@@ -348,7 +348,13 @@ fn a_relative_program_path_is_made_absolute() {
     let g = Gt2Reloc::at("tools/gt2reloc", "2.73");
     assert!(g.program.is_absolute(), "{:?}", g.program);
     assert!(g.program.ends_with("tools/gt2reloc"));
-    // A bare name is looked up on PATH once; one that isn't there stays bare, and packing says it isn't found.
+    // A bare name is looked up on PATH once, here, so what runs is what was hashed.
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    assert_eq!(
+        Gt2Reloc::at(shell, "2.73").program,
+        crate::sidecar::find_on_path(shell).unwrap()
+    );
+    // One that isn't there stays bare, and packing says it isn't found.
     let missing = Gt2Reloc::at("score64-no-such-program", "2.73");
     assert_eq!(missing.program, Path::new("score64-no-such-program"));
     assert!(matches!(missing.program_blake3(), Err(PackError::NotFound)));
@@ -385,6 +391,12 @@ fn the_program_can_be_pinned_by_its_hash() {
         other => panic!("{other:?}"),
     }
     assert!(!b.dir.join("args.txt").exists(), "gt2reloc was not started");
+    // Surrounding spaces are fine.
+    assert!(
+        Gt2Reloc::at(&b.exe, "2.73")
+            .with_blake3(&format!(" {hash}\n"))
+            .is_ok()
+    );
     // Not a blake3: refused when set, not as a confusing mismatch later.
     for bad in [
         "abc".to_string(),
@@ -417,7 +429,15 @@ fn an_output_that_cant_be_replaced_says_so() {
     // A directory where the output goes: the rename into place fails.
     std::fs::create_dir(b.dir.join("tune.sid")).unwrap();
     match b.pack("tune.sid") {
-        Err(PackError::Replace { path, .. }) => assert_eq!(path, b.dir.join("tune.sid")),
+        Err(e @ PackError::Replace { .. }) => {
+            let PackError::Replace { path, error } = &e else {
+                unreachable!()
+            };
+            assert_eq!(path, &b.dir.join("tune.sid"));
+            // The emulator hint is only for a permission error.
+            let hinted = e.to_string().contains("open in another program");
+            assert_eq!(hinted, error.kind() == std::io::ErrorKind::PermissionDenied);
+        }
         other => panic!("{other:?}"),
     }
 }
