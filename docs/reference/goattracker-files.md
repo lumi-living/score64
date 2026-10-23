@@ -1,6 +1,6 @@
 # GoatTracker 2 files
 
-Byte layouts of GoatTracker 2's own files, as Score64 reads and writes them. The source is the GoatTracker 2 readme, section 6.2 (instruments) and section 6.1 (songs). The song layout is transcribed with the `.sng` writer (#47).
+Byte layouts of GoatTracker 2's own files, as Score64 reads and writes them. The source is the GoatTracker 2 readme, section 6.2 (instruments) and section 6.1 (songs), read from v2.72's readme (<https://raw.githubusercontent.com/leafo/goattracker2/master/readme.txt>, a mirror; GTS5 has been unchanged since v2.59).
 
 ## Instruments (`.ins`, `GTI5`)
 
@@ -32,3 +32,39 @@ The tables are the instrument's own, so a file of an instrument with no tables i
 - **The table layout is supported by GoatTracker's own `ins2snd2`.** It read the three fixture instrument files, including their wave and pulse tables, and produced the sound-effect data in `sfx-*.bin`. Those effects play as designed.
 - **A consistency check:** `score64_formats::annotate::ins` was written in this project from the same readme, so it is not independent evidence. It decodes the same layout and accounts for every byte.
 - **The files' origin:** they were written by the project's own `make_song.py`, not saved from GoatTracker's editor. A file saved by GoatTracker 2.77 would add a further check.
+
+## Songs (`.sng`, `GTS5`)
+
+`score64_formats::gt2::sng::Sng`. Offsets count from the start of the file for the header and from the start of each part after it.
+
+| Part | Bytes | Contents |
+|---|---|---|
+| Magic | 4 | `GTS5` |
+| Name, author, copyright | 32 each | Zero-padded text. Score64 writes at most 31 characters, so each ends in a zero; whether GoatTracker needs that is not checked |
+| Subtune count | 1 | 1 to 32 |
+| Orderlists | per subtune, voices 1, 2, 3 | A length *n*, then *n* + 1 bytes: the entries, the end mark `$FF`, and the restart position. *n* counts the entries and the end mark, not the restart position |
+| Instrument count | 1 | 0 to 63. Instrument 0, the empty one, is not stored; the records are instruments 1 onwards |
+| Instruments | 25 each | The record above (`.ins` offsets 4–28) |
+| Tables | | Wave, pulse, filter and speed, each as in an instrument file. Instrument pointers count from 1 into these, the song's own tables |
+| Pattern count | 1 | 1 to 208 (numbers `$00`–`$CF`) |
+| Patterns | per pattern | A row count *m*, then *m* rows of 4 bytes. *m* includes the end row, whose note byte is `$FF` |
+
+Nothing follows the last pattern.
+
+**Orderlist entries:**
+- `$00`–`$CF`: a pattern number.
+- `$D0`–`$DF`: repeat the next pattern (`R1`–`RF`, and `R0` means 16 times).
+- `$E0`–`$FE`: transpose, up 0–14 or down 1–15 halftones. The readme doesn't give the byte-to-amount mapping; Score64 does not write transposes yet.
+- At most 254 entries before the end mark. The last must be a pattern number, and the restart position must lie inside the list.
+
+**Pattern rows:** note, instrument, command, command data.
+- **Note:** `$60`–`$BC` (C-0 to G#7), `$BD` rest, `$BE` key off, `$BF` key on.
+- **Instrument:** `$01`–`$3F`, or `$00` for no change.
+- **Command:** `$0`–`$F`.
+- At most 128 rows, plus the end row. Score64 writes the end row as `$FF 00 00 00` and doesn't keep its last three bytes on reading; what GoatTracker's editor puts there is not checked.
+
+**Evidence.**
+- **GoatTracker's packer read this layout.** `gt2reloc` packed `sixteen-steps.sng` (`fixtures/gt2-original/README.md`), and the result plays as composed. Every length rule above is exercised: a wrong orderlist length or pattern row count would misplace every byte after it.
+- **Byte-for-byte round trip.** `Sng` reads the fixture and writes it back identically (`gt2::sng::tests`). A property test round-trips any song within the limits.
+- **A consistency check:** the fixture was written by the project's `fixtures/_tools/gtsng.py`, and `score64_formats::annotate::sng` reads the same layout. Both were written here from the same readme, so neither is independent evidence. The differential test against pygoattracker comes with #47.
+- **The limits** (32 subtunes, 254 orderlist entries, 208 patterns, 128 rows, 63 instruments) are from the readme, sections 3.1–3.3.

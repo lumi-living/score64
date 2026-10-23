@@ -253,5 +253,7 @@ impl Ins {
     }
 }
 
+pub mod sng;
+
 #[cfg(test)]
 mod tests;
