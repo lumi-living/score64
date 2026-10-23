@@ -137,19 +137,45 @@ impl DynHelper {
         Ok(helper)
     }
 
-    /// Where the helper binary is: `SCORE64_EMU`, else next to the running executable (or one directory up, which is
-    /// where Cargo puts binaries relative to test executables), else `None`.
+    /// Where the helper binary is, in this order:
+    ///
+    /// 1. `SCORE64_EMU`, if set;
+    /// 2. next to the running program, or one directory up (where Cargo puts binaries relative to test executables).
+    ///    That is also the installed layout: release archives extracted into one directory (`docs/TOOLING.md`);
+    /// 3. on `PATH`.
     pub fn locate() -> Option<PathBuf> {
-        if let Some(p) = std::env::var_os("SCORE64_EMU") {
-            return Some(PathBuf::from(p));
-        }
-        let name = format!("score64-emu{}", std::env::consts::EXE_SUFFIX);
-        let exe = std::env::current_exe().ok()?;
-        let dir = exe.parent()?;
-        [dir.join(&name), dir.parent()?.join(&name)]
-            .into_iter()
-            .find(|p| p.is_file())
+        locate_in(
+            std::env::var_os("SCORE64_EMU"),
+            std::env::current_exe().ok(),
+            std::env::var_os("PATH"),
+        )
     }
+}
+
+/// [`Helper::locate`] with its inputs explicit, for tests.
+fn locate_in(
+    explicit: Option<std::ffi::OsString>,
+    exe: Option<PathBuf>,
+    path: Option<std::ffi::OsString>,
+) -> Option<PathBuf> {
+    if let Some(p) = explicit.filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    let name = format!("score64-emu{}", std::env::consts::EXE_SUFFIX);
+    let beside = exe.iter().flat_map(|exe| {
+        let dir = exe.parent();
+        [dir, dir.and_then(Path::parent)]
+            .into_iter()
+            .flatten()
+            .map(|d| d.join(&name))
+            .collect::<Vec<_>>()
+    });
+    let on_path = path
+        .iter()
+        .flat_map(std::env::split_paths)
+        .map(|d| d.join(&name))
+        .collect::<Vec<_>>();
+    beside.chain(on_path).find(|p| p.is_file())
 }
 
 impl<R: Read, W: Write> Helper<R, W> {
@@ -447,5 +473,48 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn locate_looks_beside_the_program_then_on_path() {
+        let root = std::env::temp_dir().join(format!("score64-locate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (install, tools) = (root.join("score64"), root.join("tools"));
+        std::fs::create_dir_all(&install).unwrap();
+        std::fs::create_dir_all(&tools).unwrap();
+        let name = format!("score64-emu{}", std::env::consts::EXE_SUFFIX);
+        let exe = Some(install.join(format!("score64{}", std::env::consts::EXE_SUFFIX)));
+        let path = Some(std::env::join_paths([&tools]).unwrap());
+
+        assert_eq!(
+            locate_in(None, exe.clone(), path.clone()),
+            None,
+            "nothing installed"
+        );
+        std::fs::write(tools.join(&name), b"").unwrap();
+        assert_eq!(
+            locate_in(None, exe.clone(), path.clone()),
+            Some(tools.join(&name)),
+            "on PATH"
+        );
+        // The installed layout: archives extracted into one directory put the helper beside the program.
+        std::fs::write(install.join(&name), b"").unwrap();
+        assert_eq!(
+            locate_in(None, exe.clone(), path.clone()),
+            Some(install.join(&name)),
+            "beside wins"
+        );
+        assert_eq!(
+            locate_in(Some("/opt/emu".into()), exe.clone(), path.clone()),
+            Some(PathBuf::from("/opt/emu")),
+            "SCORE64_EMU wins"
+        );
+        assert_eq!(
+            locate_in(Some("".into()), exe, path),
+            Some(install.join(&name)),
+            "empty SCORE64_EMU is ignored"
+        );
+        assert_eq!(locate_in(None, None, None), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

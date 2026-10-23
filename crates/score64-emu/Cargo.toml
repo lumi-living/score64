@@ -25,3 +25,11 @@ score64-formats = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+
+# Built and released by dist (dist-workspace.toml) as its own archive. Its GPL text is COPYING, not LICENSE, so that
+# extracting every release archive into one directory keeps both the MIT LICENSE and the GPL COPYING
+# (docs/TOOLING.md). THIRD_PARTY.md carries the notices for the vendored reSIDfp.
+[package.metadata.dist]
+dist = true
+auto-includes = false
+include = ["COPYING", "../../README.md", "../../THIRD_PARTY.md"]

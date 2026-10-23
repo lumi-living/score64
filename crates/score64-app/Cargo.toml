@@ -24,3 +24,13 @@ path = "src/main.rs"
 
 [lints]
 workspace = true
+
+# Built and released by dist (dist-workspace.toml).
+[package.metadata.dist]
+dist = true
+# Notices for the bundled fonts: their OFL texts travel with them, and THIRD_PARTY.md covers Material Symbols.
+include = [
+    "../../THIRD_PARTY.md",
+    "assets/fonts/OFL-Inter.txt",
+    "assets/fonts/OFL-JetBrainsMono.txt",
+]
