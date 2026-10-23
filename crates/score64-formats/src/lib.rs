@@ -5,4 +5,5 @@
 pub mod annotate;
 pub mod emu_protocol;
 pub mod gt2;
+pub mod packed;
 pub mod psid;

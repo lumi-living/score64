@@ -479,3 +479,36 @@ fn the_real_gt2reloc_packs_the_fixture_song() {
     assert_eq!(packed.size, 2062);
     assert_eq!(&bytes.unwrap()[..4], b"PSID");
 }
+
+#[test]
+fn a_payload_must_match_what_gt2reloc_reported() {
+    let dir = std::env::temp_dir().join(format!("score64-payload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("tune.prg");
+    std::fs::write(&path, [0x00, 0x10, 0x4C, 0x03, 0x10, 0x4C, 0x03, 0x10]).unwrap();
+    let packed = |start, size| Packed {
+        path: path.clone(),
+        format: Format::Prg,
+        start,
+        size,
+        version: "2.73".into(),
+        program_blake3: String::new(),
+    };
+    let p = packed(0x1000, 6).payload().unwrap();
+    assert_eq!((p.load, p.data.len()), (0x1000, 6));
+    assert_eq!(p.jump_table(), [Some(0x1003), Some(0x1003), None]);
+    for (start, size) in [(0x1000, 7), (0x2000, 6)] {
+        let e = packed(start, size).payload().unwrap_err();
+        assert!(matches!(e, PackError::Mismatch(_)), "{e}");
+        assert!(e.to_string().contains("holds 6 bytes at $1000"), "{e}");
+    }
+    std::fs::write(&path, [0x00]).unwrap();
+    assert!(
+        packed(0x1000, 6)
+            .payload()
+            .unwrap_err()
+            .to_string()
+            .contains("shorter than its load address")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

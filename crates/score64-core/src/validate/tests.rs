@@ -730,34 +730,199 @@ fn rule_9_hard_restart() {
     );
 }
 
-#[test]
-fn rule_8_pack_budget() {
-    let budget = PackBudget {
-        max_bytes: 4096,
+fn budget() -> PackBudget {
+    PackBudget {
+        first: 0x1000,
+        last: 0x1FFF,
         zero_page: 0xF8,
+        sound_effects: true,
+        max_play_cycles: None,
+    }
+}
+
+/// A tune at $1000 of 3000 bytes that does everything right.
+fn facts() -> PackFacts {
+    PackFacts {
+        start: 0x1000,
+        size: 3000,
+        jump_table: [Some(0x1009), Some(0x1040), Some(0x10A0)],
+        zero_page_used: [0xF8, 0xF9].into(),
+        pages_written_outside: [].into(),
+        max_play_cycles: Some(1500),
+    }
+}
+
+fn pack_messages(f: &PackFacts, b: &PackBudget) -> Vec<String> {
+    let p = check_pack(f, b);
+    assert!(
+        p.iter()
+            .all(|p| p.rule == Rule::Pack && p.severity == Severity::Error)
+    );
+    p.into_iter().map(|p| p.message).collect()
+}
+
+#[test]
+fn rule_8_a_tune_inside_its_window_passes() {
+    assert_eq!(pack_messages(&facts(), &budget()), Vec::<String>::new());
+    // Exactly filling the window, and only part of the pair used.
+    let f = PackFacts {
+        size: 0x1000,
+        zero_page_used: [0xF9].into(),
+        ..facts()
+    };
+    assert_eq!(pack_messages(&f, &budget()), Vec::<String>::new());
+}
+
+#[test]
+fn rule_8_memory_window() {
+    let too_big = PackFacts {
+        size: 0x1001,
+        ..facts()
+    };
+    let m = pack_messages(&too_big, &budget());
+    assert_eq!(
+        m,
+        ["the tune takes $1000–$2000 (4097 bytes), outside the window $1000–$1FFF"]
+    );
+    assert!(
+        check_pack(&too_big, &budget())[0]
+            .hint
+            .contains("larger window")
+    );
+    let early = PackFacts {
+        start: 0x0F00,
+        jump_table: [Some(0x0F09), Some(0x0F40), Some(0x0FA0)],
+        ..facts()
+    };
+    let p = check_pack(&early, &budget());
+    assert_eq!(p.len(), 1, "{p:?}");
+    assert!(p[0].message.contains("$0F00–$1AB7") && p[0].hint.contains("player page"));
+    // The top of memory: $F000 + $1000 bytes ends at $FFFF.
+    let top = PackFacts {
+        start: 0xF000,
+        size: 0x1000,
+        jump_table: [Some(0xF000); 3],
+        ..facts()
+    };
+    let b = PackBudget {
+        first: 0xF000,
+        last: 0xFFFF,
+        ..budget()
+    };
+    assert_eq!(pack_messages(&top, &b), Vec::<String>::new());
+    let empty = PackFacts { size: 0, ..facts() };
+    assert!(pack_messages(&empty, &budget()).contains(&"the packed tune is empty".to_string()));
+}
+
+#[test]
+fn rule_8_jump_table() {
+    let f = PackFacts {
+        jump_table: [Some(0x1009), None, Some(0x2000)],
+        ..facts()
+    };
+    let m = pack_messages(&f, &budget());
+    assert_eq!(
+        m,
+        [
+            "no JMP at $1003, the play entry",
+            "the sound-effect entry at $1006 jumps to $2000, outside the tune",
+        ]
+    );
+    // Without effects, start+6 isn't the target's business.
+    let f = PackFacts {
+        jump_table: [Some(0x1009), Some(0x1040), None],
+        ..facts()
+    };
+    let b = PackBudget {
+        sound_effects: false,
+        ..budget()
+    };
+    assert_eq!(pack_messages(&f, &b), Vec::<String>::new());
+    let p = check_pack(&f, &budget());
+    assert_eq!(p.len(), 1);
+    assert!(p[0].hint.contains("-D1"));
+    // The tune's last byte is inside; one past it is not.
+    let f = PackFacts {
+        jump_table: [Some(0x1BB7), Some(0x1BB8), Some(0x1000)],
+        ..facts()
     };
     assert_eq!(
-        check_pack(
-            PackFacts {
-                bytes: 4000,
-                zero_page: 0xF8
-            },
-            budget
-        ),
-        []
+        pack_messages(&f, &budget()),
+        ["the play entry at $1003 jumps to $1BB8, outside the tune"]
     );
-    let p = check_pack(
-        PackFacts {
-            bytes: 5000,
-            zero_page: 0xFB,
-        },
-        budget,
+}
+
+#[test]
+fn rule_8_zero_page_and_writes_outside() {
+    let f = PackFacts {
+        zero_page_used: [0x02, 0xF8, 0xF9, 0xFB].into(),
+        pages_written_outside: [0x03, 0xC0].into(),
+        ..facts()
+    };
+    let p = check_pack(&f, &budget());
+    assert_eq!(
+        p.iter().map(|p| p.message.as_str()).collect::<Vec<_>>(),
+        [
+            "the player uses zero page $02, $FB outside the configured $F8–$F9",
+            "the player writes outside its window $1000–$1FFF, in pages $03xx, $C0xx",
+        ]
     );
-    assert_eq!(p.len(), 2);
-    assert!(
-        p[1].message.contains("$FB–$FC") && p[1].message.contains("$F8–$F9"),
-        "{}",
-        p[1].message
+    assert!(p[0].hint.contains("-Z"));
+    // The pair wraps at the top of zero page.
+    let f = PackFacts {
+        zero_page_used: [0xFF, 0x00].into(),
+        ..facts()
+    };
+    let b = PackBudget {
+        zero_page: 0xFF,
+        ..budget()
+    };
+    assert_eq!(pack_messages(&f, &b), Vec::<String>::new());
+    let f = PackFacts {
+        pages_written_outside: [0xD4].into(),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&f, &budget()),
+        ["the player writes outside its window $1000–$1FFF, in page $D4xx"]
+    );
+}
+
+#[test]
+fn rule_8_raster_time() {
+    let b = PackBudget {
+        max_play_cycles: Some(1500),
+        ..budget()
+    };
+    assert_eq!(pack_messages(&facts(), &b), Vec::<String>::new());
+    let slow = PackFacts {
+        max_play_cycles: Some(1501),
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&slow, &b),
+        ["the longest play call takes 1501 cycles, over the budget of 1500"]
+    );
+    let unmeasured = PackFacts {
+        max_play_cycles: None,
+        ..facts()
+    };
+    assert_eq!(
+        pack_messages(&unmeasured, &b),
+        ["the play routine's time wasn't measured, and the budget is 1500 cycles"]
+    );
+    // No budget: not checked.
+    assert_eq!(pack_messages(&slow, &budget()), Vec::<String>::new());
+}
+
+#[test]
+fn rule_8_facts_serialise() {
+    let json = serde_json::to_string(&facts()).unwrap();
+    assert_eq!(serde_json::from_str::<PackFacts>(&json).unwrap(), facts());
+    let b = budget();
+    assert_eq!(
+        serde_json::from_str::<PackBudget>(&serde_json::to_string(&b).unwrap()).unwrap(),
+        b
     );
 }
 
