@@ -1175,6 +1175,7 @@ fn it_is_off_unless_the_preset_asks_and_follows_the_loop() {
         note(26, 6, "G-4", Attack::Fresh),
     ];
     assert_eq!(silences(&s, &lib, &options), [(12, 0x00)]);
+}
 
 /// Decisions in force (#167) give songs the exporter writes: a loop row a person chose, where no note sounds across
 /// it, and tempo changes from tempo decisions. A loop row inside a note is refused before it gets here.
