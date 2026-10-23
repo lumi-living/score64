@@ -3,15 +3,22 @@
 //! can change the output gives another.
 //!
 //! The intent is what the track says once the project's values are applied:
-//! - `track.toml`, without its `[target]` and `[pack]` overrides, which count only through the values they resolve to;
+//! - `track.toml`, without its `[target]` and `[pack]` overrides, which count only through the values they resolve to,
+//!   and without its sources' paths: a source is identified by its hash, so moving the file is no new version;
 //! - `decisions.toml`, in subtune and id order, whatever order the file lists them in;
-//! - the resolved video standard and `[pack]`;
-//! - the definition of each profile the track names (its default, `full` when it names none, and each subtune's), so
-//!   a change to a profile the track doesn't use leaves its versions alone;
+//! - the resolved video standard and `[pack]` (an explicit `hard_restart_adsr = 0x0F00`, gt2reloc's default, still
+//!   differs from leaving it out: a needless new version, never a wrong match);
+//! - the definition of the profile each subtune plays with (its own, else the track's default, else `full`), so a
+//!   change to a profile no subtune uses leaves the track's versions alone;
 //! - the project's `[validate]` and `[tools]`, which every track uses.
 //!
+//! Not in it, because they don't change the output: approvals, comments and `audio.lock` (ADR-004). Presets join it
+//! when they land (#49), with a new [`SCHEME`]. The track's id isn't in it either: two tracks with the same intent
+//! share a version, so whatever records a track's history keys on the track and the version together.
+//!
 //! The sources' hashes are those `track.toml` records; [`crate::Project::check_sources`] says whether the files still
-//! have them.
+//! have them. They are hashed twice, in the track and as the key's inputs, on purpose: the inputs are what the cache
+//! keys on.
 
 use std::collections::BTreeMap;
 
@@ -81,16 +88,16 @@ pub fn version_id(
 /// The intent as JSON and the sources' hashes, in `track.toml`'s order.
 fn intent(project: &Project, track: &Track) -> Result<(Value, Vec<ContentHash>), Error> {
     let profiles = project.file.profiles().map_err(Error::Profiles)?;
+    let (_, validate, tools) = project.file.version_parts();
     let full = ProfileName::new(builtin::FULL).expect("a valid built-in name");
+    let default = track.file.profile.as_ref().unwrap_or(&full);
     let mut used = BTreeMap::new();
-    let named = std::iter::once(track.file.profile.as_ref().unwrap_or(&full)).chain(
-        track
-            .file
-            .subtunes
-            .iter()
-            .filter_map(|s| s.profile.as_ref()),
-    );
-    for name in named {
+    for name in track
+        .file
+        .subtunes
+        .iter()
+        .map(|s| s.profile.as_ref().unwrap_or(default))
+    {
         let profile = profiles
             .get(name)
             .ok_or_else(|| Error::UnknownProfile(name.clone()))?;
@@ -101,17 +108,31 @@ fn intent(project: &Project, track: &Track) -> Result<(Value, Vec<ContentHash>),
     file.target = None;
     file.pack = None;
     let mut decisions: Vec<&score64_core::Decision> = track.decisions.decision.iter().collect();
-    decisions.sort_by(|a, b| (&a.subtune, &a.id).cmp(&(&b.subtune, &b.id)));
+    // Parsed files can't hold two decisions with one id in a subtune; a built one could, so the rest breaks ties.
+    decisions.sort_by(|a, b| {
+        (&a.subtune, &a.id)
+            .cmp(&(&b.subtune, &b.id))
+            .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+    });
     let intent = Intent {
         track: file,
         decisions,
         video: track.video,
         pack: track.pack.as_ref(),
         profiles: used,
-        validate: &project.file.validate,
-        tools: &project.file.tools,
+        validate,
+        tools,
     };
-    let json = serde_json::to_value(&intent).expect("the intent serialises");
+    let mut json = serde_json::to_value(&intent).expect("the intent serialises");
+    // A source is its hash, not where it lies.
+    if let Some(sources) = json
+        .pointer_mut("/track/source")
+        .and_then(Value::as_array_mut)
+    {
+        for s in sources.iter_mut().filter_map(Value::as_object_mut) {
+            s.remove("path");
+        }
+    }
     let sources = track
         .file
         .sources

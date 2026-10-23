@@ -52,6 +52,18 @@ profile = "calm"
 from = "mix"
 start = "0:12.500"
 end = "1:14"
+
+[[subtune]]
+name = "tense"
+from = "mix"
+
+[[adaptive]]
+name = "layers"
+layers = ["calm", "tense"]
+switch = { every_bars = 2 }
+
+[rules.reduce]
+min_note_rows = 1
 "#;
 
 const DECISIONS: &str = r#"schema = 1
@@ -139,9 +151,12 @@ fn the_same_intent_has_the_same_id() {
 #[test]
 fn the_scheme_is_pinned() {
     assert_eq!(
-        base().to_string(),
-        "cad8e0883a30054328fc39da0d93e2cffa15920990191e6c83ca9f9ed02129e7",
-        "the version scheme changed: bump SCHEME"
+        (SCHEME, base().to_string().as_str()),
+        (
+            "version@1",
+            "0e0b0e8336d141e86f4691a5607a2e5340816a70dc39209898538f3e90941423"
+        ),
+        "the version scheme changed: bump SCHEME and re-pin together"
     );
 }
 
@@ -247,6 +262,30 @@ fn whatever_can_change_the_output_changes_the_id() {
             TRACK.into(),
             Some(DECISIONS.into()),
         ),
+        (
+            "rules",
+            PROJECT.into(),
+            TRACK.replace("min_note_rows = 1", "min_note_rows = 2"),
+            Some(DECISIONS.into()),
+        ),
+        (
+            "adaptive",
+            PROJECT.into(),
+            TRACK.replace("every_bars = 2", "every_bars = 4"),
+            Some(DECISIONS.into()),
+        ),
+        (
+            "kind",
+            PROJECT.into(),
+            TRACK.replace("kind = \"mix\"", "kind = \"stem\""),
+            Some(DECISIONS.into()),
+        ),
+        (
+            "reviewed",
+            PROJECT.into(),
+            TRACK.into(),
+            Some(DECISIONS.replacen("reviewed = false", "reviewed = true", 1)),
+        ),
     ];
     let mut seen = vec![base()];
     for (name, project, track, decisions) in cases {
@@ -260,15 +299,76 @@ fn whatever_can_change_the_output_changes_the_id() {
 }
 
 #[test]
-fn a_track_without_a_profile_uses_full() {
-    let no_profile = TRACK.replace("profile = \"calm\"\n", "");
-    let a = id_of("full-a", PROJECT, &no_profile, None);
-    // `full` is built in: a change to a project profile it doesn't name leaves it alone.
-    let b = id_of(
-        "full-b",
-        &PROJECT.replace("filter = true", "filter = false"),
-        &no_profile,
-        None,
+fn each_subtune_counts_with_the_profile_it_plays() {
+    // "tense" names none and the track has no default: it plays `full`, which is built in, so changing project
+    // profiles touches only "calm"'s.
+    let calm_changed = PROJECT.replace(
+        "roles = [\"bed\"], filter = true",
+        "roles = [\"bed\"], filter = false",
     );
-    assert_eq!(a, b);
+    assert_ne!(
+        id_of("calm-changed", &calm_changed, TRACK, Some(DECISIONS)),
+        base()
+    );
+    // With `profile = "calm"` as the track's default, "tense" plays calm too; then only calm matters, and `full`
+    // doesn't count at all.
+    let defaulted = TRACK.replace(
+        "title = \"Main theme\"\n",
+        "title = \"Main theme\"\nprofile = \"calm\"\n",
+    );
+    let a = id_of("default-a", PROJECT, &defaulted, None);
+    let b = id_of("default-b", &calm_changed, &defaulted, None);
+    assert_ne!(a, b, "tense follows the default");
+    // A track whose subtunes all name their own profile doesn't depend on its default's definition.
+    let all_named = TRACK
+        .replace(
+            "name = \"tense\"\nfrom",
+            "name = \"tense\"\nprofile = \"calm\"\nfrom",
+        )
+        .replace(
+            "title = \"Main theme\"\n",
+            "title = \"Main theme\"\nprofile = \"unused\"\n",
+        );
+    let unused_changed = PROJECT.replace(
+        "v2 = { usage = \"music\" }\nv3",
+        "v2 = { usage = \"effects\" }\nv3",
+    );
+    assert_eq!(
+        id_of("named-a", PROJECT, &all_named, None),
+        id_of("named-b", &unused_changed, &all_named, None)
+    );
+}
+
+#[test]
+fn where_a_source_lies_and_an_empty_decisions_file_dont_matter() {
+    let moved = TRACK.replace("audio/main-theme.wav", "audio/old/main-theme.wav");
+    assert_eq!(id_of("moved", PROJECT, &moved, Some(DECISIONS)), base());
+    assert_eq!(
+        id_of("none", PROJECT, TRACK, None),
+        id_of("empty", PROJECT, TRACK, Some("schema = 1\n"))
+    );
+}
+
+#[test]
+fn numbers_in_rules_must_be_finite() {
+    for bad in ["nan", "inf", "-inf"] {
+        let text = TRACK.replace(
+            "min_note_rows = 1",
+            &format!("min_note_rows = 1\nweight = {bad}"),
+        );
+        let e = crate::project::TrackFile::parse(&text, std::path::Path::new("track.toml"))
+            .unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("[rules.reduce] weight isn't a finite number"),
+            "{bad}: {e}"
+        );
+    }
+    let nested = TRACK.replace(
+        "min_note_rows = 1",
+        "min_note_rows = 1\nlimits = { low = [1.0, nan] }",
+    );
+    let e =
+        crate::project::TrackFile::parse(&nested, std::path::Path::new("track.toml")).unwrap_err();
+    assert!(e.to_string().contains("limits.low[1]"), "{e}");
 }
