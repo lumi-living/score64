@@ -944,9 +944,9 @@ fn overrides_that_cant_apply_say_why() {
     assert_eq!(
         unapplied(&r),
         [
+            ("absent", Unapplied::NoSuchNote),
             ("gone", Unapplied::NoSuchNote),
             ("into-d", Unapplied::Lengthens),
-            ("absent", Unapplied::NoSuchNote),
             ("nowhere", Unapplied::NoSuchNote),
         ]
     );

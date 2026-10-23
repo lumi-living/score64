@@ -482,3 +482,257 @@ proptest! {
         prop_assert!(errors.is_empty(), "{errors:#?}");
     }
 }
+
+/// A person's octave shift for voice 2 in `bar`.
+fn forced(id: &str, bar: u32, shift: i8) -> Decision {
+    Decision {
+        id: DecisionId::new(id).unwrap(),
+        subtune: name(),
+        bar,
+        proposal: Proposal::Octave {
+            voice: Voice::new(2).unwrap(),
+            shift,
+        },
+        provenance: Provenance::Manual,
+        confidence: Confidence::CERTAIN,
+        reviewed: false,
+    }
+}
+
+#[test]
+fn a_shift_in_force_replaces_the_rules_choice_for_its_bar() {
+    // The rule would take this bass line down an octave in bar 0, and carry that into bar 1.
+    let n = name();
+    let line = vec![note(0, "C-4"), note(4, "G-4"), note(16, "D-4")];
+    let bass = Roles::constant(Role::Bass);
+    let plain = fold_octaves(line.clone(), &at(&n), &bass, &RoleRanges::default());
+    assert_eq!(pitches(&plain), ["C-3", "G-3", "D-3"]);
+    // A person keeps bar 0 where it is; bar 1 is still the rule's.
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[forced("keep", 0, 0)],
+    );
+    assert_eq!(pitches(&r), ["C-4", "G-4", "D-3"]);
+    assert_eq!(shifts(&r), [(1, -1)], "no rule decision for bar 0");
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(|d| d.as_str()),
+        Some("keep")
+    );
+    assert!(r.unapplied.is_empty());
+    // Two down in bar 0: the rule carries it into bar 1, where it fits as well as one down.
+    let r = fold_octaves_with(
+        line,
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[forced("low", 0, -2)],
+    );
+    assert_eq!(pitches(&r), ["C-2", "G-2", "D-2"]);
+    assert_eq!(shifts(&r), [(1, -2)]);
+}
+
+#[test]
+fn a_shift_that_cant_apply_says_why() {
+    let n = name();
+    let line = vec![note(0, "C-4"), note(16, "C-4")];
+    let lead = Roles::constant(Role::Lead);
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &lead,
+        &RoleRanges::default(),
+        &[forced("too-high", 0, 5), forced("empty-bar", 3, 1)],
+    );
+    // C-4 five octaves up is past G#7; bar 3 has no notes.
+    let reasons: Vec<_> = r
+        .unapplied
+        .iter()
+        .map(|(id, w)| (id.as_str(), *w))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            ("empty-bar", Unapplied::NoSuchNote),
+            ("too-high", Unapplied::OutOfRange)
+        ]
+    );
+    assert_eq!(
+        r.notes,
+        fold_octaves(line, &at(&n), &lead, &RoleRanges::default()).notes
+    );
+}
+
+#[test]
+fn only_this_voices_and_not_the_rules_own() {
+    let n = name();
+    let line = vec![note(0, "C-4")];
+    let bass = Roles::constant(Role::Bass);
+    let mut by_rules = forced("by-rules", 0, 0);
+    by_rules.provenance = Provenance::Rules {
+        rule: FOLD_OCTAVES.into(),
+    };
+    let mut other_voice = forced("voice-1", 0, 0);
+    other_voice.proposal = Proposal::Octave {
+        voice: Voice::new(1).unwrap(),
+        shift: 0,
+    };
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[by_rules, other_voice],
+    );
+    assert_eq!(
+        r,
+        fold_octaves(line, &at(&n), &bass, &RoleRanges::default())
+    );
+}
+
+fn by_model(mut d: Decision) -> Decision {
+    d.provenance = Provenance::Llm {
+        model: "any".into(),
+        prompt: crate::provenance::ContentHash([1; 32]),
+    };
+    d
+}
+
+#[test]
+fn of_several_shifts_for_a_bar_the_strongest_claims_it_in_any_order() {
+    let n = name();
+    let line = vec![note(0, "C-4"), note(4, "G-4")];
+    let bass = Roles::constant(Role::Bass);
+    let run = |overrides: &[Decision]| {
+        fold_octaves_with(
+            line.clone(),
+            &at(&n),
+            &bass,
+            &RoleRanges::default(),
+            overrides,
+        )
+    };
+    let reasons = |r: &Reduced| {
+        r.unapplied
+            .iter()
+            .map(|(id, w)| (id.as_str().to_string(), *w))
+            .collect::<Vec<_>>()
+    };
+    // A person's beats a model's whatever their order; of two people's, the lower id.
+    for overrides in [
+        vec![by_model(forced("a-model", 0, -2)), forced("b-person", 0, 0)],
+        vec![forced("b-person", 0, 0), by_model(forced("a-model", 0, -2))],
+    ] {
+        let r = run(&overrides);
+        assert_eq!(pitches(&r), ["C-4", "G-4"]);
+        assert_eq!(reasons(&r), [("a-model".to_string(), Unapplied::Overruled)]);
+    }
+    for overrides in [
+        vec![forced("a", 0, 0), forced("b", 0, -2)],
+        vec![forced("b", 0, -2), forced("a", 0, 0)],
+    ] {
+        let r = run(&overrides);
+        assert_eq!(pitches(&r), ["C-4", "G-4"]);
+        assert_eq!(reasons(&r), [("b".to_string(), Unapplied::Outranked)]);
+    }
+    // The strongest claims the bar even when it can't apply (five octaves up is past G#7): the bar is then the
+    // rule's, as `resolve` and then the rule would give, and the weaker one is outranked.
+    let r = run(&[forced("a-high", 0, 5), forced("b-low", 0, -2)]);
+    assert_eq!(pitches(&r), ["C-3", "G-3"]);
+    assert_eq!(
+        reasons(&r),
+        [
+            ("a-high".to_string(), Unapplied::OutOfRange),
+            ("b-low".to_string(), Unapplied::Outranked)
+        ]
+    );
+}
+
+#[test]
+fn a_shift_that_cant_apply_leaves_the_bar_to_the_rule() {
+    let n = name();
+    // One note could go up an octave, the other (G-7) can't: the whole bar's shift is refused, and the rule folds
+    // the bar as it would have, down an octave into the bass range.
+    let line = vec![note(0, "C-4"), note(4, "G-7")];
+    let bass = Roles::constant(Role::Bass);
+    let plain = fold_octaves(line.clone(), &at(&n), &bass, &RoleRanges::default());
+    let r = fold_octaves_with(
+        line,
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[forced("up", 0, 1)],
+    );
+    assert_eq!(
+        r.unapplied,
+        [(DecisionId::new("up").unwrap(), Unapplied::OutOfRange)]
+    );
+    assert_eq!(r.notes, plain.notes);
+    assert_eq!(r.decisions, plain.decisions);
+    // Another subtune's override is not this call's.
+    let mut elsewhere = forced("elsewhere", 0, 2);
+    elsewhere.subtune = SubtuneName::new("combat").unwrap();
+    let line = vec![note(0, "C-4")];
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[elsewhere],
+    );
+    assert_eq!(
+        r,
+        fold_octaves(line, &at(&n), &bass, &RoleRanges::default())
+    );
+}
+
+#[test]
+fn a_shift_in_force_still_gives_a_valid_line() {
+    let n = name();
+    let mut line_notes = vec![note(0, "C-4"), note(4, "G-4"), note(16, "D-4")];
+    for x in &mut line_notes {
+        x.instrument = None;
+    }
+    let roles = Roles::constant(Role::Bass);
+    let r = fold_octaves_with(
+        line_notes,
+        &at(&n),
+        &roles,
+        &RoleRanges::default(),
+        &[forced("low", 0, -2)],
+    );
+    let (song, ctx) = song_with(VoiceLine {
+        voice: Voice::new(2).unwrap(),
+        roles,
+        instrument: PresetId("line".into()),
+        notes: r.notes,
+        arps: vec![],
+    });
+    let errors: Vec<_> = validate(&song, &ctx)
+        .into_iter()
+        .filter(|p| p.is_error())
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}");
+}
+
+#[test]
+fn an_earlier_rules_id_stays_under_a_shift_in_force() {
+    let n = name();
+    let mut c = note(0, "C-4");
+    c.decision = Some(DecisionId::new("mono-trim-v2-r0").unwrap());
+    let r = fold_octaves_with(
+        vec![c, note(4, "G-4")],
+        &at(&n),
+        &Roles::constant(Role::Bass),
+        &RoleRanges::default(),
+        &[forced("low", 0, -2)],
+    );
+    let ids: Vec<_> = r
+        .notes
+        .iter()
+        .map(|x| x.decision.as_ref().map(|d| d.as_str()))
+        .collect();
+    assert_eq!(ids, [Some("mono-trim-v2-r0"), Some("low")]);
+}

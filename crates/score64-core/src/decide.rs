@@ -36,6 +36,14 @@ pub enum Unapplied {
     NoSuchNote,
     /// The trim it proposes would make the note longer than the rule left it; a trim only shortens.
     Lengthens,
+    /// The loop row it proposes falls inside a note, or on a tie, which can't play after the jump back.
+    InsideNote,
+}
+
+/// Decisions competing for one slot, in the order a rule tries them: [`strength`]'s, as [`resolve`] would choose.
+pub(crate) fn by_strength(mut ds: Vec<&Decision>) -> Vec<&Decision> {
+    ds.sort_by(|a, b| strength(a, b));
+    ds
 }
 
 /// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.

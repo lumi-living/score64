@@ -6,6 +6,9 @@
 //! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles'
 //! ranges. [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of their own or into another line.
 //! [`find_loop`] (#44) proposes where a subtune loops back to.
+//! [`monophonise_with`], [`fold_octaves_with`] and [`find_loop_with`] apply a model's or a person's resolved
+//! decisions in force (#167), as [`choose_lead`] does its overrides, and [`apply_tempo`] applies tempo decisions,
+//! which no rule makes.
 //! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios.
 
 use std::cmp::Ordering;
@@ -22,13 +25,15 @@ pub use crate::decide::Unapplied;
 mod chords;
 mod lead;
 mod looping;
-pub use looping::{Candidate, FIND_LOOP, LoopChoice, LoopRules, find_loop};
+pub use looping::{Candidate, FIND_LOOP, LoopChoice, LoopRules, find_loop, find_loop_with};
+mod tempo;
+pub use tempo::{TempoApplied, apply_tempo};
 mod octave;
 pub use chords::{
     Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, MIN_SCORE, arpeggiate, detect_chords,
 };
 pub use lead::{Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, choose_lead};
-pub use octave::{FOLD_OCTAVES, fold_octaves};
+pub use octave::{FOLD_OCTAVES, fold_octaves, fold_octaves_with};
 mod drums;
 pub use drums::{
     DrumKind, DrumKit, DrumSound, FOLD_DRUMS, INTERLEAVE_DRUMS, InterleaveRules, OnClash,
@@ -92,7 +97,7 @@ pub struct Reduced {
     pub notes: Vec<Note>,
     /// Every change the rule made to the input, in the order it made them.
     pub decisions: Vec<Decision>,
-    /// Override decisions the rule was given but couldn't apply, and why, by id.
+    /// Override decisions the rule was given but couldn't apply, and why, sorted by id.
     pub unapplied: Vec<(DecisionId, Unapplied)>,
 }
 
@@ -400,6 +405,7 @@ pub fn monophonise_with(
         end = Some(note.row.saturating_add(note.length.get()));
     }
 
+    unapplied.sort_by(|a, b| a.0.cmp(&b.0));
     Reduced {
         notes: line,
         decisions: log.decisions,
