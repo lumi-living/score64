@@ -29,7 +29,8 @@ pub enum Rule {
     /// 4: the filter only where the profile allows it, and explicit pulse widths on expendable voices (errors);
     /// short notes and no lead or bass on expendable voices (warnings).
     FilterAndExpendable,
-    /// 5: declared adaptive sets: layers present, in order at consecutive positions, a timing mark on every bar.
+    /// 5: declared adaptive sets: layers present, in order at consecutive positions, a timing mark at every switch
+    /// point the set declares.
     TimingMarks,
     /// 6: each note inside its role's pitch range.
     PitchRange,

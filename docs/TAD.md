@@ -131,6 +131,20 @@ Roles can be narrowed per voice so the validator catches, say, a lead line in a 
 
 A song may hold other subtunes before or after a set, such as a title tune.
 
+**Placing the marks** (#52):
+- `AdaptiveSet::place_marks` adds a timing mark at every switch point of every layer that has none, which satisfies rule 5's mark check.
+- `AdaptiveSet::timing_marks` gives each mark at a switch point its `DXY` parameter. Values alternate `$10` and `$11`, so each one changes start+`$3F`.
+- A layer's marks that aren't switch points get no `DXY`, so the byte changes only where the set allows a switch.
+- If the loop goes back to a mark with the same value as the last one, the last takes `$12`, so the jump back changes the byte too.
+- A loop with fewer than two marks can't change the byte on every pass, and `loop_changes` says so.
+- The `.sng` writer (#47) writes these as `DXY` commands.
+
+*Unverified until #47 checks them in x64sc:*
+- what start+`$3F` does across a loop jump and across init;
+- whether a layer's row-0 mark registers right after the game switches to it.
+
+Every layer starts at `$10`, so a game should treat its own init call as the switch rather than wait for a change.
+
 An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
 ### 3.2 Reduction
