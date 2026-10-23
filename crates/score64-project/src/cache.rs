@@ -153,11 +153,7 @@ const MANIFEST: &str = "manifest.json";
 /// (which also keeps clear of the temporary directories) or ending with one; not a Windows device name (`con`,
 /// `nul.json`, `com1`, ...); not the manifest.
 fn check_name(name: &str) -> Result<(), Error> {
-    let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
-    let device = matches!(stem.as_str(), "con" | "prn" | "aux" | "nul")
-        || ((stem.starts_with("com") || stem.starts_with("lpt"))
-            && stem.len() == 4
-            && stem.as_bytes()[3].is_ascii_digit());
+    let device = crate::textfile::is_device_name(name);
     let ok = !name.is_empty()
         && name.len() <= 128
         && !name.starts_with('.')
