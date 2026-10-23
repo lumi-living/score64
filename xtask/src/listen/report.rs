@@ -59,7 +59,7 @@ fn events(subtune: &Subtune) -> Vec<Event> {
                 out.push(event(
                     end,
                     v,
-                    "**key-off**: a clean release (the gate closes 2 frames early, the gate timer)"
+                    "**key-off**: a clean release (the instrument's gate timer closes the gate a few frames early)"
                         .into(),
                     true,
                 ));
@@ -86,12 +86,13 @@ fn events(subtune: &Subtune) -> Vec<Event> {
                 ),
                 true,
             ));
-            out.push(event(
-                a.row + a.length.get(),
-                v,
-                "**arpeggio** ends: a clean stop".into(),
-                true,
-            ));
+            let end = a.row + a.length.get();
+            let what = if end == length {
+                "**arpeggio** ends with the song: the loop row sets what plays next".to_string()
+            } else {
+                "**arpeggio** ends: a clean stop".to_string()
+            };
+            out.push(event(end, v, what, true));
         }
     }
     for t in &subtune.tempo {
@@ -223,5 +224,98 @@ mod tests {
             "{t}"
         );
         assert!(t.contains("every **1.60 s**"), "{t}");
+    }
+
+    fn subtune(notes: Vec<Note>, loop_row: u32) -> Subtune {
+        Subtune {
+            name: SubtuneName::new("m").unwrap(),
+            profile: None,
+            frames_per_row: FramesPerRow::new(5).unwrap(),
+            tempo: vec![],
+            rows_per_bar: NonZeroU8::new(16).unwrap(),
+            length: NonZeroU32::new(32).unwrap(),
+            loop_row,
+            marks: vec![],
+            voices: vec![VoiceLine {
+                voice: Voice::new(1).unwrap(),
+                roles: Roles::constant(Role::Lead),
+                instrument: PresetId("p".into()),
+                notes,
+                arps: vec![],
+            }],
+        }
+    }
+
+    #[test]
+    fn back_to_back_notes_have_no_key_off_and_a_note_on_the_loop_row_needs_none() {
+        // Notes straight into each other, the last running to the end, with a note on the loop row.
+        let s = subtune(
+            vec![
+                note(0, 8, Attack::Fresh),
+                note(8, 8, Attack::Fresh),
+                note(16, 16, Attack::Fresh),
+            ],
+            0,
+        );
+        let t = timeline(&s);
+        assert!(!t.contains("key-off"), "{t}");
+        // The same with a silent loop row: the loop-row key-off appears.
+        let s = subtune(vec![note(8, 24, Attack::Fresh)], 0);
+        let t = timeline(&s);
+        assert!(
+            t.contains("| after the loop | 0 | 1 | **key-off** on the loop row"),
+            "{t}"
+        );
+    }
+
+    #[test]
+    fn tempo_changes_and_arpeggios_are_timed_through_the_tempo_map() {
+        let mut s = subtune(vec![note(0, 32, Attack::Fresh)], 0);
+        s.tempo = vec![score64_core::TempoChange {
+            row: 8,
+            frames_per_row: FramesPerRow::new(10).unwrap(),
+        }];
+        s.voices[0].arps = vec![
+            score64_core::ArpEvent {
+                row: 12,
+                length: NonZeroU32::new(4).unwrap(),
+                intervals: vec![0, 4, 7],
+                decision: None,
+            },
+            score64_core::ArpEvent {
+                row: 24,
+                length: NonZeroU32::new(8).unwrap(),
+                intervals: vec![0, 3],
+                decision: None,
+            },
+        ];
+        let t = timeline(&s);
+        // Rows 0-7 at 5 frames (40), then 10 frames a row: row 12 is 80 frames in, row 16 is 120.
+        let secs = |frames: f64| format!("{:.2} s", frames / PAL_HZ);
+        assert!(
+            t.contains(&format!(
+                "| {} | 8 | all | **tempo** changes to 10",
+                secs(40.0)
+            )),
+            "{t}"
+        );
+        assert!(
+            t.contains(&format!(
+                "| {} | 12 | 1 | **arpeggio** starts (+0/4/7",
+                secs(80.0)
+            )),
+            "{t}"
+        );
+        assert!(
+            t.contains(&format!(
+                "| {} | 16 | 1 | **arpeggio** ends: a clean stop",
+                secs(120.0)
+            )),
+            "{t}"
+        );
+        assert!(
+            t.contains("| 32 | 1 | **arpeggio** ends with the song"),
+            "{t}"
+        );
     }
 }

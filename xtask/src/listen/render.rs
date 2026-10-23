@@ -124,10 +124,10 @@ pub fn read_wav(path: &Path) -> Result<Vec<i16>, String> {
         let body = b.get(at + 8..(at + 8 + len).min(b.len())).ok_or_else(bad)?;
         match id {
             b"fmt " => {
-                channels = usize::from(u16::from_le_bytes([body[2], body[3]])).max(1);
-                if u16::from_le_bytes([body[14], body[15]]) != 16 {
+                if body.len() < 16 || u16::from_le_bytes([body[14], body[15]]) != 16 {
                     return Err(bad());
                 }
+                channels = usize::from(u16::from_le_bytes([body[2], body[3]])).max(1);
             }
             b"data" => {
                 return Ok(body
@@ -140,4 +140,25 @@ pub fn read_wav(path: &Path) -> Result<Vec<i16>, String> {
         at += 8 + len + (len & 1);
     }
     Err(bad())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_wav_reads_back_as_written() {
+        let dir = std::env::temp_dir().join(format!("score64-xtask-wav-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.wav");
+        let samples: Vec<i16> = (0..1000).map(|i| (i * 37 % 2000 - 1000) as i16).collect();
+        write_wav(&path, &samples).unwrap();
+        assert_eq!(read_wav(&path).unwrap(), samples);
+        // A file whose fmt chunk is too short is refused, not read past.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[16..20].copy_from_slice(&4u32.to_le_bytes());
+        std::fs::write(&path, &bytes).unwrap();
+        assert!(read_wav(&path).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

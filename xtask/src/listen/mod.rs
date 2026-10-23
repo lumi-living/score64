@@ -63,21 +63,28 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-/// Build the emulator helper and return its path.
+/// The emulator helper: `SCORE64_EMU`, or a release build (it renders far faster than a debug one).
 fn helper() -> Result<PathBuf, String> {
-    if let Some(p) = std::env::var_os("SCORE64_EMU") {
+    if let Some(p) = std::env::var_os("SCORE64_EMU").filter(|p| !p.is_empty()) {
         return Ok(PathBuf::from(p));
     }
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = std::process::Command::new(cargo)
-        .args(["build", "-q", "-p", "score64-emu"])
+        .args(["build", "--release", "-q", "-p", "score64-emu"])
         .current_dir(root())
         .status()
         .map_err(|e| format!("building score64-emu: {e}"))?;
     if !status.success() {
         return Err("building score64-emu failed".into());
     }
-    score64_adapters::emu::Helper::locate()
+    let target = std::env::var_os("CARGO_TARGET_DIR")
+        .filter(|p| !p.is_empty())
+        .map_or_else(|| root().join("target"), PathBuf::from);
+    let path = target
+        .join("release")
+        .join(format!("score64-emu{}", std::env::consts::EXE_SUFFIX));
+    path.is_file()
+        .then_some(path)
         .ok_or_else(|| "built score64-emu but can't find it; set SCORE64_EMU".into())
 }
 
@@ -133,24 +140,6 @@ pub fn run(args: Args) -> Result<(), String> {
     };
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
 
-    let helper = helper()?;
-    let sidplayfp = render::find_sidplayfp();
-    let found = Gt2Reloc::locate(&args.gt2reloc_version).map_err(|e| e.to_string())?;
-    let installed = found.program_blake3().map_err(|e| e.to_string())?;
-    let pin = args
-        .gt2reloc_blake3
-        .clone()
-        .unwrap_or_else(|| installed.clone());
-    let packer = found.with_blake3(&pin).map_err(|e| e.to_string())?;
-    let fx_dir = root().join("fixtures/gt2-original");
-    let effects: Vec<Vec<u8>> = ["footstep", "gunshot", "clink"]
-        .iter()
-        .map(|k| {
-            std::fs::read(fx_dir.join(format!("sfx-{k}.bin")))
-                .map_err(|e| format!("sfx-{k}.bin: {e}"))
-        })
-        .collect::<Result<_, _>>()?;
-
     // The cases: the named built-ins (all by default), plus a score file.
     let names: Vec<String> = if args.cases.is_empty() && args.score.is_none() {
         fixture::NAMES.iter().map(|s| s.to_string()).collect()
@@ -193,6 +182,24 @@ pub fn run(args: Args) -> Result<(), String> {
             format!("From `{}`.", score.display()),
         ));
     }
+
+    let helper = helper()?;
+    let sidplayfp = render::find_sidplayfp();
+    let found = Gt2Reloc::locate(&args.gt2reloc_version).map_err(|e| e.to_string())?;
+    let installed = found.program_blake3().map_err(|e| e.to_string())?;
+    let pin = args
+        .gt2reloc_blake3
+        .clone()
+        .unwrap_or_else(|| installed.clone());
+    let packer = found.with_blake3(&pin).map_err(|e| e.to_string())?;
+    let fx_dir = root().join("fixtures/gt2-original");
+    let effects: Vec<Vec<u8>> = ["footstep", "gunshot", "clink"]
+        .iter()
+        .map(|k| {
+            std::fs::read(fx_dir.join(format!("sfx-{k}.bin")))
+                .map_err(|e| format!("sfx-{k}.bin: {e}"))
+        })
+        .collect::<Result<_, _>>()?;
 
     let mut done = Vec::new();
     for (name, song, adaptive, library, notes) in cases {
@@ -316,6 +323,10 @@ pub fn run(args: Args) -> Result<(), String> {
         });
     }
 
+    let command = std::iter::once("cargo xtask listen".to_string())
+        .chain(std::env::args().skip(2))
+        .collect::<Vec<_>>()
+        .join(" ");
     let md = listen_md(
         &done,
         &pin,
@@ -323,6 +334,7 @@ pub fn run(args: Args) -> Result<(), String> {
         sidplayfp.is_some(),
         args.seconds,
         args.pr,
+        &command,
     );
     std::fs::write(out.join("LISTEN.md"), md).map_err(|e| e.to_string())?;
     eprintln!("wrote {}", out.join("LISTEN.md").display());
@@ -336,6 +348,7 @@ fn listen_md(
     sidplayfp: bool,
     seconds: f64,
     pr: Option<u32>,
+    command: &str,
 ) -> String {
     let mut s = String::new();
     let title = pr.map_or("Listening set".to_string(), |p| {
@@ -414,8 +427,7 @@ fn listen_md(
     }
     let _ = writeln!(
         s,
-        "---\n\nRebuild with `cargo xtask listen --pr {}`, or render your own score with `--score <song.toml> --instruments <folder of <preset>.ins>`.",
-        pr.map_or("<pr>".to_string(), |p| p.to_string())
+        "---\n\nMade with `{command}`. Render another score with `--score <song.toml> --instruments <folder of <preset id>.ins>`."
     );
     s
 }

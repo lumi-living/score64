@@ -179,31 +179,32 @@ pub fn wrap(tune: &[u8], effects: &[Vec<u8>]) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
 
+    /// The wrapper from `$0E00` to `$0E5C` with three effects: the bytes of the hand-assembled Python version that
+    /// matched `score64-emu render --effect`'s SID writes on every frame (#185's listening set).
+    const GOLDEN: &str = "a2018e540ea2258e550ea2008e560e4c00100000000000000000000000000000ad540ef008a9008d540e4c0310ce550ed01fa9258d550eae560ebc5a0ebd570e48e8e003d002a2008e560e68a20e2006104c03100125008000800e0f0f";
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
     #[test]
-    fn the_play_routine_matches_the_assembly_listing() {
+    fn the_wrapper_is_the_verified_code_byte_for_byte() {
         let image = code(3);
-        let at = |a: u16| usize::from(a - LOAD);
-        // Each branch lands on its label: countdown $0E2D, done $0E51, skip $0E48.
-        assert_eq!(&image[at(0x0E23)..at(0x0E25)], &[0xF0, 0x08]);
-        assert_eq!(0x0E25 + 0x08, 0x0E2D);
-        assert_eq!(image[at(0x0E2D)], 0xCE, "DEC fx_count at countdown");
-        assert_eq!(0x0E32 + 0x1F, 0x0E51);
-        assert_eq!(
-            &image[at(0x0E51)..at(0x0E54)],
-            &[0x4C, 0x03, 0x10],
-            "JMP play at done"
+        let golden = hex(GOLDEN);
+        assert_eq!(&image[..golden.len()], &golden[..]);
+        assert!(
+            image[golden.len()..].iter().all(|&b| b == 0),
+            "nothing else before the effects"
         );
-        assert_eq!(0x0E46 + 0x02, 0x0E48);
-        assert_eq!(image[at(0x0E48)], 0x8E, "STX fx_index at skip");
+        // With fewer effects only the count and the address tables change.
+        let one = code(1);
+        assert_eq!(one[usize::from(0x0E43 - LOAD)], 1, "CPX #1");
         assert_eq!(
-            &image[at(0x0E4E)..at(0x0E51)],
-            &[0x20, 0x06, 0x10],
-            "JSR the effect entry"
-        );
-        // Data: first, count, index, then the effects' addresses, low bytes and high bytes.
-        assert_eq!(
-            &image[at(FIRST)..at(FIRST) + 9],
-            &[1, 37, 0, 0x80, 0x00, 0x80, 0x0E, 0x0F, 0x0F]
+            &one[usize::from(FX_LO - LOAD)..usize::from(FX_LO - LOAD) + 6],
+            &[0x80, 0, 0, 0x0E, 0, 0]
         );
     }
 
@@ -225,6 +226,18 @@ mod tests {
         assert_eq!(&out[0x0A..0x0C], &[0x0E, 0x00], "init $0E00");
         assert_eq!(&out[0x0C..0x0E], &[0x0E, 0x20], "play $0E20");
         assert_eq!(&out[0x0E..0x10], &[0x00, 0x02], "both subtunes");
+        assert_eq!(&out[0x10..0x12], &[0x00, 0x01], "starting with subtune 1");
+        assert_eq!(
+            &out[0x12..0x16],
+            &[0; 4],
+            "every subtune on the frame interrupt"
+        );
+        assert_eq!(
+            &out[0x76..0x7C],
+            &[0x00, 0x14, 0, 0, 0, 0],
+            "PAL and 6581, no relocation, no extra SIDs"
+        );
+        assert_eq!(&out[0x7C..0x7E], &[0x00, 0x0E], "loaded at $0E00");
         assert_eq!(&out[0x16..0x16 + 14], b"song + effects");
         let image = &out[0x7E..];
         assert_eq!(&image[0x80..0x83], &[1, 2, 3], "effect 1 at $0E80");

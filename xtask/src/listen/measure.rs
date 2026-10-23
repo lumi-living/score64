@@ -32,9 +32,9 @@ pub fn residual(a: &[i16], b: &[i16]) -> Option<(f64, f64)> {
     if a.len() < to || b.len() < to + rate {
         return None;
     }
-    let err = |lag: isize| {
+    let err = |lag: isize, stride: usize| {
         let (mut s, mut n) = (0.0, 0.0);
-        for i in (from..to).step_by(7) {
+        for i in (from..to).step_by(stride) {
             let j = i as isize + lag;
             if j < 0 {
                 continue;
@@ -45,11 +45,11 @@ pub fn residual(a: &[i16], b: &[i16]) -> Option<(f64, f64)> {
         }
         (s / n).sqrt()
     };
+    // Every lag within ±40 ms, on a sparse prime stride so it stays quick, then the best few on a dense one. A coarse
+    // grid of lags would miss the match on bright signals, whose error rises within a sample or two of it.
     let span = (rate / 25) as isize;
-    let coarse = (-span..=span)
-        .step_by(48)
-        .min_by(|&x, &y| err(x).total_cmp(&err(y)))?;
-    let lag = (coarse - 48..=coarse + 48).min_by(|&x, &y| err(x).total_cmp(&err(y)))?;
+    let rough = (-span..=span).min_by(|&x, &y| err(x, 37).total_cmp(&err(y, 37)))?;
+    let lag = (rough - 3..=rough + 3).min_by(|&x, &y| err(x, 7).total_cmp(&err(y, 7)))?;
     let signal = ((from..to)
         .step_by(7)
         .map(|i| f64::from(a[i]).powi(2))
@@ -57,7 +57,7 @@ pub fn residual(a: &[i16], b: &[i16]) -> Option<(f64, f64)> {
         / ((to - from) / 7) as f64)
         .sqrt();
     Some((
-        err(lag) / signal.max(1.0),
+        err(lag, 7) / signal.max(1.0),
         lag as f64 * 1000.0 / rate as f64,
     ))
 }
@@ -98,14 +98,43 @@ mod tests {
             .collect()
     }
 
+    /// A bright sawtooth, like a pulse or saw voice, whose error rises steeply away from the true lag, with noise
+    /// on top so it isn't periodic (a pure tone matches at every multiple of its period).
+    fn saw(seconds: usize, period: usize) -> Vec<i16> {
+        let mut seed = 0x2545_F491_u32;
+        (0..seconds * SAMPLE_RATE as usize)
+            .map(|i| {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let noise = f64::from((seed >> 16) as u16) / 65536.0 * 4000.0 - 2000.0;
+                ((i % period) as f64 / period as f64 * 12000.0 - 6000.0 + noise) as i16
+            })
+            .collect()
+    }
+
     #[test]
     fn a_delayed_copy_matches_at_its_lag() {
-        let a = tone(20, 8000.0, 183);
-        let mut b = vec![0i16; 480];
-        b.extend_from_slice(&a);
-        let (res, lag) = residual(&a, &b).unwrap();
-        assert!(res < 0.01, "{res}");
-        assert!((lag - 10.0).abs() < 0.1, "{lag}");
+        for (signal, lag) in [
+            (saw(20, 183), 480usize),
+            (saw(20, 109), 500),
+            (saw(20, 97), 777),
+            (saw(20, 113), 1),
+        ] {
+            let mut b = vec![0i16; lag];
+            b.extend_from_slice(&signal);
+            let (res, found) = residual(&signal, &b).unwrap();
+            assert!(res < 0.01, "lag {lag}: residual {res}");
+            assert!(
+                (found - lag as f64 / 48.0).abs() < 0.01,
+                "lag {lag}: found {found} ms"
+            );
+        }
+        // And the other way round: b ahead of a.
+        let s = saw(20, 101);
+        let (res, found) = residual(&s[333..], &s).unwrap();
+        assert!(
+            res < 0.01 && (found - 333.0 / 48.0).abs() < 0.01,
+            "{res} {found}"
+        );
     }
 
     #[test]
