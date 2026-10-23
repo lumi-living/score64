@@ -322,7 +322,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 `score64-engine` holds every user-visible action as a `Command` (ADR-005, ADR-012). A command has a stable snake_case name, a one-line summary, an effect (`read_only`, `writes_project` or `destructive`: MCP tool hints, and which changes get provenance and undo), `serde` arguments and output with JSON Schemas from `schemars`, and a `run` against the `Engine`. `REGISTRY` lists them, and `CommandError` carries a stable `kind` (`unknown_command`, `invalid_args`, `invalid_input`, `helper_missing`, `helper_failed`, `helper_timeout`, `helper_refused`, `internal`) and a message.
 
 - **Front-ends:** the CLI has typed subcommands for common commands and `score64 run <name> '<json>'` for any of them; `score64 commands --json` prints every name with both schemas. The MCP server (E14) will list the registry as tools. The app calls commands by type. CLI tests run every registry command through `score64 run`, so a command cannot exist in one front-end only.
-- **CLI exit codes (ADR-013, Proposed):**
+- **CLI exit codes (ADR-013):**
   - 0 on success;
   - 1 when a command ran but its output is a failure. The command decides, through `Command::fails` (`validate` with errors), so the typed subcommand, `score64 run` and later the MCP server's error flag all agree;
   - 2 when a command failed (its JSON error goes to stderr) or the command line is wrong (clap's usage message, plain text).

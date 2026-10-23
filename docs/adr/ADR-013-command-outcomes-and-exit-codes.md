@@ -1,6 +1,6 @@
 # ADR-013: Commands decide failure; CLI exit codes; a provisional validation context file
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-10-23
 **Deciders:** @jahaa
 
