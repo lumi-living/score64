@@ -42,6 +42,28 @@ Versions used by the #20 spike ([report](research/2026-10-18-packed-player-spike
 - **KickAssembler** 5.25 (Java) for test drivers such as `crates/score64-emu/spikes/packed-player/sfx-driver.asm`: download from <http://theweb.dk/KickAssembler/> and run `java -jar KickAss.jar`.
 - **uv** 0.12 runs the Python sidecar (`sidecar/`): one locked project used for differential tests, fixture generation and the spike analysis scripts. Run scripts with `uv run --frozen --project sidecar python ...`; see `sidecar/README.md`.
 
+### Listening sets for `needs-vice-check` PRs
+
+A PR that changes what the packed player plays (labelled `needs-vice-check`) gets a listening set before it merges:
+
+```
+cargo xtask listen --pr <n> [case ...]
+cargo xtask listen --pr <n> --score <song.toml|json> --instruments <folder of <preset id>.ins>
+```
+
+It writes to `scratch/<n>-listen/`, which git ignores. For each case it:
+- exports the score through `score64_formats::gt2::export`;
+- packs it with the pinned `gt2reloc`, with sound-effect support (`.sfx`, `-D1`) and without (`.nosfx`);
+- wraps the `.sfx` file so it fires the fixture's three effects on voice 3 every 37 frames (`.sfx+fx`). A plain `.sfx` file plays no effects;
+- renders every subtune for 60 s with the emulator helper and with sidplayfp, on the 6581 and the 8580;
+- writes `LISTEN.md`.
+
+LISTEN.md has:
+- what to listen for, and a timeline per subtune: when each tie, key-off, arpeggio, tempo change and loop comes;
+- measurements: helper vs sidplayfp, `.sfx` vs `.nosfx`, and the effects' level against the music.
+
+The built-in cases (all of them by default) are `sixteen-steps`, `sixteen-steps-adaptive`, `combat-filtered`, `ties-keyoffs-arp` and `loop-tempo` (`xtask/src/listen/fixture.rs`). It needs `gt2reloc` and builds the helper itself. sidplayfp is used if it's on `PATH`. `--gt2reloc-blake3` pins a specific binary; without it the installed one is pinned and its hash recorded.
+
 ## Releases
 
 Release archives are built by [dist](https://github.com/axodotdev/cargo-dist) 0.33.0, configured in `dist-workspace.toml` (as in Convert64). It makes one archive per program, for macOS (arm64 and x86_64), Windows and Linux:

@@ -2,7 +2,7 @@
 
 Tracking board: **[Score64 project](https://github.com/orgs/lumi-living/projects/4)** (GitHub Projects, board by Status: Backlog → Ready → In progress → In review → Done; `Work type` field: Epic / Task / Bug / Docs).
 
-Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues of the epic and say "Part of #N" in their body. Labels: `epic`, `core`, `formats`, `project`, `analysis`, `adapters`, `emu`, `cli`, `mcp`, `app`, `sfx`, `docs`, `fixtures`, `ci`, `release`, `spike`, `licence`, `needs-vice-check` (packed output verified in VICE or sidplayfp on 6581 and 8580 before merge), `needs-hardware-check`, `bug`, `enhancement`, `good first issue`.
+Each epic is a GitHub issue labelled `epic`; child issues are GitHub sub-issues of the epic and say "Part of #N" in their body. Labels: `epic`, `core`, `formats`, `project`, `analysis`, `adapters`, `emu`, `cli`, `mcp`, `app`, `sfx`, `docs`, `fixtures`, `ci`, `release`, `spike`, `licence`, `needs-vice-check` (packed output verified in VICE or sidplayfp on 6581 and 8580 before merge; `cargo xtask listen --pr <n>` builds the listening set), `needs-hardware-check`, `bug`, `enhancement`, `good first issue`.
 
 | # | Milestone | Epics |
 |---|---|---|
@@ -69,7 +69,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - ✓ Loop finder on downbeats [#44](https://github.com/lumi-living/score64/issues/44)
   - ✓ Rules decider and manual decider (decisions.toml overrides) [#45](https://github.com/lumi-living/score64/issues/45)
 - **E7 GoatTracker output & packing** ([#46](https://github.com/lumi-living/score64/issues/46)) — Byte-exact GoatTracker 2 song and instrument writers, instrument presets, packing with gt2reloc, budget gates and timing marks.
-  - GoatTracker 2 .sng writer with round-trip and differential tests [#47](https://github.com/lumi-living/score64/issues/47)
+  - ✓ GoatTracker 2 .sng writer and score export, with round-trip tests [#47](https://github.com/lumi-living/score64/issues/47)
   - ✓ .ins reader and writer [#48](https://github.com/lumi-living/score64/issues/48)
   - Instrument preset library v1 with hard-restart settings [#49](https://github.com/lumi-living/score64/issues/49)
   - ✓ gt2reloc adapter: -D1 -H1 -W -Z -A, pinned version [#50](https://github.com/lumi-living/score64/issues/50)
