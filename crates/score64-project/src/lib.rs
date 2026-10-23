@@ -3,6 +3,9 @@
 
 pub mod cache;
 pub mod decisions;
+pub mod project;
+mod textfile;
 
 pub use cache::Cache;
 pub use decisions::DecisionsFile;
+pub use project::{Project, ProjectFile, SourceProblem, Timestamp, Track, TrackFile};

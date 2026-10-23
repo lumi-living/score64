@@ -226,31 +226,9 @@ impl DecisionsFile {
     /// never half of one; on Windows the rename fails while another process holds the target open. A temporary file
     /// is removed when anything fails.
     pub fn write(&self, path: &Path) -> Result<(), Error> {
-        use std::io::Write;
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
         let text = self.to_toml()?;
-        let mut part = path.as_os_str().to_owned();
-        part.push(format!(
-            ".{}-{}.part",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let part = PathBuf::from(part);
-        let io = |p: &Path| {
-            let p = p.to_path_buf();
-            move |error| Error::Io { path: p, error }
-        };
-        let written = (|| {
-            let mut f = std::fs::File::create(&part).map_err(io(&part))?;
-            f.write_all(text.as_bytes()).map_err(io(&part))?;
-            f.sync_all().map_err(io(&part))?;
-            std::fs::rename(&part, path).map_err(io(path))
-        })();
-        if written.is_err() {
-            let _ = std::fs::remove_file(&part);
-        }
-        written
+        crate::textfile::write_atomic(path, &text)
+            .map_err(|(path, error)| Error::Io { path, error })
     }
 
     /// Two decisions with one id in one subtune are an error: notes and overrides name decisions by id. `headers`
@@ -274,23 +252,10 @@ impl DecisionsFile {
 
 /// The lines of the `[[decision]]` headers, in order: the n-th decision's header is the n-th.
 fn decision_headers(text: &str) -> Vec<usize> {
-    text.lines()
-        .enumerate()
-        .filter(|(_, l)| l.trim_start().starts_with("[[decision]]"))
-        .map(|(i, _)| i + 1)
-        .collect()
+    crate::textfile::headers(text, "[[decision]]")
 }
 
-/// The 1-based line and column of byte `offset` in `text`.
-fn line_col(text: &str, offset: usize) -> (usize, usize) {
-    let before = &text[..offset.min(text.len())];
-    let line = before.matches('\n').count() + 1;
-    let col = before
-        .rfind('\n')
-        .map_or(before.len(), |i| before.len() - i - 1)
-        + 1;
-    (line, col)
-}
+use crate::textfile::line_col;
 
 #[cfg(test)]
 mod tests;
