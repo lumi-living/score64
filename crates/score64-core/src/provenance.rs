@@ -286,12 +286,13 @@ pub enum Proposal {
         row: u32,
         /// Root as a pitch class, 0 (C) to 11 (B).
         root: u8,
-        /// Semitones above the root, starting with 0.
+        /// Semitones above the root: 0 first, then rising, with the top note no further above the root's lowest octave
+        /// than G#7.
         intervals: Vec<u8>,
     },
     /// Loop the subtune back to this row.
     LoopRow {
-        /// The loop row.
+        /// The loop row, in the decision's bar.
         row: u32,
     },
     /// Snap the tempo to this many frames per row.
@@ -303,7 +304,7 @@ pub enum Proposal {
     TrimNote {
         /// The voice.
         voice: Voice,
-        /// The note's start row.
+        /// The note's start row, in the decision's bar.
         row: u32,
         /// Its pitch.
         pitch: Pitch,
@@ -317,7 +318,7 @@ pub enum Proposal {
     DropNote {
         /// The voice.
         voice: Voice,
-        /// The note's start row.
+        /// The note's start row, in the decision's bar.
         row: u32,
         /// Its pitch.
         pitch: Pitch,
@@ -333,7 +334,7 @@ pub enum Proposal {
     Retrigger {
         /// The voice.
         voice: Voice,
-        /// The note's start row.
+        /// The note's start row, in the decision's bar.
         row: u32,
         /// Its pitch.
         pitch: Pitch,
