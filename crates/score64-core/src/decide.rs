@@ -1,13 +1,117 @@
 //! Which decision wins (#45): manual decisions override the LLM's, which override the rules' (`docs/TAD.md` §3.3).
 //!
 //! Decisions come from the rules (`reduce`), from a model and from a person (`decisions.toml`). Two decisions about
-//! the same thing share a [`Slot`]; [`resolve`] keeps one per slot and says which lost, and to what.
+//! the same thing share a [`Slot`]; [`resolve`] keeps one per slot and says which lost, and to what. [`check`] runs
+//! first, so a decision that can't apply to the song never holds a slot (#167).
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
 
-use crate::provenance::{Decision, DecisionId, Proposal, Provenance};
-use crate::score::{Pitch, SubtuneName, Voice};
+use serde::{Deserialize, Serialize};
+
+use crate::provenance::{ContentHash, Decision, DecisionId, Proposal, Provenance};
+use crate::score::{Pitch, Song, SubtuneName, Voice};
+
+/// Why a decision was not applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Unapplied {
+    /// Its source is not one of the parts.
+    UnknownSource,
+    /// Its bar, or the row it names, is past the end of the subtune.
+    PastEnd,
+    /// A model's choice where a person's is in force.
+    Overruled,
+    /// Another override of the same rank on the same bar has the lower id, and wins.
+    Outranked,
+    /// Its subtune isn't in the song.
+    UnknownSubtune,
+    /// The row it names isn't in its bar.
+    WrongBar,
+    /// A value it proposes can't be played: an octave shift beyond ±7, a chord root above 11, or a chord whose
+    /// intervals don't start at 0 and rise.
+    OutOfRange,
+}
+
+/// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.
+pub const MAX_OCTAVE_SHIFT: i8 = 7;
+
+/// Decisions checked against a song: those that can apply, and why the others can't, by id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Checked {
+    /// The decisions that can apply, in input order.
+    pub valid: Vec<Decision>,
+    /// The others, in input order.
+    pub unapplied: Vec<(DecisionId, Unapplied)>,
+}
+
+/// Check `decisions` against `song` before [`resolve`]: each must name a subtune of the song, a bar inside it, rows
+/// inside both, playable values, and, for a lead source, one of `sources` (the parts the lead is chosen from). A
+/// stronger decision that can't apply would otherwise hold its slot and keep a valid weaker one out.
+///
+/// What only a reduction can see is left to it: whether the note a `trim_note`, `drop_note` or `retrigger` names is
+/// there, and whether a trim fits.
+pub fn check(
+    decisions: impl IntoIterator<Item = Decision>,
+    song: &Song,
+    sources: &[ContentHash],
+) -> Checked {
+    let mut checked = Checked {
+        valid: Vec::new(),
+        unapplied: Vec::new(),
+    };
+    for d in decisions {
+        match why_not(&d, song, sources) {
+            None => checked.valid.push(d),
+            Some(why) => checked.unapplied.push((d.id, why)),
+        }
+    }
+    checked
+}
+
+/// Why `d` can't apply to `song`, if it can't.
+fn why_not(d: &Decision, song: &Song, sources: &[ContentHash]) -> Option<Unapplied> {
+    let Some((_, subtune)) = song.subtune(&d.subtune) else {
+        return Some(Unapplied::UnknownSubtune);
+    };
+    let length = subtune.length.get();
+    let rows_per_bar = u32::from(subtune.rows_per_bar.get());
+    if d.bar >= length.div_ceil(rows_per_bar) {
+        return Some(Unapplied::PastEnd);
+    }
+    // A row the proposal names must be in the subtune, and in the decision's bar.
+    let in_bar = |row: u32| {
+        if row >= length {
+            Some(Unapplied::PastEnd)
+        } else if row / rows_per_bar != d.bar {
+            Some(Unapplied::WrongBar)
+        } else {
+            None
+        }
+    };
+    match &d.proposal {
+        Proposal::LeadSource { source } => {
+            (!sources.contains(source)).then_some(Unapplied::UnknownSource)
+        }
+        Proposal::Octave { shift, .. } => (shift.unsigned_abs() > MAX_OCTAVE_SHIFT.unsigned_abs())
+            .then_some(Unapplied::OutOfRange),
+        Proposal::Chord {
+            row,
+            root,
+            intervals,
+        } => in_bar(*row).or_else(|| {
+            let rising = intervals.first() == Some(&0) && intervals.windows(2).all(|w| w[0] < w[1]);
+            (*root > 11 || !rising).then_some(Unapplied::OutOfRange)
+        }),
+        // A loop row may be any row of the subtune; the decision's bar is the one it lands in.
+        Proposal::LoopRow { row } => in_bar(*row),
+        Proposal::TrimNote { row, .. }
+        | Proposal::DropNote { row, .. }
+        | Proposal::Retrigger { row, .. } => in_bar(*row),
+        Proposal::VoiceRole { .. } | Proposal::FramesPerRow { .. } => None,
+    }
+}
 
 /// What a decision is about: two decisions with the same slot compete, and only one applies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

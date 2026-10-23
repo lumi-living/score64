@@ -535,3 +535,154 @@ proptest! {
         prop_assert_eq!(resolve(shuffled), r);
     }
 }
+
+/// "main": two and a half bars of 16 rows (rows 0–39).
+fn song() -> Song {
+    use crate::score::{FramesPerRow, Schema, Subtune};
+    Song {
+        schema: Schema::default(),
+        profile: crate::profile::ProfileName::new("full").unwrap(),
+        subtunes: vec![Subtune {
+            name: subtune(),
+            profile: None,
+            frames_per_row: FramesPerRow::new(6).unwrap(),
+            tempo: vec![],
+            rows_per_bar: std::num::NonZeroU8::new(16).unwrap(),
+            length: NonZeroU32::new(40).unwrap(),
+            loop_row: 0,
+            marks: vec![],
+            voices: vec![],
+        }],
+    }
+}
+
+fn why(d: Decision, sources: &[ContentHash]) -> Option<Unapplied> {
+    let checked = check([d], &song(), sources);
+    assert_eq!(checked.valid.len() + checked.unapplied.len(), 1);
+    checked.unapplied.first().map(|(_, w)| *w)
+}
+
+fn trim(row: u32) -> Proposal {
+    Proposal::TrimNote {
+        voice: voice(1),
+        row,
+        pitch: "C-4".parse().unwrap(),
+        length: NonZeroU32::new(2).unwrap(),
+        source: None,
+    }
+}
+
+fn chord(row: u32, root: u8, intervals: &[u8]) -> Proposal {
+    Proposal::Chord {
+        row,
+        root,
+        intervals: intervals.to_vec(),
+    }
+}
+
+#[test]
+fn check_keeps_what_can_apply() {
+    let lead = ContentHash([7; 32]);
+    for (bar, proposal) in [
+        (2, octave(-7)),
+        (0, octave(7)),
+        (1, Proposal::LeadSource { source: lead }),
+        (1, chord(20, 11, &[0, 3, 7])),
+        (2, Proposal::LoopRow { row: 39 }),
+        (2, trim(39)),
+        (
+            0,
+            Proposal::VoiceRole {
+                voice: voice(2),
+                role: Role::Bass,
+            },
+        ),
+    ] {
+        let d = decision("d", bar, proposal.clone(), Provenance::Manual);
+        assert_eq!(why(d, &[lead]), None, "{proposal:?} at bar {bar}");
+    }
+}
+
+#[test]
+fn check_says_why_a_decision_cant_apply() {
+    let lead = ContentHash([7; 32]);
+    let other = |s: &str| Decision {
+        subtune: SubtuneName::new(s).unwrap(),
+        ..decision("d", 0, octave(1), Provenance::Manual)
+    };
+    assert_eq!(why(other("combat"), &[]), Some(Unapplied::UnknownSubtune));
+    for (bar, proposal, want) in [
+        (3, octave(1), Unapplied::PastEnd),
+        (2, trim(40), Unapplied::PastEnd),
+        (0, trim(16), Unapplied::WrongBar),
+        (1, Proposal::LoopRow { row: 8 }, Unapplied::WrongBar),
+        (0, octave(8), Unapplied::OutOfRange),
+        (0, octave(-8), Unapplied::OutOfRange),
+        (0, chord(0, 12, &[0, 4, 7]), Unapplied::OutOfRange),
+        (0, chord(0, 0, &[4, 7]), Unapplied::OutOfRange),
+        (0, chord(0, 0, &[0, 7, 4]), Unapplied::OutOfRange),
+        (0, chord(0, 0, &[]), Unapplied::OutOfRange),
+        (
+            0,
+            Proposal::LeadSource {
+                source: ContentHash([8; 32]),
+            },
+            Unapplied::UnknownSource,
+        ),
+    ] {
+        let d = decision("d", bar, proposal.clone(), Provenance::Manual);
+        assert_eq!(why(d, &[lead]), Some(want), "{proposal:?} at bar {bar}");
+    }
+}
+
+/// #168's review: a person's override that can't apply must not keep a model's valid one out of the slot.
+#[test]
+fn an_invalid_stronger_decision_no_longer_blocks_a_valid_weaker_one() {
+    let lead = ContentHash([7; 32]);
+    let decisions = [
+        decision(
+            "by-person",
+            1,
+            Proposal::LeadSource {
+                source: ContentHash([9; 32]),
+            },
+            Provenance::Manual,
+        ),
+        decision(
+            "by-model",
+            1,
+            Proposal::LeadSource { source: lead },
+            model(),
+        ),
+    ];
+    // Unchecked, the person's unknown source wins the slot.
+    assert_eq!(ids(&resolve(decisions.clone())), ["by-person"]);
+    let checked = check(decisions, &song(), &[lead]);
+    assert_eq!(
+        checked.unapplied,
+        [(
+            DecisionId::new("by-person").unwrap(),
+            Unapplied::UnknownSource
+        )]
+    );
+    assert_eq!(ids(&resolve(checked.valid)), ["by-model"]);
+}
+
+proptest! {
+    /// Every decision comes back once, valid or with its reason, in input order.
+    #[test]
+    fn check_partitions_its_input(song in strategies::song(), decisions in prop::collection::vec(strategies::decision(), 0..12)) {
+        let checked = check(decisions.clone(), &song, &[]);
+        prop_assert_eq!(checked.valid.len() + checked.unapplied.len(), decisions.len());
+        let mut valid = checked.valid.iter();
+        let mut unapplied = checked.unapplied.iter();
+        for d in &decisions {
+            let matched = match (valid.as_slice().first(), unapplied.as_slice().first()) {
+                (Some(v), _) if v == d => { valid.next(); true }
+                (_, Some((id, _))) if *id == d.id => { unapplied.next(); true }
+                _ => false,
+            };
+            prop_assert!(matched, "out of order at {:?}", d.id);
+        }
+    }
+}

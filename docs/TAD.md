@@ -283,6 +283,14 @@ Manual decisions override LLM suggestions, which override rules. `score64_core::
 
   Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
 - **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
+- **Checked first.** `decide::check(decisions, &song, sources)` runs before `resolve`, so a decision that can't apply never holds a slot against one that can (#167). A decision can't apply when it names:
+  - a subtune that isn't in the song;
+  - a bar, or a row, past the subtune's end;
+  - a row outside its own bar;
+  - an octave shift beyond ±7, a chord root above 11, or chord intervals that don't start at 0 and rise;
+  - a lead source that isn't one of the parts.
+
+  Each one comes back with its `Unapplied` reason. Whether a note-level decision's note exists is left to the reduction that applies it.
 - **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
 
 A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
