@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::time::Duration;
 
-use crate::sidecar::{SidecarError, find_on_path, run_with_timeout};
+use crate::sidecar::{SidecarError, file_blake3, find_on_path, run_with_timeout};
 
 /// Where the player keeps its two zero-page bytes: `address` and `address + 1`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -247,11 +247,13 @@ impl fmt::Display for PackError {
                 f,
                 "gt2reloc's blake3 is {found}; the project pins {pinned} (another build, or another version)"
             ),
-            PackError::Replace { path, error } => write!(
-                f,
-                "could not replace {}: {error} (is it open in another program, such as an emulator?)",
-                path.display()
-            ),
+            PackError::Replace { path, error } => {
+                write!(f, "could not replace {}: {error}", path.display())?;
+                if error.kind() == std::io::ErrorKind::PermissionDenied {
+                    write!(f, " (is it open in another program, such as an emulator?)")?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -289,14 +291,15 @@ impl Gt2Reloc {
         Ok(Self::at(program, pinned))
     }
 
-    /// gt2reloc at `program`.
+    /// gt2reloc at `program`. A bare name is looked up on `PATH` once, here, so the file that is hashed is the one
+    /// that runs; one not found stays bare, and packing reports it.
     pub fn at(program: impl Into<PathBuf>, pinned: &str) -> Self {
         let program = program.into();
         // It runs in a working directory of its own, so a relative path must not be resolved from there.
         let program = if program.components().count() > 1 {
             std::path::absolute(&program).unwrap_or(program)
         } else {
-            program
+            find_on_path(&program.to_string_lossy()).unwrap_or(program)
         };
         Gt2Reloc {
             program,
@@ -306,22 +309,27 @@ impl Gt2Reloc {
         }
     }
 
-    /// Also pin the program itself by its blake3 (hex, any case). The banner can't tell builds apart (the 2.77 source
-    /// prints v2.73), so this is the stronger pin; every pack checks it before running.
-    pub fn with_blake3(mut self, hex: &str) -> Self {
+    /// Also pin the program itself by its blake3: 64 hex digits, any case. The banner can't tell builds apart (the
+    /// 2.77 source prints v2.73), so this is the stronger pin. Every pack hashes the program and checks it before
+    /// running it. That leaves a moment between the two, which is fine for a reproducibility pin but no defence
+    /// against an attacker; and a wrapper script is what gets pinned, not the program it starts.
+    pub fn with_blake3(mut self, hex: &str) -> Result<Self, PackError> {
+        let hex = hex.trim();
+        if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(PackError::Option(format!(
+                "a blake3 pin is 64 hex digits, not {hex:?}"
+            )));
+        }
         self.binary = Some(hex.to_ascii_lowercase());
-        self
+        Ok(self)
     }
 
-    /// The program's blake3, lowercase hex. A bare name is looked up on `PATH`.
+    /// The program's blake3, lowercase hex.
     pub fn program_blake3(&self) -> Result<String, PackError> {
-        let path = if self.program.components().count() > 1 {
-            self.program.clone()
-        } else {
-            find_on_path(&self.program.to_string_lossy()).ok_or(PackError::NotFound)?
-        };
-        let bytes = std::fs::read(&path).map_err(PackError::Io)?;
-        Ok(blake3::hash(&bytes).to_hex().to_string())
+        if self.program.components().count() <= 1 {
+            return Err(PackError::NotFound);
+        }
+        file_blake3(&self.program).map_err(PackError::Io)
     }
 
     /// Change the time limit (default 60 seconds; packing takes well under one).
