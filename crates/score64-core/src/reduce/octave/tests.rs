@@ -482,3 +482,112 @@ proptest! {
         prop_assert!(errors.is_empty(), "{errors:#?}");
     }
 }
+
+/// A person's octave shift for voice 2 in `bar`.
+fn forced(id: &str, bar: u32, shift: i8) -> Decision {
+    Decision {
+        id: DecisionId::new(id).unwrap(),
+        subtune: name(),
+        bar,
+        proposal: Proposal::Octave {
+            voice: Voice::new(2).unwrap(),
+            shift,
+        },
+        provenance: Provenance::Manual,
+        confidence: Confidence::CERTAIN,
+        reviewed: false,
+    }
+}
+
+#[test]
+fn a_shift_in_force_replaces_the_rules_choice_for_its_bar() {
+    // The rule would take this bass line down an octave in bar 0, and carry that into bar 1.
+    let n = name();
+    let line = vec![note(0, "C-4"), note(4, "G-4"), note(16, "D-4")];
+    let bass = Roles::constant(Role::Bass);
+    let plain = fold_octaves(line.clone(), &at(&n), &bass, &RoleRanges::default());
+    assert_eq!(pitches(&plain), ["C-3", "G-3", "D-3"]);
+    // A person keeps bar 0 where it is; bar 1 is still the rule's.
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[forced("keep", 0, 0)],
+    );
+    assert_eq!(pitches(&r), ["C-4", "G-4", "D-3"]);
+    assert_eq!(shifts(&r), [(1, -1)], "no rule decision for bar 0");
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(|d| d.as_str()),
+        Some("keep")
+    );
+    assert!(r.unapplied.is_empty());
+    // Two down in bar 0: the rule carries it into bar 1, where it fits as well as one down.
+    let r = fold_octaves_with(
+        line,
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[forced("low", 0, -2)],
+    );
+    assert_eq!(pitches(&r), ["C-2", "G-2", "D-2"]);
+    assert_eq!(shifts(&r), [(1, -2)]);
+}
+
+#[test]
+fn a_shift_that_cant_apply_says_why() {
+    let n = name();
+    let line = vec![note(0, "C-4"), note(16, "C-4")];
+    let lead = Roles::constant(Role::Lead);
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &lead,
+        &RoleRanges::default(),
+        &[forced("too-high", 0, 5), forced("empty-bar", 3, 1)],
+    );
+    // C-4 five octaves up is past G#7; bar 3 has no notes.
+    let reasons: Vec<_> = r
+        .unapplied
+        .iter()
+        .map(|(id, w)| (id.as_str(), *w))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            ("empty-bar", Unapplied::NoSuchNote),
+            ("too-high", Unapplied::OutOfRange)
+        ]
+    );
+    assert_eq!(
+        r.notes,
+        fold_octaves(line, &at(&n), &lead, &RoleRanges::default()).notes
+    );
+}
+
+#[test]
+fn only_this_voices_and_not_the_rules_own() {
+    let n = name();
+    let line = vec![note(0, "C-4")];
+    let bass = Roles::constant(Role::Bass);
+    let mut by_rules = forced("by-rules", 0, 0);
+    by_rules.provenance = Provenance::Rules {
+        rule: FOLD_OCTAVES.into(),
+    };
+    let mut other_voice = forced("voice-1", 0, 0);
+    other_voice.proposal = Proposal::Octave {
+        voice: Voice::new(1).unwrap(),
+        shift: 0,
+    };
+    let r = fold_octaves_with(
+        line.clone(),
+        &at(&n),
+        &bass,
+        &RoleRanges::default(),
+        &[by_rules, other_voice],
+    );
+    assert_eq!(
+        r,
+        fold_octaves(line, &at(&n), &bass, &RoleRanges::default())
+    );
+}

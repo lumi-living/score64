@@ -333,3 +333,84 @@ fn arpeggios_listed_out_of_order_still_count() {
     let chroma = chroma_by_bar(&s, 1);
     assert!((chroma[0][4] - 16.0 * 0.3).abs() < 1e-4, "{:?}", chroma[0]);
 }
+
+fn loop_decision(id: &str, row: u32, provenance: crate::provenance::Provenance) -> Decision {
+    Decision {
+        id: DecisionId::new(id).unwrap(),
+        subtune: SubtuneName::new("main").unwrap(),
+        bar: row / 16,
+        proposal: Proposal::LoopRow { row },
+        provenance,
+        confidence: Confidence::CERTAIN,
+        reviewed: false,
+    }
+}
+
+#[test]
+fn a_loop_row_in_force_replaces_the_rules_choice() {
+    use crate::provenance::Provenance;
+    let s = subtune(&[E_FLAT, C, F, G, C, F, G]);
+    let plain = find_loop(&s, &LoopRules::default());
+    assert_eq!((plain.row, plain.by.as_str()), (64, "loop"));
+    // A person loops to bar 2 instead; the rule's own decision is still there for review.
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[loop_decision("mine", 32, Provenance::Manual)],
+    );
+    assert_eq!((r.row, r.by.as_str()), (32, "mine"));
+    assert_eq!(r.decision, plain.decision);
+    assert_eq!(r.candidates, plain.candidates);
+    assert_eq!(
+        r.similarity,
+        plain
+            .candidates
+            .iter()
+            .find(|c| c.bar == 2)
+            .unwrap()
+            .similarity
+    );
+    // Mid-bar is a person's call too; no candidate scores it.
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[loop_decision("mid", 20, Provenance::Manual)],
+    );
+    assert_eq!((r.row, r.similarity), (20, 0.0));
+    assert!(r.unapplied.is_empty());
+}
+
+#[test]
+fn a_loop_row_that_cant_apply_says_why() {
+    use crate::provenance::Provenance;
+    let s = subtune(&[C, F, G, C]);
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[
+            loop_decision("past", 64, Provenance::Manual),
+            loop_decision("first", 16, Provenance::Manual),
+            loop_decision("second", 32, Provenance::Manual),
+            loop_decision(
+                "rules",
+                48,
+                Provenance::Rules {
+                    rule: FIND_LOOP.into(),
+                },
+            ),
+        ],
+    );
+    assert_eq!((r.row, r.by.as_str()), (16, "first"));
+    let reasons: Vec<_> = r
+        .unapplied
+        .iter()
+        .map(|(id, w)| (id.as_str(), *w))
+        .collect();
+    assert_eq!(
+        reasons,
+        [
+            ("past", Unapplied::PastEnd),
+            ("second", Unapplied::Outranked)
+        ]
+    );
+}

@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
+use crate::decide::{Rank, Unapplied};
 use crate::provenance::{Confidence, Decision, DecisionId, Proposal, Provenance};
 use crate::score::{Note, Subtune};
 
@@ -54,8 +55,12 @@ pub struct LoopChoice {
     pub similarity: f32,
     /// Every candidate and its similarity, in bar order, for review.
     pub candidates: Vec<Candidate>,
-    /// The `LoopRow` decision (`loop`).
+    /// The rule's `LoopRow` decision (`loop`), made whether or not an override is in force.
     pub decision: Decision,
+    /// The decision whose row this is: the rule's, or the override in force.
+    pub by: DecisionId,
+    /// Overrides that couldn't apply, and why, by id.
+    pub unapplied: Vec<(DecisionId, Unapplied)>,
 }
 
 /// Find the loop row of `subtune`.
@@ -71,6 +76,41 @@ pub struct LoopChoice {
 /// inside a bar or after silence (the jump then comes from music the comparison did not see). The subtune itself is
 /// not changed, and tempo is not compared.
 pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
+    find_loop_with(subtune, rules, &[])
+}
+
+/// [`find_loop`] with a model's or a person's resolved `loop_row` decision in force (#167): its row replaces the
+/// rule's choice, and `by` names it. The rule still scores the candidates and makes its own decision, for review. An
+/// override past the subtune's end is unapplied (`past_end`); with more than one for the subtune, the first applies
+/// and the rest are `outranked` (resolve keeps one per subtune, so that only happens when it hasn't run).
+pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decision]) -> LoopChoice {
+    let mut choice = rule_loop(subtune, rules);
+    for d in overrides
+        .iter()
+        .filter(|d| d.subtune == subtune.name && d.rank() != Rank::Rules)
+    {
+        let Proposal::LoopRow { row } = d.proposal else {
+            continue;
+        };
+        if row >= subtune.length.get() {
+            choice.unapplied.push((d.id.clone(), Unapplied::PastEnd));
+        } else if choice.by != choice.decision.id {
+            choice.unapplied.push((d.id.clone(), Unapplied::Outranked));
+        } else {
+            choice.row = row;
+            choice.similarity = choice
+                .candidates
+                .iter()
+                .find(|c| c.bar * u32::from(subtune.rows_per_bar.get()) == row)
+                .map_or(0.0, |c| c.similarity);
+            choice.by = d.id.clone();
+        }
+    }
+    choice
+}
+
+/// What the rule itself chooses.
+fn rule_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
     let rows = u32::from(subtune.rows_per_bar.get());
     let length = subtune.length.get();
     // Whole bars only: the jump lands on a downbeat, so a part bar at the end can't be matched against one.
@@ -113,12 +153,15 @@ pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
         similarity / 2.0
     };
     let row = bar * rows;
+    let id = DecisionId::new("loop").expect("a valid id");
     LoopChoice {
         row,
         similarity,
         candidates,
+        by: id.clone(),
+        unapplied: Vec::new(),
         decision: Decision {
-            id: DecisionId::new("loop").expect("a valid id"),
+            id,
             subtune: subtune.name.clone(),
             bar,
             proposal: Proposal::LoopRow { row },

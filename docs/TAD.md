@@ -200,6 +200,7 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 - **Comparison.** Bars are compared by chroma: each pitch class weighted by rows sounding times confidence, across all voices. Arpeggios count by their chord tones. The measure is cosine similarity.
 - **Choice.** Candidates are the bars from 1 on whose context ends before the ending's starts; bars with silent context are skipped. The best candidate at or above `min_similarity` (0.8) wins, and the earliest on a tie, which gives the longest loop. With none, the loop row is 0, at confidence 0.
 - **Decision.** One `LoopRow` decision (`loop`), as sure as the similarity. It's half as sure when the subtune ends inside a bar or after silence, because the jump then comes from music the comparison didn't see. Every candidate's score is returned for review. Tempo isn't compared: a loop row whose tempo differs from the ending's is not penalised.
+- **In force** (`find_loop_with`, #167). A model's or a person's resolved `loop_row` replaces the choice, on any row of the subtune, and `by` names it. The rule still makes and returns its own decision for review. An override past the end is unapplied.
 
 **Chords** (`reduce::detect_chords` and `reduce::arpeggiate`, rule `chords@1`, #42) find the harmony beat by beat and play it as arpeggios.
 - **Detection.** Each beat's 12 pitch classes are weighted by the rows each note sounds in that beat, times its confidence. Templates for every root and quality are scored: major, minor, sus4, sus2, dominant 7th, minor 7th and major 7th.
@@ -240,6 +241,9 @@ A note an override names that isn't there is unapplied (`no_such_note`), and a n
 - **Notes that still don't fit** stay where they are, and rule 6 warns about them.
 - **Full-range roles never move.** Notes whose role may use the whole range (drums and texture, by default) are left alone and don't count. That's a property of the ranges, so narrowing the drums' range folds drums too, just as rule 6 then checks them.
 - **Decisions.** Each bar with a non-zero shift is one `Octave` decision, `octave-v<voice>-b<bar>`. Its confidence is the share of the bar's folded notes in range after the shift. The input can come in any order.
+- **In force** (`fold_octaves_with`, #167). A model's or a person's resolved `octave` sets its bar's shift for the voice instead of the rule, and the next bar may carry it on as it would the rule's. The rule records no decision there, and the notes record the override's id. An override is unapplied when the bar has no note that folds (`no_such_note`) or the shift takes one past GoatTracker's range (`out_of_range`).
+
+**Tempo** (`reduce::apply_tempo`, #167). No rule proposes a tempo. A model's or a person's resolved `frames_per_row` sets the tempo from its bar's first row: the starting tempo at bar 0, and a tempo change after that, replacing one on the same row. One past the end is unapplied.
 
 ### 3.2.1 Writing a GoatTracker song
 
