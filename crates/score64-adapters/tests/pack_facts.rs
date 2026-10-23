@@ -76,8 +76,9 @@ fn every_format_holds_the_same_player() {
         // Without -D1 there is no third entry: start+6 isn't a JMP at all.
         assert_eq!(inside(jumps[2]), effects, "{jumps:04X?}");
         assert_eq!(jumps[2].is_none(), !effects, "{jumps:04X?}");
-        // The measured facts pass rule 8 for a window at $2000, with the effect entry required only when packed for
-        // it. (The zero-page and outside-write sets come from the helper's trace; empty here.)
+        // The measured facts pass rule 8's byte checks for a window at $2000, with the effect entry required only when
+        // packed for it. (The zero-page and outside-write sets come from the helper's trace, which isn't run here, so
+        // the missing trace is the one problem.)
         let facts = PackFacts {
             start: first.load,
             size: *size,
@@ -94,15 +95,18 @@ fn every_format_holds_the_same_player() {
             sound_effects,
             max_play_cycles: None,
         };
-        assert_eq!(check_pack(&facts, &budget(effects)), []);
+        let messages = |b| {
+            check_pack(&facts, &b)
+                .into_iter()
+                .map(|p| p.message)
+                .collect::<Vec<_>>()
+        };
+        let untraced = "the player wasn't traced, so its zero page and its writes outside the window weren't measured";
+        assert_eq!(messages(budget(effects)), [untraced]);
         if !effects {
-            let p = check_pack(&facts, &budget(true));
-            assert_eq!(p.len(), 1, "{p:?}");
-            assert!(
-                p[0].message.contains("sound-effect entry"),
-                "{}",
-                p[0].message
-            );
+            let m = messages(budget(true));
+            assert_eq!(m.len(), 2, "{m:?}");
+            assert!(m[0].contains("sound-effect entry"), "{}", m[0]);
         }
     }
     let _ = std::fs::remove_dir_all(&dir);

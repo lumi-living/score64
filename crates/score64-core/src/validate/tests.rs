@@ -767,14 +767,31 @@ const NONE: [&str; 0] = [];
 #[test]
 fn rule_8_a_tune_inside_its_window_passes() {
     assert_eq!(pack_messages(&facts(), &budget()), NONE);
-    // Exactly filling the window, only part of the pair used, and nothing traced.
+    // Exactly filling the window, with only part of the pair used.
     let f = PackFacts {
         size: 0x1000,
         zero_page_used: [0xF9].into(),
-        traced_window: None,
         ..facts()
     };
     assert_eq!(pack_messages(&f, &budget()), NONE);
+}
+
+#[test]
+fn rule_8_an_untraced_pack_fails() {
+    // Empty sets from no trace at all would pass every check; the missing trace is the problem.
+    let f = PackFacts {
+        zero_page_used: [].into(),
+        traced_window: None,
+        ..facts()
+    };
+    let p = check_pack(&f, &budget());
+    assert_eq!(
+        p.iter().map(|p| p.message.as_str()).collect::<Vec<_>>(),
+        [
+            "the player wasn't traced, so its zero page and its writes outside the window weren't measured"
+        ]
+    );
+    assert!(p[0].hint.contains("emulator helper"));
 }
 
 #[test]
@@ -805,7 +822,7 @@ fn rule_8_memory_window() {
         start: 0xF000,
         size: 0x1000,
         jump_table: [Some(0xF009); 3],
-        traced_window: None,
+        traced_window: Some((0xF000, 0xFFFF)),
         ..facts()
     };
     let b = PackBudget {
@@ -824,7 +841,7 @@ fn rule_8_memory_window() {
     let past = PackFacts {
         start: 0xFF00,
         size: 0x200,
-        traced_window: None,
+        traced_window: Some((0xF000, 0xFFFF)),
         ..facts()
     };
     assert_eq!(
@@ -834,7 +851,7 @@ fn rule_8_memory_window() {
     let huge = PackFacts {
         start: 0xFFFF,
         size: u32::MAX,
-        traced_window: None,
+        traced_window: Some((0xF000, 0xFFFF)),
         ..facts()
     };
     assert_eq!(
@@ -942,7 +959,7 @@ fn rule_8_jump_table() {
     let top = PackFacts {
         start: 0xFFFF,
         size: 1,
-        traced_window: None,
+        traced_window: Some((0xF000, 0xFFFF)),
         ..facts()
     };
     let tb = PackBudget {
@@ -952,7 +969,7 @@ fn rule_8_jump_table() {
     };
     assert_eq!(
         pack_messages(&top, &tb),
-        ["the tune is 1 bytes, too short for its jump table (9 bytes with the sound-effect entry)"]
+        ["the tune is 1 byte, too short for its jump table (9 bytes with the sound-effect entry)"]
     );
 }
 

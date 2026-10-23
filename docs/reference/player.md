@@ -11,7 +11,7 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 | +6 | Play sound effect (only when packed with sound-effect support) | `LDA #<effect` · `LDY #>effect` · `LDX #channel` (0, 7 or 14 for voices 1–3) · `JSR start+6` |
 | +6 or +9 | Set master volume (only with volume-change support; +9 when sound effects are also enabled) | `LDA #volume (0–15)` · `JSR …` |
 
-Each entry is a `JMP abs` (`$4C lo hi`) into the player. Without sound-effect support (`-D0`) and without volume-change support (`-E0`, which Score64 never uses) there is no entry at +6: the bytes there are the start of the player's code (`B9 76 24`, `LDA $2476,Y`, in the fixture below). Rule 8 refuses a pack whose init or play entry, or with effects configured its effect entry, isn't a `JMP abs` into the tune past the jump table.
+Each entry is a `JMP abs` (`$4C lo hi`) into the player. Without sound-effect support (`-D0`) and without volume-change support (gt2reloc's default; Score64 never passes `-E1`) there is no entry at +6: the bytes there are the start of the player's code (`B9 76 24`, `LDA $2476,Y`, in the fixture below). Rule 8 refuses a pack whose init or play entry, or with effects configured its effect entry, isn't a `JMP abs` into the tune past the jump table. (With `-E1` and no effects, +6 would be the volume entry, a `JMP` the effect check can't tell apart; Score64 never asks for `-E1`.)
 
 ## Output containers
 

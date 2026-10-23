@@ -948,7 +948,9 @@ pub struct PackBudget {
     /// The zero-page pair the player may use (gt2reloc `-Z`): this address and the next, in `$02`–`$FE` so both are
     /// clear of the 6510's port at `$00`/`$01`.
     pub zero_page: u8,
-    /// Whether the target calls the sound-effect entry, so the jump table needs it (gt2reloc `-D1`).
+    /// Whether the target calls the sound-effect entry, so the jump table needs it (gt2reloc `-D1`). The check is
+    /// that start+6 is a `JMP` into the tune; a pack with volume-change support (`-E1`) but no effects would also
+    /// have one there, which Score64 never asks gt2reloc for.
     pub sound_effects: bool,
     /// The longest play call the target allows, in CPU cycles; unset means unchecked. The VICE harness stays the
     /// final word on raster time (TAD §7).
@@ -970,11 +972,12 @@ pub struct PackFacts {
     pub zero_page_used: std::collections::BTreeSet<u8>,
     /// The high byte of every address the player wrote outside [`PackFacts::traced_window`], other than zero page,
     /// the stack page and the SID's registers (`$D400`–`$D418`; a write to a mirror or another SID's address counts).
-    /// A window that doesn't end on a page boundary shares its last page with addresses outside it; a write to those
-    /// reports that page.
+    /// A window that doesn't start or end on a page boundary shares that page with addresses outside it; a write to
+    /// those reports that page.
     pub pages_written_outside: std::collections::BTreeSet<u8>,
-    /// The window (first and last address) the trace measured writes outside of; `None` when nothing was traced.
-    /// It must be the budget's window.
+    /// The window (first and last address) the trace measured writes outside of; `None` when nothing was traced,
+    /// which rule 8 refuses, since the zero-page and outside sets would then mean nothing. It must be the budget's
+    /// window.
     pub traced_window: Option<(u16, u16)>,
     /// The longest play call measured, in CPU cycles, if it was measured.
     pub max_play_cycles: Option<u32>,
@@ -1069,8 +1072,9 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
     if placed && table_end > end {
         problem(
             format!(
-                "the tune is {} bytes, too short for its jump table ({} bytes{})",
+                "the tune is {} byte{}, too short for its jump table ({} bytes{})",
                 facts.size,
+                if facts.size == 1 { "" } else { "s" },
                 3 * entries.len(),
                 if budget.sound_effects {
                     " with the sound-effect entry"
@@ -1130,6 +1134,10 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
         );
     }
     match facts.traced_window {
+        None => problem(
+            "the player wasn't traced, so its zero page and its writes outside the window weren't measured".into(),
+            "trace the packed tune with the emulator helper",
+        ),
         Some((a, b)) if window_ok && (a, b) != (budget.first, budget.last) => problem(
             format!(
                 "the trace measured writes outside {}–{}, not the window {}–{}",
