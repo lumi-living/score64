@@ -88,6 +88,25 @@ fn the_packed_fixture_keeps_to_its_pair_and_its_memory() {
         zero_page.extend(t.zero_page);
         outside.extend(t.pages_written_outside);
     }
+    // The effect calls really ran: firing one on voice 1 changes what voice 1's registers get over the next second.
+    let voice1 = |fire: bool, h: &mut Helper<_, _>| {
+        h.init(start, WRAPPER, 0).unwrap();
+        h.poke(CHANNEL, 0).unwrap();
+        h.poke(FIRE, u8::from(fire)).unwrap();
+        let mut writes = h.render(1, true).unwrap().writes;
+        h.poke(FIRE, 0).unwrap();
+        writes.extend(h.render(49, true).unwrap().writes);
+        writes
+            .into_iter()
+            .filter(|w| w.register < 7)
+            .map(|w| (w.frame, w.register, w.value))
+            .collect::<Vec<_>>()
+    };
+    assert_ne!(
+        voice1(true, &mut h),
+        voice1(false, &mut h),
+        "the effect call changed nothing"
+    );
     assert_eq!(zero_page, [0xF8, 0xF9].into(), "zero page used");
     assert_eq!(
         outside,

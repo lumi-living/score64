@@ -18,7 +18,7 @@ The client sends one request and reads exactly one reply before sending the next
 4. `Render` frames in chunks of any size. Chunks continue one timeline: five renders of 10 frames give the same audio and writes as one render of 50. `Poke` (for example a mailbox the player reads) and `Model` may come between chunks.
 5. `Quit`.
 
-To trace a timeline, send `Trace` before its `Init`, and `Report` whenever the client wants what has been collected.
+To trace a timeline, send `Trace` before its `Init`, and `Report` whenever the client wants what has been collected. A trace stays armed for every following `Init` until another `Trace` replaces or disarms it.
 
 ## Requests (client → helper)
 
@@ -43,7 +43,7 @@ To trace a timeline, send `Trace` before its `Init`, and `Report` whenever the c
   `score64_formats::emu_protocol::max_render_frames` gives the largest accepted count. It is 30,000 frames up to 48 kHz, 8,759 at 192 kHz, and about 1,235 (25 s) with writes. Clients split longer renders into chunks of that size.
 - **Poke** writes now, at the current cycle. Addresses `$D400`–`$D7FF` reach the SID (mirrored every 32 bytes); everything else is RAM.
 - **Model** replaces the SID with a fresh one of the chosen model, started at the current cycle. RAM and the timeline are kept. The default is 6581.
-- **Trace** arms a trace for the next `Init`, replacing any earlier one. With both flags off and no watched addresses it disarms. It does not change the timeline that is running. The window fields are read only when the window flag is set, and the window is inclusive. It answers `Limit` for:
+- **Trace** arms a trace for every following `Init`, replacing any earlier one; each `Init` starts collecting afresh. With both flags off and no watched addresses it disarms. It does not change the timeline that is running. The window fields are read only when the window flag is set, and the window is inclusive. It answers `Limit` for:
   - more than 16 watched addresses;
   - an address watched twice;
   - a watched address in `$D400`–`$D7FF` (SID registers aren't RAM; their writes come with `Render`);
@@ -53,8 +53,8 @@ To trace a timeline, send `Trace` before its `Init`, and `Report` whenever the c
   - with the window flag, the high byte of every address written outside the window, other than page 0, the stack page (`$01xx`) and the SID's registers `$D400`–`$D418`. A write to a SID mirror counts as written outside, because on a target with a second SID it would reach that SID;
   - for each watched address, its value after init, and each frame whose play call left it with a new value.
 
-  Accesses are the CPU's own, at their effective addresses: opcode and operand fetches, pointer reads, and data reads and writes. The 6502 core makes no NMOS dummy reads. The host's `Load` and `Poke` aren't traced. A `Poke` to a watched address changes its value without counting as a change.
-- **Report** answers `Sequence` unless the current timeline's `Init` was traced. The zero-page and outside sets are everything since `Init`. Watched changes are handed over once: each `Report` gives the changes since the previous one, and each address's `start` value is its value when that span began.
+  Accesses are the CPU's own, at their effective addresses: opcode and operand fetches, pointer reads, and data reads and writes. The 6502 core makes no NMOS dummy reads. The host's `Load` and `Poke` aren't traced. A `Load` or `Poke` onto a watched address changes its value without counting as a change, so `start` plus the changes doesn't replay the host's writes; a client that writes a watched address tracks that itself.
+- **Report** answers `Sequence` unless the last successful `Init` was traced; a failed `Init` leaves nothing to report. After a failed play call, what was collected up to it can still be reported. The zero-page and outside sets are everything since `Init`. Watched changes are handed over once: each `Report` gives the changes since the previous one, and each address's `start` value is its value when that span began.
 - **Report size rule:** an accepted `Render` never leaves more watched changes than one `Traced` reply can hold. Each watched address changes at most once per frame, so before running anything the helper bounds the next `Traced` from the frames since the last `Report`. If that bound is over the limit, it answers `Limit`, and the client sends `Report` first. With 16 addresses that allows about 838,000 frames (4.6 hours) between reports.
 
 ## Replies (helper → client)
@@ -69,7 +69,7 @@ To trace a timeline, send `Trace` before its `Init`, and `Report` whenever the c
 
 A *write* is 8 bytes: `u32` frame since `Init`, `u16` cycle within that frame (0–19,655, counted from the play call), `u8` SID register (`$00`–`$1C`), `u8` value. Writes come in the order they were made. The write list is empty unless the request asked for it.
 
-A *map* is 256 bits: address or page *n* is bit *n* mod 8 (1 = lowest) of byte *n* / 8. A *watched* entry is `u16` address, `u8` start value, `u32` change count *c*, then *c* × (`u32` frame since `Init`, `u8` new value), in frame order. Watched entries come in the order `Trace` listed them.
+A *map* is 256 bits: address or page *n* is bit *n* mod 8 of byte *n* / 8, where bit 0 is the least significant (value `$01`). A *watched* entry is `u16` address, `u8` start value, `u32` change count *c*, then *c* × (`u32` frame since `Init`, `u8` new value), in frame order. Watched entries come in the order `Trace` listed them.
 
 The number of samples per chunk follows the PAL clock (985,248 Hz), not the 50 Hz frame count: 50 frames at 48 kHz are 0.9975 s, about 47,890 samples. The engine carries fractional samples across chunks.
 
@@ -82,7 +82,7 @@ The number of samples per chunk follows the PAL clock (985,248 Hz), not the 50 H
 | 3 | Sequence | A request that is not allowed now | Continues |
 | 4 | CpuJam | The CPU hit a JAM opcode in init or play | Continues; after a play failure, `Init` again |
 | 5 | Timeout | Init or play did not return within its budget | Continues; after a play failure, `Init` again |
-| 6 | Limit | A value is out of range: address overflow, frame count, sample rate, or a `Render` whose reply could exceed the limit | Continues; nothing ran |
+| 6 | Limit | A value is out of range: address overflow, frame count, sample rate, a `Render` whose reply (or the next `Traced`) could exceed the limit, or a `Trace` with too many, repeated or SID watched addresses or an inverted window | Continues; nothing ran |
 | 7 | Internal | Anything else | Continues |
 
 A client must accept codes it does not know; a newer helper may add some.

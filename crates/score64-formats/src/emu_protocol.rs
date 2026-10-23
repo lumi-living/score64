@@ -866,6 +866,17 @@ mod tests {
             "flag not 0/1"
         );
         assert!(Reply::decode(&[0x84; 10]).is_err(), "bitmaps truncated");
+        // A Traced cut off inside a watched entry, and one claiming more changes than it holds.
+        let mut cut = vec![TRACED];
+        cut.extend_from_slice(&[0; 64]);
+        cut.extend_from_slice(&[0x01, 0x3F, 0x10]);
+        assert!(Reply::decode(&cut).is_err(), "watched entry truncated");
+        let mut huge = vec![TRACED];
+        huge.extend_from_slice(&[0; 64]);
+        huge.extend_from_slice(&[
+            0x01, 0x3F, 0x10, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0x07, 0, 0, 0, 0x01,
+        ]);
+        assert!(Reply::decode(&huge).is_err(), "change count past the end");
         assert!(
             Reply::decode(&[0x83, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x7F]).is_err(),
             "sample count past the end"

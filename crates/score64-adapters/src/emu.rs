@@ -294,14 +294,22 @@ impl<R: Read, W: Write> Helper<R, W> {
         }
     }
 
-    /// Arm a trace for the next [`Self::init`]: the zero-page addresses the player touches, the pages it writes
-    /// outside `outside`, and the frames where each watched address changes. Everything off disarms it.
+    /// Arm a trace for every following [`Self::init`]: the zero-page addresses the player touches, the pages it
+    /// writes outside `outside`, and the frames where each watched address changes. Everything off disarms it. At
+    /// most [`proto::MAX_WATCH`] addresses. A client that pokes a watched address tracks that change itself.
     pub fn trace(
         &mut self,
         zero_page: bool,
         outside: Option<(u16, u16)>,
         watch: &[u16],
     ) -> Result<(), HelperError> {
+        if watch.len() > proto::MAX_WATCH {
+            return Err(HelperError::Protocol(format!(
+                "{} watched addresses; the protocol allows {}",
+                watch.len(),
+                proto::MAX_WATCH
+            )));
+        }
         self.ok(&Request::Trace {
             zero_page,
             outside,
@@ -393,6 +401,52 @@ mod tests {
             helper: "fake 1".into(),
             engine: "none".into(),
         }
+    }
+
+    #[test]
+    fn trace_and_report() {
+        let traced = proto::Traced {
+            zero_page: [0xF8, 0xF9].into(),
+            pages_written_outside: [0x20].into(),
+            watched: vec![Watched {
+                address: 0x103F,
+                start: 0x20,
+                changes: vec![(7, 0x10)],
+            }],
+        };
+        let (r, w, thread) = fake(vec![
+            ready(48_000),
+            Reply::Ok,
+            Reply::Traced(traced.clone()),
+            Reply::Ok,
+        ]);
+        let mut h = Helper::connect(r, w, 48_000).unwrap();
+        h.trace(true, Some((0x1000, 0x1FFF)), &[0x103F]).unwrap();
+        assert_eq!(h.report().unwrap(), traced);
+        // A reply of the wrong kind is a protocol error.
+        assert!(
+            matches!(h.report(), Err(HelperError::Protocol(m)) if m.contains("expected Traced"))
+        );
+        // Too many addresses never reach the helper.
+        let many: Vec<u16> = (0..=proto::MAX_WATCH as u16).collect();
+        assert!(matches!(
+            h.trace(false, None, &many),
+            Err(HelperError::Protocol(_))
+        ));
+        drop(h);
+        let seen = thread.join().unwrap();
+        assert_eq!(
+            seen[1..],
+            [
+                Request::Trace {
+                    zero_page: true,
+                    outside: Some((0x1000, 0x1FFF)),
+                    watch: vec![0x103F],
+                },
+                Request::Report,
+                Request::Report,
+            ]
+        );
     }
 
     #[test]
