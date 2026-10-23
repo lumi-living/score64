@@ -32,6 +32,10 @@ pub enum Unapplied {
     /// A value it proposes can't be played: an octave shift beyond ±7, a chord root above 11, or a chord whose
     /// intervals don't start at 0 and rise.
     OutOfRange,
+    /// The note it names isn't there when the rule runs.
+    NoSuchNote,
+    /// The trim it proposes would run the note into the next one on its voice.
+    Overlaps,
 }
 
 /// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.

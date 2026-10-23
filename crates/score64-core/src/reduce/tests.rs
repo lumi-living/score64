@@ -738,3 +738,292 @@ fn ids_and_bars_name_the_voice_and_the_bar_edges() {
     let got: Vec<_> = r.decisions.iter().map(|d| (d.id.as_str(), d.bar)).collect();
     assert_eq!(got, [("mono-short-v3-r15-p48", 0), ("mono-tie-v3-r16", 1)]);
 }
+
+/// A person's decision about voice 1's note at `row` and `pitch`.
+fn person(id: &str, proposal: Proposal) -> Decision {
+    let row = match proposal {
+        Proposal::DropNote { row, .. }
+        | Proposal::TrimNote { row, .. }
+        | Proposal::Retrigger { row, .. } => row,
+        _ => 0,
+    };
+    Decision {
+        id: DecisionId::new(id).unwrap(),
+        subtune: name(),
+        bar: row / 16,
+        proposal,
+        provenance: Provenance::Manual,
+        confidence: Confidence::CERTAIN,
+        reviewed: false,
+    }
+}
+
+fn v1() -> Voice {
+    Voice::new(1).unwrap()
+}
+
+fn drop_of(row: u32, length: u32, pitch: &str) -> Proposal {
+    Proposal::DropNote {
+        voice: v1(),
+        row,
+        pitch: pitch.parse().unwrap(),
+        length: NonZeroU32::new(length).unwrap(),
+        source: None,
+        reason: DropReason::Overlap,
+    }
+}
+
+fn trim_of(row: u32, pitch: &str, length: u32) -> Proposal {
+    Proposal::TrimNote {
+        voice: v1(),
+        row,
+        pitch: pitch.parse().unwrap(),
+        length: NonZeroU32::new(length).unwrap(),
+        source: None,
+    }
+}
+
+fn retrigger_of(row: u32, pitch: &str) -> Proposal {
+    Proposal::Retrigger {
+        voice: v1(),
+        row,
+        pitch: pitch.parse().unwrap(),
+        source: None,
+    }
+}
+
+fn unapplied(r: &Reduced) -> Vec<(&str, Unapplied)> {
+    r.unapplied
+        .iter()
+        .map(|(id, w)| (id.as_str(), *w))
+        .collect()
+}
+
+#[test]
+fn a_forced_drop_takes_the_note_out_before_the_rule_runs() {
+    let n = name();
+    // Without overrides the confident C-4 wins the overlap and E-4 is dropped.
+    let soup = vec![
+        note(0, 8, "C-4", 0.9),
+        note(2, 8, "E-4", 0.5),
+        note(8, 4, "G-4", 0.8),
+    ];
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(4).unwrap(),
+        ..MonoRules::default()
+    };
+    let plain = monophonise(soup.clone(), &at(&n), &rules);
+    assert_eq!(
+        shape(&plain.notes),
+        [(0, 8, "C-4".into()), (8, 4, "G-4".into())]
+    );
+    // A person drops C-4: E-4 has nothing to lose to, and keeps its place, trimmed where G-4 starts.
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &rules,
+        &[person("no-c", drop_of(0, 8, "C-4"))],
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(2, 6, "E-4".into()), (8, 4, "G-4".into())]
+    );
+    assert!(r.unapplied.is_empty());
+    // The rule records nothing about C-4; the drop is the person's.
+    assert!(
+        r.decisions
+            .iter()
+            .all(|d| !matches!(d.proposal, Proposal::DropNote { row: 0, .. }))
+    );
+    let (song, ctx) = checked(r.notes);
+    assert!(validate(&song, &ctx).iter().all(|p| !p.is_error()));
+}
+
+#[test]
+fn trims_and_fresh_starts_in_force_set_the_note() {
+    let n = name();
+    let soup = vec![
+        note(0, 4, "C-4", 0.9),
+        legato(note(4, 4, "D-4", 0.9)),
+        note(12, 4, "E-4", 0.9),
+    ];
+    let r = monophonise_with(
+        soup.clone(),
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("short-c", trim_of(0, "C-4", 2)),
+            person("long-d", trim_of(4, "D-4", 8)),
+        ],
+    );
+    // C-4 shortened, so D-4's tie lost its note and the rule restarts it; D-4 lengthened to the gap.
+    assert_eq!(
+        shape(&r.notes),
+        [
+            (0, 2, "C-4".into()),
+            (4, 8, "D-4".into()),
+            (12, 4, "E-4".into())
+        ]
+    );
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(|d| d.as_str()),
+        Some("short-c")
+    );
+    assert_eq!(r.notes[1].attack, Attack::Fresh);
+    assert!(
+        proposals(&r)
+            .iter()
+            .any(|p| matches!(p, Proposal::Retrigger { row: 4, .. }))
+    );
+    assert!(r.unapplied.is_empty());
+    // A fresh start in force: D-4 starts fresh with the person's id, and the rule records no tie of its own.
+    let r = monophonise_with(
+        vec![note(0, 2, "C-4", 0.9), legato(note(4, 4, "D-4", 0.9))],
+        &at(&n),
+        &MonoRules::default(),
+        &[person("fresh-d", retrigger_of(4, "D-4"))],
+    );
+    assert_eq!(r.notes[1].attack, Attack::Fresh);
+    assert_eq!(
+        r.notes[1].decision.as_ref().map(|d| d.as_str()),
+        Some("fresh-d")
+    );
+    assert!(r.decisions.is_empty(), "{:?}", r.decisions);
+}
+
+#[test]
+fn a_rule_trim_gives_way_to_a_trim_in_force() {
+    let n = name();
+    // The rule trims C-4 to 4, where D-4 starts; the person wants 3.
+    let soup = vec![note(0, 8, "C-4", 0.9), note(4, 4, "D-4", 0.9)];
+    let plain = monophonise(soup.clone(), &at(&n), &MonoRules::default());
+    assert!(
+        proposals(&plain)
+            .iter()
+            .any(|p| matches!(p, Proposal::TrimNote { row: 0, .. }))
+    );
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[person("c3", trim_of(0, "C-4", 3))],
+    );
+    assert_eq!(shape(&r.notes)[0], (0, 3, "C-4".into()));
+    assert!(
+        proposals(&r)
+            .iter()
+            .all(|p| !matches!(p, Proposal::TrimNote { .. })),
+        "the rule's trim is gone"
+    );
+    assert_eq!(r.notes[0].decision.as_ref().map(|d| d.as_str()), Some("c3"));
+}
+
+#[test]
+fn overrides_that_cant_apply_say_why() {
+    let n = name();
+    let soup = vec![note(0, 4, "C-4", 0.9), note(4, 4, "D-4", 0.9)];
+    let r = monophonise_with(
+        soup.clone(),
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("gone", drop_of(0, 2, "C-4")),      // no C-4 of length 2
+            person("into-d", trim_of(0, "C-4", 5)),    // would overlap D-4 at row 4
+            person("absent", trim_of(8, "E-4", 2)),    // no such note
+            person("nowhere", retrigger_of(2, "C-4")), // no such note
+        ],
+    );
+    assert_eq!(
+        unapplied(&r),
+        [
+            ("gone", Unapplied::NoSuchNote),
+            ("into-d", Unapplied::Overlaps),
+            ("absent", Unapplied::NoSuchNote),
+            ("nowhere", Unapplied::NoSuchNote),
+        ]
+    );
+    assert_eq!(
+        r.notes,
+        monophonise(soup, &at(&n), &MonoRules::default()).notes
+    );
+}
+
+#[test]
+fn only_this_voice_and_subtune_and_not_the_rules_own() {
+    let n = name();
+    let soup = vec![note(0, 4, "C-4", 0.9)];
+    let mut rules_drop = person("by-rules", drop_of(0, 4, "C-4"));
+    rules_drop.provenance = Provenance::Rules {
+        rule: MONOPHONISE.into(),
+    };
+    let mut elsewhere = person("other-subtune", drop_of(0, 4, "C-4"));
+    elsewhere.subtune = SubtuneName::new("combat").unwrap();
+    let other_voice = person(
+        "voice-2",
+        Proposal::DropNote {
+            voice: Voice::new(2).unwrap(),
+            row: 0,
+            pitch: "C-4".parse().unwrap(),
+            length: NonZeroU32::new(4).unwrap(),
+            source: None,
+            reason: DropReason::Overlap,
+        },
+    );
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[rules_drop, elsewhere, other_voice],
+    );
+    assert_eq!(r.notes.len(), 1);
+    assert!(r.unapplied.is_empty());
+    // A model's decision counts like a person's here; resolve has already chosen between them.
+    let mut by_model = person("by-model", drop_of(0, 4, "C-4"));
+    by_model.provenance = Provenance::Llm {
+        model: "any".into(),
+        prompt: ContentHash([1; 32]),
+    };
+    let r = monophonise_with(
+        vec![note(0, 4, "C-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[by_model],
+    );
+    assert!(r.notes.is_empty());
+}
+
+proptest! {
+    /// Overrides drawn from the notes themselves (drops, trims of any length, fresh starts) still reduce to a line
+    /// that validates with no errors, and every override either applied or says why not.
+    #[test]
+    fn any_overrides_still_give_a_valid_line(
+        soup in strategies::note_soup(),
+        rules in any_rules(),
+        picks in proptest::collection::vec((any::<proptest::sample::Index>(), 0u8..3, 1u32..12), 0..6),
+    ) {
+        prop_assume!(!soup.is_empty());
+        let n = name();
+        let overrides: Vec<Decision> = picks
+            .iter()
+            .enumerate()
+            .map(|(k, (i, kind, len))| {
+                let o = &soup[i.index(soup.len())];
+                let pitch = o.pitch.to_string();
+                let p = match kind {
+                    0 => drop_of(o.row, o.length.get(), &pitch),
+                    1 => trim_of(o.row, &pitch, *len),
+                    _ => retrigger_of(o.row, &pitch),
+                };
+                person(&format!("o{k}"), p)
+            })
+            .collect();
+        let r = monophonise_with(soup, &at(&n), &rules, &overrides);
+        let (song, ctx) = checked(r.notes.clone());
+        let errors: Vec<_> = validate(&song, &ctx).into_iter().filter(|p| p.is_error()).collect();
+        prop_assert!(errors.is_empty(), "{errors:#?}");
+        prop_assert!(r.unapplied.len() <= overrides.len());
+        for w in r.notes.windows(2) {
+            prop_assert!(w[0].row + w[0].length.get() <= w[1].row, "overlap {w:?}");
+        }
+    }
+}

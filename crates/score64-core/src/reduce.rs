@@ -14,6 +14,7 @@ use std::num::{NonZeroU8, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 
+use crate::decide::Rank;
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
@@ -90,8 +91,10 @@ pub struct Placement<'a> {
 pub struct Reduced {
     /// The notes, in row order, one at a time.
     pub notes: Vec<Note>,
-    /// Every change made to the input, in the order the rule made them.
+    /// Every change the rule made to the input, in the order it made them.
     pub decisions: Vec<Decision>,
+    /// Override decisions the rule was given but couldn't apply, and why, by id.
+    pub unapplied: Vec<(DecisionId, Unapplied)>,
 }
 
 /// How sure the rule is of a skyline choice: it is the arrangement's real judgement call.
@@ -120,9 +123,60 @@ pub fn monophonise(
     at: &Placement,
     rules: &MonoRules,
 ) -> Reduced {
+    monophonise_with(notes, at, rules, &[])
+}
+
+/// [`monophonise`] with a model's or a person's decisions in force (#167): `overrides` are resolved decisions
+/// ([`crate::decide::resolve`]'s `chosen`, after [`crate::decide::check`]). Those for this subtune and voice apply;
+/// the rules' own, and any of another kind, are left alone.
+///
+/// - A `drop_note` takes its note (same row, pitch and length) out before the rule starts, as if it had never been
+///   there, so the rule's other choices follow from the line without it.
+/// - A `trim_note` sets its note's length once the line is built. It can make the note shorter, or as long as the gap
+///   to the next note; longer would overlap it, and the override is unapplied (`overlaps`).
+/// - A `retrigger` gives its note a fresh start.
+///
+/// A note an override names that isn't there (a different note is in its place, or the rule dropped it) is reported
+/// as `no_such_note`. The rule records no decision of its own for what an override did, and a note an override
+/// changed records the override's id instead of the rule's.
+pub fn monophonise_with(
+    notes: impl IntoIterator<Item = Note>,
+    at: &Placement,
+    rules: &MonoRules,
+    overrides: &[Decision],
+) -> Reduced {
     let mut log = Log::new(at, MONOPHONISE, "mono");
+    let mut unapplied = Vec::new();
+    let mine: Vec<&Decision> = overrides
+        .iter()
+        .filter(|d| &d.subtune == at.subtune && d.rank() != Rank::Rules)
+        .filter(|d| match d.proposal {
+            Proposal::DropNote { voice, .. }
+            | Proposal::TrimNote { voice, .. }
+            | Proposal::Retrigger { voice, .. } => voice == at.voice,
+            _ => false,
+        })
+        .collect();
     let mut notes: Vec<Note> = notes.into_iter().collect();
     notes.sort_by(|a, b| canonical(a, b, rules.skyline));
+
+    // 0. Drops in force: each takes out one note of its row, pitch and length, the first in canonical order.
+    for d in &mine {
+        if let Proposal::DropNote {
+            row, pitch, length, ..
+        } = d.proposal
+        {
+            match notes
+                .iter()
+                .position(|n| n.row == row && n.pitch == pitch && n.length == length)
+            {
+                Some(i) => {
+                    notes.remove(i);
+                }
+                None => unapplied.push((d.id.clone(), Unapplied::NoSuchNote)),
+            }
+        }
+    }
 
     // 1. Ghosts and too-short notes.
     let mut kept = Vec::with_capacity(notes.len());
@@ -219,6 +273,52 @@ pub fn monophonise(
         }
     }
 
+    // Trims and fresh starts in force, on the line as built. A note keeps an earlier rule's decision id, but one
+    // this rule gave it gives way to the override's.
+    let own =
+        |id: &Option<DecisionId>, log: &Log| id.as_ref().is_none_or(|id| log.ids.contains(id));
+    for d in &mine {
+        match d.proposal {
+            Proposal::TrimNote {
+                row, pitch, length, ..
+            } => {
+                let Some(i) = line.iter().position(|n| n.row == row && n.pitch == pitch) else {
+                    unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
+                    continue;
+                };
+                let room = line.get(i + 1).map_or(u32::MAX, |next| next.row - row);
+                if length.get() > room {
+                    unapplied.push((d.id.clone(), Unapplied::Overlaps));
+                    continue;
+                }
+                let n = &mut line[i];
+                n.length = length;
+                if own(&n.decision, &log) {
+                    n.decision = Some(d.id.clone());
+                }
+            }
+            Proposal::Retrigger { row, pitch, .. } => {
+                let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
+                    unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
+                    continue;
+                };
+                n.attack = Attack::Fresh;
+                if own(&n.decision, &log) {
+                    n.decision = Some(d.id.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    // A trim in force replaces the rule's own trim of that note: the line's lengths are the overrides' now.
+    log.decisions.retain(|r| match r.proposal {
+        Proposal::TrimNote { row, pitch, .. } => !mine.iter().any(|d| {
+            matches!(d.proposal, Proposal::TrimNote { row: r2, pitch: p2, .. } if r2 == row && p2 == pitch)
+                && !unapplied.iter().any(|(id, _)| id == &d.id)
+        }),
+        _ => true,
+    });
+
     // 4. Ties that lost the note they were tied to.
     let mut end = None;
     for note in &mut line {
@@ -243,6 +343,7 @@ pub fn monophonise(
     Reduced {
         notes: line,
         decisions: log.decisions,
+        unapplied,
     }
 }
 

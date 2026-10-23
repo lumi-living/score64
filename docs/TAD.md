@@ -227,6 +227,13 @@ Decision ids name what they're about, so they stay the same when notes elsewhere
 
 They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
 
+**Overrides** (`reduce::monophonise_with`, #167): the resolved decisions of a model or a person for the voice apply as the rule runs, rather than being patched onto its result.
+- A `drop_note` takes its note out before step 1, so the rule's other choices follow from the line without it.
+- A `trim_note` sets its note's length once the line is built. It can be shorter than the rule's, or as long as the gap to the next note; one that would overlap is unapplied (`overlaps`). It replaces the rule's own trim of that note.
+- A `retrigger` makes its note fresh, so the rule records no tie of its own there.
+
+A note an override names that isn't there is unapplied (`no_such_note`), and a note an override changed records the override's id. The rules' own decisions in the list are ignored: the rule makes them afresh.
+
 **Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
 - **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
 - **Choosing the shift.** Only shifts that keep every note playable count. Among those it picks the one that leaves the fewest notes outside the range of the role at their row. On a tie, it moves nothing if that's as good, so a bar moves only to bring notes in. Next it prefers the previous bar's shift, if the bars are next to each other and in the same role, so the line doesn't jump an octave at a bar line. Then it takes the smallest.
