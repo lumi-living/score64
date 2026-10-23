@@ -3139,6 +3139,12 @@ version = "0.0.0"
 [[package]]
 name = "score64-project"
 version = "0.0.0"
+dependencies = [
+ "proptest",
+ "score64-core",
+ "serde",
+ "toml",
+]
 
 [[package]]
 name = "security-framework"
