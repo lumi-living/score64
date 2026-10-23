@@ -6,6 +6,7 @@ pub mod cache;
 pub mod decisions;
 pub mod project;
 mod textfile;
+pub mod version;
 
 pub use cache::Cache;
 pub use decisions::DecisionsFile;

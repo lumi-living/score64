@@ -578,6 +578,22 @@ fn write(path: &Path, text: &str) -> Result<(), Error> {
 }
 
 impl ProjectFile {
+    /// What every track's version takes from the project (`version`): its profiles, `[validate]` and `[tools]`.
+    /// The target and `[pack]` count through each track's resolved values. Every field is named here, so a new one
+    /// can't be left out of versions without a decision.
+    pub(crate) fn version_parts(&self) -> (&ValidateSettings, &Tools) {
+        // Profiles count through `profiles()`, which adds the built-in ones.
+        let ProjectFile {
+            schema: _,
+            target: _,
+            profile: _,
+            pack: _,
+            tools,
+            validate,
+        } = self;
+        (validate, tools)
+    }
+
     /// Parse a `score64.toml`'s text; `path` names it in errors.
     pub fn parse(text: &str, path: &Path) -> Result<Self, Error> {
         let file: ProjectFile = parse(text, path)?;
@@ -667,6 +683,22 @@ impl TrackFile {
                 ));
             }
         }
+        // Stage settings are free-form, but a number must be one: TOML's nan and inf would all hash alike.
+        for (stage, table) in &file.rules {
+            if let Some(key) = non_finite(table) {
+                // The stage's own table header, or else the first that opens `rules`: always a line.
+                let line = line_of(text, &format!("[rules.{stage}]")).or_else(|| {
+                    text.lines()
+                        .position(|l| l.trim_start().starts_with("[rules"))
+                        .map(|i| i + 1)
+                });
+                return Err(invalid(
+                    path,
+                    line,
+                    format!("[rules.{stage}] {key} isn't a finite number"),
+                ));
+            }
+        }
         let mut set_names = BTreeSet::new();
         for (i, set) in file.adaptive.iter().enumerate() {
             if !set_names.insert(set.name()) {
@@ -699,6 +731,26 @@ impl TrackFile {
         Self::parse(&text, path)?;
         Ok(text)
     }
+}
+
+/// The dotted key of the first number in `table` that is nan or infinite, at any depth.
+pub(crate) fn non_finite(table: &toml::Table) -> Option<String> {
+    fn walk(v: &toml::Value) -> Option<String> {
+        match v {
+            toml::Value::Float(f) if !f.is_finite() => Some(String::new()),
+            toml::Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .find_map(|(i, x)| walk(x).map(|k| format!("[{i}]{k}"))),
+            toml::Value::Table(t) => t
+                .iter()
+                .find_map(|(k, x)| walk(x).map(|rest| format!(".{k}{rest}"))),
+            _ => None,
+        }
+    }
+    table
+        .iter()
+        .find_map(|(k, v)| walk(v).map(|rest| format!("{k}{rest}")))
 }
 
 /// `text` with source `id`'s `blake3` value replaced by `hash`, and nothing else changed; `None` if no source has
