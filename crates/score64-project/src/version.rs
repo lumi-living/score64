@@ -57,6 +57,9 @@ pub enum Error {
     UnknownProfile(ProfileName),
     /// The project's profiles don't load.
     Profiles(String),
+    /// A number in the track's `[rules]` is nan or infinite, which would hash like any other (`TrackFile::parse`
+    /// refuses it; a track built in code may hold one).
+    NonFinite(String),
 }
 
 impl std::fmt::Display for Error {
@@ -64,6 +67,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::UnknownProfile(p) => write!(f, "profile `{p}` isn't built in or the project's"),
             Error::Profiles(why) => f.write_str(why),
+            Error::NonFinite(key) => write!(f, "[rules] {key} isn't a finite number"),
         }
     }
 }
@@ -88,7 +92,12 @@ pub fn version_id(
 /// The intent as JSON and the sources' hashes, in `track.toml`'s order.
 fn intent(project: &Project, track: &Track) -> Result<(Value, Vec<ContentHash>), Error> {
     let profiles = project.file.profiles().map_err(Error::Profiles)?;
-    let (_, validate, tools) = project.file.version_parts();
+    let (validate, tools) = project.file.version_parts();
+    for (stage, table) in &track.file.rules {
+        if let Some(key) = crate::project::non_finite(table) {
+            return Err(Error::NonFinite(format!("{stage}.{key}")));
+        }
+    }
     let full = ProfileName::new(builtin::FULL).expect("a valid built-in name");
     let default = track.file.profile.as_ref().unwrap_or(&full);
     let mut used = BTreeMap::new();

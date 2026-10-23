@@ -372,3 +372,47 @@ fn numbers_in_rules_must_be_finite() {
         crate::project::TrackFile::parse(&nested, std::path::Path::new("track.toml")).unwrap_err();
     assert!(e.to_string().contains("limits.low[1]"), "{e}");
 }
+
+#[test]
+fn a_track_built_in_code_has_the_same_checks() {
+    let f = Folder::new("built", PROJECT, TRACK, Some(DECISIONS));
+    let project = Project::open(&f.0).unwrap();
+    let mut track = project.track(&Id::new("main").unwrap()).unwrap();
+    // Ties in the decisions (impossible in a parsed file) don't let their order in.
+    let mut twin = track.decisions.decision[0].clone();
+    twin.bar += 1;
+    track.decisions.decision.push(twin.clone());
+    let a = version_id(&project, &track, "0.1.0").unwrap();
+    let n = track.decisions.decision.len();
+    track.decisions.decision.swap(0, n - 1);
+    assert_eq!(version_id(&project, &track, "0.1.0").unwrap(), a);
+    // A non-finite number put into the rules by code is refused here too.
+    track
+        .file
+        .rules
+        .get_mut("reduce")
+        .unwrap()
+        .insert("weight".into(), toml::Value::Float(f64::NAN));
+    assert_eq!(
+        version_id(&project, &track, "0.1.0"),
+        Err(Error::NonFinite("reduce.weight".into()))
+    );
+}
+
+#[test]
+fn the_sources_are_the_keys_inputs() {
+    // Only the hash in the key's inputs differs between these: the intent is the same JSON.
+    let f = Folder::new("inputs", PROJECT, TRACK, Some(DECISIONS));
+    let project = Project::open(&f.0).unwrap();
+    let track = project.track(&Id::new("main").unwrap()).unwrap();
+    let (json, sources) = intent(&project, &track).unwrap();
+    let config = serde_json::json!({ "intent": json, "tool_version": "0.1.0" });
+    assert_eq!(
+        version_id(&project, &track, "0.1.0").unwrap(),
+        Cache::key("version", SCHEME, &config, &sources)
+    );
+    assert_ne!(
+        Cache::key("version", SCHEME, &config, &sources),
+        Cache::key("version", SCHEME, &config, &[])
+    );
+}
