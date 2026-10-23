@@ -128,11 +128,11 @@ mod tests {
                 "lag {lag}: found {found} ms"
             );
         }
-        // And the other way round: b ahead of a.
+        // And the other way round: b ahead of a, a negative lag.
         let s = saw(20, 101);
-        let (res, found) = residual(&s[333..], &s).unwrap();
+        let (res, found) = residual(&s, &s[333..]).unwrap();
         assert!(
-            res < 0.01 && (found - 333.0 / 48.0).abs() < 0.01,
+            res < 0.01 && (found + 333.0 / 48.0).abs() < 0.01,
             "{res} {found}"
         );
     }

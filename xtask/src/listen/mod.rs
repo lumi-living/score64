@@ -79,7 +79,8 @@ fn helper() -> Result<PathBuf, String> {
     }
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .filter(|p| !p.is_empty())
-        .map_or_else(|| root().join("target"), PathBuf::from);
+        // Relative to the workspace root, as cargo reads it.
+        .map_or_else(|| root().join("target"), |p| root().join(p));
     let path = target
         .join("release")
         .join(format!("score64-emu{}", std::env::consts::EXE_SUFFIX));
