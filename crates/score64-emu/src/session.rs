@@ -99,7 +99,7 @@ impl Session {
         })
     }
 
-    /// `Trace`: arm a trace for the next `Init`, or disarm with everything off.
+    /// `Trace`: arm a trace for every following `Init` until it is replaced, or disarm with everything off.
     pub fn trace(
         &mut self,
         zero_page: bool,
@@ -139,7 +139,8 @@ impl Session {
         Ok(())
     }
 
-    /// `Report`: what the trace collected since `Init`, and the watched changes since the last `Report`.
+    /// `Report`: what the trace collected since the last successful `Init`, and the watched changes since the last
+    /// `Report`. After a failed play call, what was collected up to it can still be reported.
     pub fn report(&mut self) -> Result<proto::Traced, Failure> {
         let Some(log) = self.machine.memory.trace.as_ref() else {
             return Err(Failure::new(
@@ -177,6 +178,15 @@ impl Session {
             ));
         }
         self.machine.memory.load(address, data);
+        // The host's own change isn't one the player made.
+        let end = usize::from(address) + data.len();
+        for w in self
+            .watches
+            .iter_mut()
+            .filter(|w| (usize::from(address)..end).contains(&usize::from(w.address)))
+        {
+            w.last = data[usize::from(w.address - address)];
+        }
         Ok(())
     }
 
@@ -352,5 +362,34 @@ impl Session {
             samples,
             writes,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_render_that_could_overfill_the_next_report_is_refused() {
+        let mut s = Session::new(48_000).unwrap();
+        s.load(0x1000, &[0x60]).unwrap();
+        let watch: Vec<u16> = (0x2000..0x2010).collect();
+        s.trace(false, None, watch).unwrap();
+        s.init(0x1000, 0x1000, 0).unwrap();
+        // With 16 addresses, a Report holds 66 + 16 × 7 bytes plus 80 a frame: 838,858 frames fit in 64 MiB.
+        let fits = (u64::from(proto::MAX_MESSAGE) - proto::traced_size(16, 0)) / (16 * 5);
+        assert_eq!(fits, 838_858);
+        s.unreported_frames = fits - 1;
+        assert!(s.render(1, false).is_ok(), "the last frame that fits");
+        let refused = s.render(1, false).err().expect("one frame too many");
+        assert_eq!(refused.code, ErrorCode::Limit);
+        assert!(
+            refused.message.contains("send Report first"),
+            "{}",
+            refused.message
+        );
+        s.report().unwrap();
+        assert_eq!(s.unreported_frames, 0);
+        assert!(s.render(1, false).is_ok(), "after a Report");
     }
 }

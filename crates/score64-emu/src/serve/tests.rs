@@ -308,19 +308,29 @@ fn malformed_input_is_answered_then_the_helper_stops() {
     assert!(run_bytes(&[]).is_empty(), "clean end of input: no reply");
 }
 
-/// A player that touches known memory. Init (`$1000` → `$1010`) clears `$FB` and `$2000`. Play (`$1003` → `$1020`)
-/// counts frames in `$FB`, adds one to `$2000` every 8th frame, and writes `$C123`, the SID volume and the stack.
+/// A player that touches known memory. Init (`$1000` → `$1010`) clears `$FB` and `$FC`, writes `$C200`, and sets
+/// `$2000` to `$40`. Play (`$1003` → `$1030`) counts frames in `$FB`, reads `$FA`, `($FD),Y` with Y = `$10` (so
+/// `$FD`, `$FE` and `$0010`) and `$FF,X` with X = 1 (which wraps to `$00`), adds one to `$2000` every 8th frame, and
+/// writes `$C123`, the SID volume and the stack.
 fn tracer() -> Vec<u8> {
-    let mut p = vec![0xEA; 0x40];
-    p[0x00..0x06].copy_from_slice(&[0x4C, 0x10, 0x10, 0x4C, 0x20, 0x10]); // JMP $1010, JMP $1020
-    p[0x10..0x18].copy_from_slice(&[
+    let mut p = vec![0xEA; 0x50];
+    p[0x00..0x06].copy_from_slice(&[0x4C, 0x10, 0x10, 0x4C, 0x30, 0x10]); // JMP $1010, JMP $1030
+    p[0x10..0x1F].copy_from_slice(&[
         0xA9, 0x00, // LDA #$00
         0x85, 0xFB, // STA $FB
+        0x85, 0xFC, // STA $FC (init only)
+        0x8D, 0x00, 0xC2, // STA $C200 (init only)
+        0xA9, 0x40, // LDA #$40
         0x8D, 0x00, 0x20, // STA $2000
         0x60, // RTS
     ]);
-    p[0x20..0x34].copy_from_slice(&[
+    p[0x30..0x4E].copy_from_slice(&[
         0xE6, 0xFB, // INC $FB
+        0xA5, 0xFA, // LDA $FA (read only)
+        0xA0, 0x10, // LDY #$10
+        0xB1, 0xFD, // LDA ($FD),Y: $FD/$FE hold 0, so this reads $0010
+        0xA2, 0x01, // LDX #$01
+        0xB5, 0xFF, // LDA $FF,X: wraps to $00
         0xA5, 0xFB, // LDA $FB
         0x29, 0x07, // AND #$07
         0xD0, 0x03, // BNE +3
@@ -349,12 +359,23 @@ fn traced(r: &Reply) -> &proto::Traced {
     }
 }
 
-#[test]
-fn a_trace_reports_zero_page_outside_writes_and_watched_changes() {
-    let render = |frames| Request::Render {
+fn init() -> Request {
+    Request::Init {
+        init: 0x1000,
+        play: 0x1003,
+        subtune: 0,
+    }
+}
+
+fn render(frames: u32) -> Request {
+    Request::Render {
         frames,
         writes: false,
-    };
+    }
+}
+
+#[test]
+fn a_trace_reports_zero_page_outside_writes_and_watched_changes() {
     let replies = run(&[
         hello(),
         Request::Load {
@@ -362,11 +383,7 @@ fn a_trace_reports_zero_page_outside_writes_and_watched_changes() {
             data: tracer(),
         },
         trace_all(),
-        Request::Init {
-            init: 0x1000,
-            play: 0x1003,
-            subtune: 0,
-        },
+        init(),
         render(20),
         Request::Report,
         // The host's own writes are neither changes nor outside writes.
@@ -378,25 +395,31 @@ fn a_trace_reports_zero_page_outside_writes_and_watched_changes() {
             address: 0x3000,
             value: 0x01,
         },
+        Request::Load {
+            address: 0x3000,
+            data: vec![0x77],
+        },
         render(10),
         Request::Report,
         Request::Report,
     ]);
-    assert!(
-        replies[..5].iter().skip(1).take(3).all(|r| *r == Reply::Ok),
-        "{replies:?}"
-    );
+    assert!(replies[1..4].iter().all(|r| *r == Reply::Ok));
     let first = traced(&replies[5]);
-    assert_eq!(first.zero_page, [0xFB].into());
-    assert_eq!(first.pages_written_outside, [0x20, 0xC1].into());
-    // $FB counts 1, 2, ...; $2000 goes up when it reaches 8 (frame 7) and 16 (frame 15).
+    // Init's accesses count ($FC, $C2xx), and so does every kind of read: zero page, a pointer and the data it
+    // points at, and an indexed read that wraps.
+    assert_eq!(
+        first.zero_page,
+        [0x00, 0x10, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE].into()
+    );
+    assert_eq!(first.pages_written_outside, [0x20, 0xC1, 0xC2].into());
+    // $2000 starts at init's $40, then goes up when $FB reaches 8 (frame 7) and 16 (frame 15).
     assert_eq!(
         first.watched,
         [
             proto::Watched {
                 address: 0x2000,
-                start: 0,
-                changes: vec![(7, 1), (15, 2)],
+                start: 0x40,
+                changes: vec![(7, 0x41), (15, 0x42)],
             },
             proto::Watched {
                 address: 0x3000,
@@ -405,28 +428,71 @@ fn a_trace_reports_zero_page_outside_writes_and_watched_changes() {
             },
         ]
     );
-    // The second span starts where the first ended, then sees the poke's value go up at frame 23. The sets are
-    // cumulative; the changes are only the new ones.
-    let second = traced(&replies[9]);
-    assert_eq!(second.zero_page, [0xFB].into());
-    assert_eq!(second.pages_written_outside, [0x20, 0xC1].into());
-    assert_eq!(second.watched[0].start, 2);
+    // The second span starts where the first ended, then sees the poked value go up at frame 23. The sets are
+    // cumulative; the changes are only the new ones. The host's poke and load are never changes.
+    let second = traced(&replies[10]);
+    assert_eq!(second.zero_page, first.zero_page);
+    assert_eq!(second.pages_written_outside, first.pages_written_outside);
+    assert_eq!(second.watched[0].start, 0x42);
     assert_eq!(second.watched[0].changes, [(23, 0x51)]);
     assert_eq!(second.watched[1].changes, []);
-    let third = traced(&replies[10]);
+    let third = traced(&replies[11]);
     assert_eq!(
         (third.watched[0].start, third.watched[0].changes.len()),
         (0x51, 0)
     );
+    assert_eq!(
+        (third.watched[1].start, third.watched[1].changes.len()),
+        (0x77, 0)
+    );
+}
+
+/// A player whose play routine only stores A at `address`.
+fn sid_writer(address: u16) -> Vec<u8> {
+    let [lo, hi] = address.to_le_bytes();
+    vec![0x60, 0x8D, lo, hi, 0x60] // init: RTS; play ($1001): STA address, RTS
+}
+
+#[test]
+fn only_the_sids_registers_are_left_out() {
+    for (address, pages) in [
+        (0xD400, vec![]),
+        (0xD418, vec![]),
+        (0xD419, vec![0xD4]),
+        (0xD438, vec![0xD4]), // a mirror
+        (0xD500, vec![0xD5]), // where a second SID often sits
+        (0x01F0, vec![]),     // the stack page
+    ] {
+        let replies = run(&[
+            hello(),
+            Request::Load {
+                address: 0x1000,
+                data: sid_writer(address),
+            },
+            Request::Trace {
+                zero_page: false,
+                outside: Some((0x1000, 0x10FF)),
+                watch: vec![],
+            },
+            Request::Init {
+                init: 0x1000,
+                play: 0x1001,
+                subtune: 0,
+            },
+            render(1),
+            Request::Report,
+        ]);
+        let t = traced(&replies[5]);
+        assert_eq!(
+            t.pages_written_outside,
+            pages.into_iter().collect(),
+            "${address:04X}"
+        );
+    }
 }
 
 #[test]
 fn a_trace_starts_at_init_and_has_its_rules() {
-    let init = Request::Init {
-        init: 0x1000,
-        play: 0x1003,
-        subtune: 0,
-    };
     let load = Request::Load {
         address: 0x1000,
         data: tracer(),
@@ -440,7 +506,7 @@ fn a_trace_starts_at_init_and_has_its_rules() {
         hello(),
         load.clone(),
         Request::Report, // nothing traced yet
-        init.clone(),
+        init(),
         Request::Report, // Init without a trace
         watch((0..17).collect()),
         watch(vec![0x2000, 0x2000]),
@@ -452,11 +518,12 @@ fn a_trace_starts_at_init_and_has_its_rules() {
         },
         // Only what was asked for is collected.
         watch(vec![0x2000]),
-        init.clone(),
-        Request::Render {
-            frames: 8,
-            writes: false,
-        },
+        init(),
+        render(8),
+        Request::Report,
+        // The trace stays armed for every Init until replaced: a second Init is traced afresh.
+        init(),
+        render(8),
         Request::Report,
         // Everything off disarms it for the next Init.
         Request::Trace {
@@ -464,7 +531,7 @@ fn a_trace_starts_at_init_and_has_its_rules() {
             outside: None,
             watch: vec![],
         },
-        init,
+        init(),
         Request::Report,
     ]);
     assert_eq!(code(&replies[2]), ErrorCode::Sequence);
@@ -474,6 +541,52 @@ fn a_trace_starts_at_init_and_has_its_rules() {
     }
     let t = traced(&replies[12]);
     assert!(t.zero_page.is_empty() && t.pages_written_outside.is_empty());
-    assert_eq!(t.watched[0].changes, [(7, 1)]);
-    assert_eq!(code(&replies[15]), ErrorCode::Sequence);
+    assert_eq!(t.watched[0].changes, [(7, 0x41)]);
+    let again = traced(&replies[15]);
+    assert_eq!(
+        (again.watched[0].start, &again.watched[0].changes[..]),
+        (0x40, &[(7, 0x41)][..])
+    );
+    assert_eq!(code(&replies[18]), ErrorCode::Sequence);
+}
+
+#[test]
+fn a_failed_init_has_no_trace_but_a_failed_play_keeps_its_own() {
+    let jam = Request::Load {
+        address: 0x1100,
+        data: vec![0x02], // JAM
+    };
+    let replies = run(&[
+        hello(),
+        Request::Load {
+            address: 0x1000,
+            data: tracer(),
+        },
+        jam,
+        trace_all(),
+        Request::Init {
+            init: 0x1100,
+            play: 0x1003,
+            subtune: 0,
+        },
+        Request::Report,
+        Request::Init {
+            init: 0x1000,
+            play: 0x1100,
+            subtune: 0,
+        },
+        render(1),
+        Request::Report,
+    ]);
+    assert_eq!(code(&replies[4]), ErrorCode::CpuJam);
+    assert_eq!(
+        code(&replies[5]),
+        ErrorCode::Sequence,
+        "a failed Init leaves nothing to report"
+    );
+    assert_eq!(code(&replies[7]), ErrorCode::CpuJam);
+    // What init collected before the failed play call can still be reported.
+    let t = traced(&replies[8]);
+    assert_eq!(t.zero_page, [0xFB, 0xFC].into());
+    assert_eq!(t.pages_written_outside, [0x20, 0xC2].into());
 }
