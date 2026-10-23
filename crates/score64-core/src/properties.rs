@@ -1,8 +1,8 @@
 //! Property tests for the validator (#14): songs built to the rules raise no errors, and breaking a rule in its own
 //! way always gets that rule reported. Together they keep the generators, the profiles and the validator in step.
 //!
-//! The reduction invariant (any [`strategies::note_soup`] reduces to lines with no errors) lands with the reduction
-//! itself (E6).
+//! The reduction invariant (any [`strategies::note_soup`] reduces to lines with no errors) is tested with the
+//! reduction, in `reduce::tests`.
 
 use std::num::NonZeroU32;
 

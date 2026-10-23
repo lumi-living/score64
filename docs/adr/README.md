@@ -4,6 +4,7 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 
 | ADR | Title | Status |
 |---|---|---|
+| [000](ADR-000-template.md) | Template for new ADRs | — |
 | [001](ADR-001-rust-workspace-egui.md) | Rust workspace with an egui/eframe app, aligned with Convert64 | Accepted |
 | [002](ADR-002-mit-with-gpl-emulator-helper.md) | MIT, with the SID emulator in a separate GPL helper binary | Accepted |
 | [003](ADR-003-review-tool-not-tracker.md) | A review-and-decide tool, not a tracker | Accepted |
