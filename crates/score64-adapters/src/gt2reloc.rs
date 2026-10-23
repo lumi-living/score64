@@ -318,9 +318,9 @@ impl Gt2Reloc {
         let work = guard.0.as_path();
         let name = format!("out.{}", format.extension());
         let packed = work.join(&name);
-        let result = std::fs::copy(song, work.join("song.sng"))
+        std::fs::copy(song, work.join("song.sng"))
             .map_err(PackError::Io)
-            .and_then(|_| self.run(&work, &name, &args))
+            .and_then(|_| self.run(work, &name, &args))
             .and_then(|stdout| {
                 let report = Report::parse(&String::from_utf8_lossy(&stdout));
                 report.check(options, &self.pinned)?;
@@ -338,8 +338,7 @@ impl Gt2Reloc {
                     size,
                     version: report.version.expect("checked"),
                 })
-            });
-        result
+            })
     }
 
     fn run(&self, work: &Path, out: &str, args: &[String]) -> Result<Vec<u8>, PackError> {
