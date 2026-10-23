@@ -904,6 +904,7 @@ fn silencing(release: u8, gate: u8) -> (Library, Options) {
     lead.instrument.gate_timer = gate;
     let options = Options {
         silence_after_release: [preset("lead")].into(),
+        ..Options::default()
     };
     (lib, options)
 }
@@ -932,15 +933,61 @@ fn gap_song(next: Option<u32>, tempo: Vec<TempoChange>) -> Song {
     song(vec![sub])
 }
 
+/// A `bass` note (release 9: 40 frames) on the lead's voice.
+fn bass_note(row: u32, length: u32, lib: &mut Library) -> Note {
+    lib.get_mut(&preset("bass")).unwrap().instrument.sr = 0xA9;
+    let mut n = note(row, length, "C-3", Attack::Fresh);
+    n.instrument = Some(preset("bass"));
+    n
+}
+
+#[test]
+fn releases_last_at_most_their_rate_periods_and_the_adsr_delay() {
+    // 756 rate periods (+1 each) and one wrap of the rate counter, in frames, by nibble.
+    let pal: Vec<u64> = (0..16)
+        .map(|n| release_frames(n, VideoStandard::Pal))
+        .collect();
+    assert_eq!(
+        pal,
+        [
+            3, 3, 5, 6, 8, 11, 12, 14, 17, 40, 77, 122, 152, 453, 753, 1204
+        ]
+    );
+    let ntsc: Vec<u64> = (0..16)
+        .map(|n| release_frames(n, VideoStandard::Ntsc))
+        .collect();
+    assert_eq!(
+        ntsc,
+        [
+            3, 4, 5, 7, 9, 12, 14, 16, 20, 46, 89, 141, 175, 521, 866, 1384
+        ]
+    );
+    // Never shorter than the datasheet's release times (`docs/reference/sid.md` §Envelope timing), on PAL.
+    let datasheet_ms = [
+        6, 24, 48, 72, 114, 168, 204, 240, 300, 750, 1500, 2400, 3000, 9000, 15000, 24000,
+    ];
+    let pal_standard = VideoStandard::Pal;
+    for (frames, ms) in pal.iter().zip(datasheet_ms) {
+        assert!(
+            frames * u64::from(pal_standard.cycles_per_frame()) * 1000
+                >= ms * u64::from(pal_standard.clock_hz()),
+            "{frames} frames for {ms} ms"
+        );
+    }
+}
+
 #[test]
 fn the_waveform_goes_off_on_the_first_row_after_the_release() {
-    // Release 0 (6 ms, one frame): row 5. Release 8 (300 ms, 16 frames at 5 a row): row 8. Release 9 (750 ms, 38
-    // frames) with 3 frames a row from row 8: 20 frames to row 8, then 18 more at 3 a row, row 14.
-    for (release, tempo, want) in [
-        (0, vec![], 5),
-        (8, vec![], 8),
+    // Counted from the gate-off, the gate timer's frames before the key-off on row 4. Release 0 (3 frames): row 5.
+    // Release 8 (17 frames) at 5 frames a row: row 8 with no gate timer, row 7 with 4 frames of it. Release 9 (40
+    // frames, 38 after a gate timer of 2) with 3 frames a row from row 8: 20 frames to row 8, then 18 more, row 14.
+    for (release, gate, tempo, want) in [
+        (0, 2, vec![], 5),
+        (8, 0, vec![], 8),
+        (8, 4, vec![], 7),
         (
             9,
+            2,
             vec![TempoChange {
                 row: 8,
                 frames_per_row: FramesPerRow::new(3).unwrap(),
@@ -948,13 +995,24 @@ fn the_waveform_goes_off_on_the_first_row_after_the_release() {
             14,
         ),
     ] {
-        let (lib, options) = silencing(release, 2);
+        let (lib, options) = silencing(release, gate);
         assert_eq!(
             silences(&gap_song(None, tempo), &lib, &options),
             [(want, 0x00)],
-            "release ${release:X}"
+            "release ${release:X}, gate timer {gate}"
         );
     }
+    // NTSC frames are shorter: release 9 takes 46 of them, so row 13 rather than 12.
+    let (lib, mut options) = silencing(9, 2);
+    assert_eq!(
+        silences(&gap_song(None, vec![]), &lib, &options),
+        [(12, 0x00)]
+    );
+    options.video = VideoStandard::Ntsc;
+    assert_eq!(
+        silences(&gap_song(None, vec![]), &lib, &options),
+        [(13, 0x00)]
+    );
 }
 
 #[test]
@@ -967,9 +1025,16 @@ fn nothing_is_written_when_something_comes_first() {
         silences(&gap_song(Some(13), vec![]), &lib, &options),
         [(12, 0x00)]
     );
-    // The next note's gate-timer lead (5 frames, one whole row here) reaches back to row 12.
-    let (lib, options) = silencing(9, 5);
-    assert_eq!(silences(&gap_song(Some(13), vec![]), &lib, &options), []);
+    // The next note would start with no waveform of its own: none on its first frame, or a gate-only value.
+    for first in [0x00, 0xFE, 0xFF] {
+        let (mut lib, options) = silencing(9, 2);
+        lib.get_mut(&preset("lead")).unwrap().instrument.first_wave = first;
+        assert_eq!(
+            silences(&gap_song(Some(13), vec![]), &lib, &options),
+            [],
+            "first wave ${first:02X}"
+        );
+    }
     // The voice's command slot on that row is taken: a tempo change there takes voice 1's first.
     let (lib, options) = silencing(0, 2);
     let tempo = vec![TempoChange {
@@ -977,11 +1042,6 @@ fn nothing_is_written_when_something_comes_first() {
         frames_per_row: FramesPerRow::new(6).unwrap(),
     }];
     assert_eq!(silences(&gap_song(None, tempo), &lib, &options), []);
-    // A wavetable that loops would overwrite the waveform: nothing written.
-    let (mut lib, options) = silencing(0, 2);
-    lib.get_mut(&preset("lead")).unwrap().wave.rows =
-        vec![(0x41, 0x00), (0x40, 0x00), (WAVE_JUMP, 0x01)];
-    assert_eq!(silences(&gap_song(None, vec![]), &lib, &options), []);
     // So would an arpeggio still running at the key-off; one that ended while its note sounded has handed back to
     // the instrument's program.
     let (lib, options) = silencing(0, 2);
@@ -996,8 +1056,69 @@ fn nothing_is_written_when_something_comes_first() {
 }
 
 #[test]
+fn the_wavetable_program_has_to_have_stopped() {
+    let program = |rows: Vec<(u8, u8)>| {
+        let (mut lib, options) = silencing(0, 2);
+        lib.get_mut(&preset("lead")).unwrap().wave.rows = rows;
+        silences(&gap_song(None, vec![]), &lib, &options)
+    };
+    // One that loops would overwrite the waveform: nothing written.
+    assert_eq!(
+        program(vec![(0x41, 0x00), (0x40, 0x00), (WAVE_JUMP, 0x01)]),
+        []
+    );
+    // One that stops after three 16-frame delays writes its last waveform on frame 51 of the note (the note's first
+    // frame, then 1 + 3 × 16 + 1): the release is over by row 5, the program by row 11.
+    assert_eq!(
+        program(vec![
+            (0x41, 0x00),
+            (0x0F, 0x00),
+            (0x0F, 0x00),
+            (0x0F, 0x00),
+            (0x41, 0x00),
+            (WAVE_JUMP, 0x00),
+        ]),
+        [(11, 0x00)]
+    );
+    // One that runs a pattern command could change the envelope or the waveform.
+    assert_eq!(
+        program(vec![(0x41, 0x00), (0xF1, 0x00), (WAVE_JUMP, 0x00)]),
+        []
+    );
+    // No program at all: nothing writes the waveform.
+    let (mut lib, options) = silencing(0, 2);
+    lib.get_mut(&preset("lead")).unwrap().instrument.wave = 0;
+    assert_eq!(
+        silences(&gap_song(None, vec![]), &lib, &options),
+        [(5, 0x00)]
+    );
+}
+
+#[test]
+fn another_presets_release_is_never_cut_on_any_pass() {
+    // On the first pass: a lead note running to the end stops on the loop row (8) after the jump back, but on the
+    // first pass row 8 comes 20 frames into the bass's 40-frame release, keyed off on row 4. Row 12 is past both.
+    let (mut lib, options) = silencing(0, 2);
+    let bass = bass_note(0, 4, &mut lib);
+    let mut s = gap_song(None, vec![]);
+    let sub = &mut s.subtunes[0];
+    sub.loop_row = 8;
+    sub.voices[0].notes = vec![bass, note(24, 8, "G-4", Attack::Fresh)];
+    assert_eq!(silences(&s, &lib, &options), [(12, 0x00)]);
+    // After the jump back: the lead's gap from row 4 (the loop row) follows the bass keyed off on row 30, 10 frames
+    // before the end. Its release is over 30 frames after the jump, on row 10.
+    let (mut lib, options) = silencing(0, 2);
+    let bass = bass_note(20, 10, &mut lib);
+    let mut s = gap_song(None, vec![]);
+    let sub = &mut s.subtunes[0];
+    sub.loop_row = 4;
+    sub.voices[0].notes = vec![note(0, 4, "C-4", Attack::Fresh), bass];
+    assert_eq!(silences(&s, &lib, &options), [(10, 0x00)]);
+}
+
+#[test]
 fn it_is_off_unless_the_preset_asks_and_follows_the_loop() {
-    let (lib, options) = silencing(0, 2);
+    let (lib, _) = silencing(0, 2);
     let s = gap_song(None, vec![]);
     // Off by default: the same song as `export` writes.
     assert_eq!(silences(&s, &lib, &Options::default()), []);
@@ -1008,12 +1129,35 @@ fn it_is_off_unless_the_preset_asks_and_follows_the_loop() {
     // Another preset's notes aren't touched.
     let other = Options {
         silence_after_release: [preset("bass")].into(),
+        ..Options::default()
     };
     assert_eq!(silences(&s, &lib, &other), []);
+    // A tie keeps the preset of the note it ties to: a bass note tied over row 4 is silenced after the tie's end.
+    let (mut lib, _) = silencing(0, 2);
+    lib.get_mut(&preset("bass")).unwrap().instrument.sr = 0xA0;
+    let mut tied = gap_song(None, vec![]);
+    let mut first = note(0, 4, "C-3", Attack::Fresh);
+    first.instrument = Some(preset("bass"));
+    tied.subtunes[0].voices[0].notes = vec![first, note(4, 4, "D-3", Attack::Legato)];
+    assert_eq!(silences(&tied, &lib, &other), [(9, 0x00)]);
     // A note running to the end stops on the loop row after the jump back; its silence follows from there.
+    let (lib, options) = silencing(0, 2);
     let mut looped = gap_song(None, vec![]);
     let sub = &mut looped.subtunes[0];
     sub.loop_row = 16;
     sub.voices[0].notes.push(note(24, 8, "G-4", Attack::Fresh));
     assert_eq!(silences(&looped, &lib, &options), [(5, 0x00), (17, 0x00)]);
+    // With release 9 (38 frames after the gate timer), the first note after the loop row (row 20) comes before the
+    // release after the jump back is over (row 24), and the note before it leaves too little room (row 30 against
+    // row 26): only the first note's gap gets one.
+    let (lib, options) = silencing(9, 2);
+    let mut s = gap_song(None, vec![]);
+    let sub = &mut s.subtunes[0];
+    sub.loop_row = 16;
+    sub.voices[0].notes = vec![
+        note(0, 4, "C-4", Attack::Fresh),
+        note(20, 2, "E-4", Attack::Fresh),
+        note(26, 6, "G-4", Attack::Fresh),
+    ];
+    assert_eq!(silences(&s, &lib, &options), [(12, 0x00)]);
 }

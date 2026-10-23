@@ -17,11 +17,13 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::num::NonZeroU8;
 
-use score64_core::{AdaptiveSet, Attack, PresetId, Song, Subtune, SubtuneName, Voice, VoiceLine};
+use score64_core::{
+    AdaptiveSet, Attack, PresetId, Song, Subtune, SubtuneName, VideoStandard, Voice, VoiceLine,
+};
 
 use super::sng::{self, KEY_OFF, NOTE_FIRST, Orderlist, Pattern, REST, Row, Sng};
 use super::wave::{self, SET_WAVE_POINTER, WAVE_JUMP};
-use super::{Ins, Table};
+use super::{Ins, Instrument, Table};
 
 /// Command `3XY` with `$00`: tie the note, moving the pitch at once without retriggering it.
 const TIE: u8 = 0x3;
@@ -260,23 +262,37 @@ pub struct Options {
     /// keeps running, and a little of it leaks out at the note's pitch. The preset setting `silence_after_release`
     /// fills this once presets carry settings (#49); off for every preset by default.
     pub silence_after_release: std::collections::BTreeSet<PresetId>,
+    /// The video standard the song plays at: the frame length `silence_after_release` counts releases in (#139).
+    pub video: VideoStandard,
 }
 
 /// Command `7XY`: set the waveform register to XY, unless a running wavetable overwrites it.
 const SET_WAVEFORM: u8 = 0x7;
 
-/// The waveform `silence_after_release` sets: none, test bit clear. Measured in the emulator helper (reSIDfp) after a
-/// key-off: exact silence on the 6581, and on the 8580 lower than with the test bit (`$08`) on every waveform once the
-/// floating output has faded (`docs/reference/sid.md` §After the release).
+/// The waveform `silence_after_release` sets: none, test bit clear. In the emulator helper (reSIDfp) it settles as low as
+/// the test bit (`$08`) does, and unlike the test bit it doesn't reset the oscillator or the noise generator
+/// (`docs/reference/sid.md` §After the release).
 const SILENT_WAVEFORM: u8 = 0x00;
 
-/// SID release (and decay) times from full level to zero, in milliseconds, by the SR register's low nibble.
-const RELEASE_MS: [u32; 16] = [
-    6, 24, 48, 72, 114, 168, 204, 240, 300, 750, 1500, 2400, 3000, 9000, 15000, 24000,
+/// The SID envelope's rate counter periods, in cycles, by the ADSR nibble (reSIDfp's `EnvelopeGenerator`, as in reSID):
+/// one envelope step every period (+1 on hardware).
+const RATE_PERIOD: [u32; 16] = [
+    9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
 ];
 
-/// PAL frames per second, times 1000: 985,248 Hz over 19,656 cycles a frame.
-const PAL_MILLIHERTZ: u64 = 50_125;
+/// A release from full level to zero, in rate periods: 255 steps, the lower ones slowed by the exponential counter
+/// (162 × 1, 39 × 2, 28 × 4, 12 × 8, 8 × 16 and 6 × 30).
+const RELEASE_STEPS: u32 = 756;
+
+/// The most the first release step can be late, in cycles: once round the 15-bit rate counter (the "ADSR bug").
+const ADSR_DELAY: u32 = 0x8000;
+
+/// The frames a release with nibble `release` can take at most from the gate-off, at `video`'s frame length.
+fn release_frames(release: u8, video: VideoStandard) -> u64 {
+    let cycles = u64::from(RATE_PERIOD[usize::from(release & 0x0F)] + 1) * u64::from(RELEASE_STEPS)
+        + u64::from(ADSR_DELAY);
+    cycles.div_ceil(u64::from(video.cycles_per_frame()))
+}
 
 /// Write `song` as a GoatTracker 2 song, with instruments from `library` and timing marks for `adaptive`'s layers.
 /// The song should pass the validator first; this checks only what the format itself needs.
@@ -522,11 +538,26 @@ fn subtune_rows(
     Ok(voices)
 }
 
-/// For notes whose preset has `silence_after_release`, a `7 00` on the first row after the release has fully decayed,
-/// counted from the key-off row with the tempo map and the release nibble's full-level time (the most it can take).
-/// Skipped, writing nothing, when the next note (or its gate-timer lead) comes first, when the voice's command slot on
-/// that row is taken, when the instrument's wavetable keeps running (it would overwrite the waveform), or when an
-/// arpeggio is still running at the key-off.
+/// What one note on a voice leaves behind it, for [`silence_after_release`].
+struct Tail<'a> {
+    row: u32,
+    end: u32,
+    attack: Attack,
+    /// Whether its preset has `silence_after_release`.
+    opted: bool,
+    instrument: Option<&'a Instrument>,
+    /// Where the wavetable program it ends with last started: the row of the note it's tied to (a tie doesn't restart
+    /// it), or the end of an arpeggio inside it, where the export points the voice back at the instrument's program.
+    program: u32,
+    /// An arpeggio running to its end, whose program keeps going after it.
+    arp_at_end: bool,
+}
+
+/// For notes whose preset has `silence_after_release`, a `7 00` on the first row of the gap after the key-off where the
+/// voice is quiet on every pass through the song ([`quiet`]). Skipped, writing nothing, when there is no such row before
+/// the next note, when the voice's command slot on that row is taken, or when the next note wouldn't set a waveform of
+/// its own (a tie, or an instrument with no first waveform). The next note's early fetch, its gate timer, comes after
+/// the row starts, as a legal gate timer is shorter than a row.
 fn silence_after_release(
     b: &Builder<'_>,
     subtune: &Subtune,
@@ -538,71 +569,82 @@ fn silence_after_release(
         return;
     }
     let length = subtune.length.get();
+    let loop_row = subtune.loop_row;
     let mut notes: Vec<_> = line.notes.iter().collect();
     notes.sort_by_key(|n| n.row);
-    // Each note's preset: its own, or its line's; a tie keeps the one it ties to.
-    let mut presets: Vec<&PresetId> = Vec::with_capacity(notes.len());
-    for n in &notes {
-        let p = match n.attack {
-            Attack::Fresh => n.instrument.as_ref().unwrap_or(&line.instrument),
-            Attack::Legato => presets.last().copied().unwrap_or(&line.instrument),
-        };
-        presets.push(p);
-    }
     let instrument = |p: &PresetId| {
         b.numbers
             .get(p)
             .map(|&n| &b.sng.instruments[usize::from(n) - 1])
     };
-    for (k, n) in notes.iter().enumerate() {
-        if !options.silence_after_release.contains(presets[k]) {
+    // Each note's preset is its own, or its line's; a tie keeps the one it ties to, and its program.
+    let mut tails: Vec<Tail> = Vec::with_capacity(notes.len());
+    let mut presets: Vec<&PresetId> = Vec::with_capacity(notes.len());
+    for n in &notes {
+        let (preset, start) = match (n.attack, tails.last()) {
+            (Attack::Legato, Some(t)) => (*presets.last().expect("one per tail"), t.program),
+            _ => (n.instrument.as_ref().unwrap_or(&line.instrument), n.row),
+        };
+        let end = n.row.saturating_add(n.length.get());
+        let arp_ends = || {
+            line.arps
+                .iter()
+                .map(|a| (a.row, a.row.saturating_add(a.length.get())))
+        };
+        let program = arp_ends()
+            .map(|(_, e)| e)
+            .filter(|&e| e >= n.row && e < end)
+            .fold(start, u32::max);
+        let arp_at_end = arp_ends().any(|(from, to)| from < end && to >= end && to > n.row);
+        presets.push(preset);
+        tails.push(Tail {
+            row: n.row,
+            end,
+            attack: n.attack,
+            opted: options.silence_after_release.contains(preset),
+            instrument: instrument(preset),
+            program,
+            arp_at_end,
+        });
+    }
+    let keyed_off_on_loop = rows[loop_row as usize].note == KEY_OFF;
+    for (k, t) in tails.iter().enumerate() {
+        if !t.opted {
             continue;
         }
-        let end = n.row + n.length.get();
-        // The key-off the export writes: where the note ends with no note right after, or on the loop row for a note
-        // running to the end.
-        let (key_off, next) = if end < length {
-            if notes.get(k + 1).is_some_and(|m| m.row == end) {
+        // The gap after the key-off the export writes: where the note ends with no note right after, or on the loop row
+        // for a note running to the end.
+        let (key_off, until) = if t.end < length {
+            if tails.get(k + 1).is_some_and(|m| m.row == t.end) {
                 continue;
             }
-            (end, notes.get(k + 1).map(|m| (m.row, presets[k + 1])))
-        } else if rows[subtune.loop_row as usize].note == KEY_OFF {
-            let after = notes
-                .iter()
-                .zip(&presets)
-                .find(|(m, _)| m.row > subtune.loop_row)
-                .map(|(m, p)| (m.row, *p));
-            (subtune.loop_row, after)
+            (t.end, tails.get(k + 1).map_or(length, |m| m.row))
+        } else if keyed_off_on_loop {
+            let after = tails.iter().find(|m| m.row > loop_row);
+            (loop_row, after.map_or(length, |m| m.row))
         } else {
             continue;
         };
-        let Some(ins) = instrument(presets[k]) else {
+        let Some(r) = (key_off + 1..until)
+            .find(|&r| quiet(b, subtune, &tails, keyed_off_on_loop, r, options.video))
+        else {
             continue;
         };
-        if !wavetable_stops(&b.sng.wave, ins.wave) {
-            continue;
-        }
-        let release_ms = u64::from(RELEASE_MS[usize::from(ins.sr & 0x0F)]);
-        let need = (release_ms * PAL_MILLIHERTZ).div_ceil(1_000_000);
-        let Some(r) = (key_off + 1..length).find(|&r| subtune.frames(key_off, r) >= need) else {
-            continue;
-        };
-        if let Some((m, _)) = next {
-            // The next note is fetched this many frames early, timed by the instrument playing before it: this one
-            // (`docs/reference/sid.md` §Hard restart).
-            let lead = u64::from(ins.gate_timer & 0x3F);
-            if r >= m || subtune.frames(key_off, r) + lead >= subtune.frames(key_off, m) {
+        // The note that sounds next, on this pass or after the jump back, has to set a waveform of its own.
+        let next = tails
+            .iter()
+            .find(|m| m.row > r)
+            .or_else(|| tails.iter().find(|m| m.row >= loop_row));
+        if let Some(m) = next {
+            let sets_waveform = m
+                .instrument
+                .is_some_and(|i| i.first_wave != 0 && i.first_wave < 0xFE);
+            if m.attack == Attack::Legato || !sets_waveform {
                 continue;
             }
         }
-        // An arpeggio still running at the key-off keeps its program going (the export only points the voice back
-        // at the instrument's program where a note sounds on), and that would overwrite the waveform.
-        let arp_in_gap = line.arps.iter().any(|a| {
-            let to = a.row + a.length.get();
-            a.row < r && to > n.row && to >= key_off
-        });
         let row = &mut rows[r as usize];
-        if arp_in_gap || row.command != 0 || row.note != REST {
+        if row.command != 0 || row.note != REST {
             continue;
         }
         row.command = SET_WAVEFORM;
@@ -610,21 +652,82 @@ fn silence_after_release(
     }
 }
 
-/// Whether the wavetable program from row `start` (1-based; 0 for none) ends by stopping rather than looping: a
-/// running program writes the waveform every step and would undo `7XY`.
-fn wavetable_stops(table: &crate::gt2::Table, start: u8) -> bool {
-    if start == 0 {
-        return true;
+/// Whether a `7 00` on row `r` of the voice with `tails` cuts nothing. On the first pass, and (for a row at or after the
+/// loop row) on every pass after the jump back, the last note before the row has to have been keyed off long enough
+/// for its release to have run out ([`release_frames`], from the gate-off its instrument's gate timer before the
+/// key-off row) and its wavetable program to have stopped ([`wave_program_frames`]); a program that never stops would
+/// overwrite the waveform anyway.
+fn quiet(
+    b: &Builder<'_>,
+    subtune: &Subtune,
+    tails: &[Tail],
+    keyed_off_on_loop: bool,
+    r: u32,
+    video: VideoStandard,
+) -> bool {
+    let length = subtune.length.get();
+    let loop_row = subtune.loop_row;
+    // Frames from row `from` to row `r`: on this pass, or (`wrapped`) from `from` to the end and on from the loop row.
+    let elapsed = |from: u32, wrapped: bool| {
+        if wrapped {
+            subtune.frames(from, length) + subtune.frames(loop_row, r)
+        } else {
+            subtune.frames(from, r)
+        }
+    };
+    let settled = |t: &Tail, key_off: u32, wrapped: bool| {
+        let Some(ins) = t.instrument else {
+            return false;
+        };
+        let Some(program) = wave_program_frames(&b.sng.wave, ins.wave) else {
+            return false;
+        };
+        let gate_off = u64::from(ins.gate_timer & 0x3F);
+        !t.arp_at_end
+            && elapsed(key_off, wrapped) + gate_off >= release_frames(ins.sr, video)
+            && elapsed(t.program, wrapped) > program
+    };
+    // The first pass.
+    if let Some(t) = tails.iter().rev().find(|t| t.row < r)
+        && (t.end > r || !settled(t, t.end, false))
+    {
+        return false;
     }
-    let mut at = usize::from(start) - 1;
-    for _ in 0..table.rows.len() {
-        match table.rows.get(at) {
-            Some(&(WAVE_JUMP, 0)) => return true,
-            Some(&(WAVE_JUMP, _)) | None => return false,
-            Some(_) => at += 1,
+    // After the jump back, when no note between the loop row and this one takes over: the song's last note, keyed off
+    // where it ends, or on the loop row if it runs to the end.
+    if r >= loop_row
+        && !tails.iter().any(|t| t.row >= loop_row && t.row < r)
+        && let Some(t) = tails.last()
+    {
+        let decayed = if t.end >= length {
+            keyed_off_on_loop && settled(t, length, true)
+        } else {
+            settled(t, t.end, true)
+        };
+        if !decayed {
+            return false;
         }
     }
-    false
+    true
+}
+
+/// The frames the wavetable program from row `start` (1-based; 0 for none) writes the waveform for, from its note's
+/// first frame (on which it doesn't run): a row a frame, a delay `$01`–`$0F` that many more. `None` when it never stops
+/// (a jump that isn't `$FF 00`) or runs a pattern command (`$F0`–`$FE`), which can change the envelope or the waveform.
+fn wave_program_frames(table: &crate::gt2::Table, start: u8) -> Option<u64> {
+    if start == 0 {
+        return Some(0);
+    }
+    let mut frames = 1;
+    for &row in table.rows.iter().skip(usize::from(start) - 1) {
+        match row {
+            (WAVE_JUMP, 0) => return Some(frames),
+            (WAVE_JUMP, _) | (0xF0..=0xFE, _) => return None,
+            (delay @ 0x01..=0x0F, _) => frames += u64::from(delay) + 1,
+            _ => frames += 1,
+        }
+    }
+    None
 }
 
 /// Put one voice line's notes and arpeggios into its rows.

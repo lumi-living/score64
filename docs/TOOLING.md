@@ -53,14 +53,14 @@ cargo xtask listen --pr <n> --silence-after-release [case ...]   # the same case
 ```
 
 It writes to `scratch/<n>-listen/`, which git ignores. For each case it:
-- exports the score through `score64_formats::gt2::export`;
+- exports the score through `score64_formats::gt2::export`; with `--silence-after-release`, through `export_with` with the setting on for every preset, adding `+silence` to each case's name;
 - packs it with the pinned `gt2reloc`, with sound-effect support (`.sfx`, `-D1`) and without (`.nosfx`);
 - wraps the `.sfx` file so it fires the fixture's three effects on voice 3 every 37 frames (`.sfx+fx`). A plain `.sfx` file plays no effects;
 - renders every subtune for 60 s with the emulator helper and with sidplayfp, on the 6581 and the 8580;
-- writes `LISTEN.md`.
+- writes `LISTEN.md`, or `LISTEN-silence.md` for a `--silence-after-release` run, so the two can sit side by side.
 
-LISTEN.md has:
-- what to listen for, and a timeline per subtune: when each tie, key-off, arpeggio, tempo change and loop comes;
+The report has:
+- what to listen for, and a timeline per subtune: when each tie, key-off, arpeggio, tempo change and loop comes. A `+silence` run also lists the rows where the export wrote `7 00`, and what to listen for there (no release cut short);
 - measurements: helper vs sidplayfp, `.sfx` vs `.nosfx`, and the effects' level against the music.
 
 The built-in cases (all of them by default) are `sixteen-steps`, `sixteen-steps-adaptive`, `combat-filtered`, `ties-keyoffs-arp` and `loop-tempo` (`xtask/src/listen/fixture.rs`). It needs `gt2reloc` and builds the helper itself. sidplayfp is used if it's on `PATH`. `--gt2reloc-blake3` pins a specific binary; without it the installed one is pinned and its hash recorded.

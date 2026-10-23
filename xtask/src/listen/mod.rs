@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
-use score64_core::Song;
+use score64_core::{Song, VideoStandard};
 use score64_formats::gt2::Ins;
 use score64_formats::gt2::export::{Header, Library, Options, export_with};
 
@@ -134,6 +134,8 @@ struct Done {
     packs: Vec<(String, u32)>,
     timing_marks: bool,
     measured: Vec<String>,
+    /// In a `+silence` run, where the export wrote `7 00` (`silence_after_release`): per subtune, (voice, row).
+    silenced: Option<Vec<Vec<(u8, u32)>>>,
 }
 
 /// Build the listening set.
@@ -214,6 +216,7 @@ pub fn run(args: Args) -> Result<(), String> {
                 format!("{name}+silence"),
                 Options {
                     silence_after_release: all,
+                    ..Options::default()
                 },
             )
         } else {
@@ -329,6 +332,28 @@ pub fn run(args: Args) -> Result<(), String> {
                 }
             }
         }
+        let silenced = args.silence_after_release.then(|| {
+            exported
+                .sng
+                .subtunes
+                .iter()
+                .map(|voices| {
+                    let mut at = Vec::new();
+                    for (v, voice) in voices.iter().enumerate() {
+                        let rows = voice
+                            .entries
+                            .iter()
+                            .flat_map(|&p| exported.sng.patterns[usize::from(p)].rows.iter());
+                        for (r, row) in rows.enumerate() {
+                            if row.command == 0x7 {
+                                at.push((v as u8 + 1, r as u32));
+                            }
+                        }
+                    }
+                    at
+                })
+                .collect()
+        });
         done.push(Done {
             name,
             song,
@@ -336,6 +361,7 @@ pub fn run(args: Args) -> Result<(), String> {
             packs,
             timing_marks: exported.timing_marks,
             measured,
+            silenced,
         });
     }
 
@@ -372,6 +398,7 @@ fn listen_md(
     pr: Option<u32>,
     command: &str,
 ) -> String {
+    let silence = done.iter().any(|d| d.silenced.is_some());
     let mut s = String::new();
     let title = pr.map_or("Listening set".to_string(), |p| {
         format!("Listening set for #{p}")
@@ -409,7 +436,16 @@ fn listen_md(
     );
     let _ = writeln!(
         s,
-        "**What to listen for, everywhere**\n1. **Ties:** a tied note changes pitch with no new attack.\n2. **Key-offs** release cleanly, with no click and nothing left hanging.\n3. **Tempo** is steady; a tempo change takes effect from its row.\n4. **The loop** comes round without a click, gap, stuck note or tempo jump.\n5. **Arpeggios** step evenly, one step a frame, and stop cleanly.\n6. **Effects (`+fx`)** stand out over the music; voices 1 and 2 carry on unchanged; voice 3 gives the music back at its next note.\n\n**Should sound the same:** `.sfx` and `.nosfx`; `helper` and `sidplayfp` at one chip. **Should differ:** the 6581 and the 8580, in filter character, but not in notes, timing or envelopes.\n\n**Known, not a fault:** the gaps between notes aren't fully silent. After a key-off the oscillator keeps running and leaks a faint tone at the note's pitch, most clearly on the 8580 (#186).\n"
+        "**What to listen for, everywhere**\n1. **Ties:** a tied note changes pitch with no new attack.\n2. **Key-offs** release cleanly, with no click and nothing left hanging.\n3. **Tempo** is steady; a tempo change takes effect from its row.\n4. **The loop** comes round without a click, gap, stuck note or tempo jump.\n5. **Arpeggios** step evenly, one step a frame, and stop cleanly.\n6. **Effects (`+fx`)** stand out over the music; voices 1 and 2 carry on unchanged; voice 3 gives the music back at its next note.\n\n**Should sound the same:** `.sfx` and `.nosfx`; `helper` and `sidplayfp` at one chip. **Should differ:** the 6581 and the 8580, in filter character, but not in notes, timing or envelopes.\n"
+    );
+    let _ = writeln!(
+        s,
+        "{}",
+        if silence {
+            "**A `+silence` run:** every preset has `silence_after_release` on (#186), and each subtune lists the rows where the export wrote `7 00`. Compare each file with its plain twin. **Listen for:**\n- gaps after a key-off that go quiet once the release has died away;\n- **no release cut short**: a note that stops fading abruptly at a `7 00` row, or after the jump back;\n- nothing at the moment the waveform switches off: no click or thump;\n- on the 8580, a faint bump for about a second after a `7 00` row, as the waveform output floats down, and no more.\n"
+        } else {
+            "**Known, not a fault:** the gaps between notes aren't fully silent. After a key-off the oscillator keeps running and leaks a faint tone at the note's pitch, most clearly on the 8580 (#186).\n"
+        }
     );
     for d in done {
         let _ = writeln!(s, "---\n\n## `{}`\n\n{}\n", d.name, d.notes);
@@ -428,13 +464,33 @@ fn listen_md(
                 ""
             }
         );
-        for sub in &d.song.subtunes {
+        for (i, sub) in d.song.subtunes.iter().enumerate() {
             let _ = writeln!(
                 s,
                 "### `{}`\n\n{}",
                 sub.name.as_str(),
                 report::timeline(sub)
             );
+            if let Some(silenced) = &d.silenced {
+                let rows: Vec<String> = silenced
+                    .get(i)
+                    .into_iter()
+                    .flatten()
+                    .map(|&(v, r)| {
+                        let seconds = sub.frames(0, r) as f64 / VideoStandard::Pal.frame_rate();
+                        format!("voice {v} row {r} ({seconds:.2} s)")
+                    })
+                    .collect();
+                let _ = writeln!(
+                    s,
+                    "**`7 00` rows:** {}.\n",
+                    if rows.is_empty() {
+                        "none".to_string()
+                    } else {
+                        rows.join(", ")
+                    }
+                );
+            }
         }
         if !d.measured.is_empty() {
             let _ = writeln!(
