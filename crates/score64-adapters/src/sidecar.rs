@@ -278,12 +278,13 @@ impl Sidecar {
             .arg(self.project.join(script))
             .args(args)
             .stdin(Stdio::null());
-        run_with_timeout(cmd, self.timeout)?;
+        run_with_timeout(cmd, self.timeout, false)?;
         Manifest::load(out_dir, tool)
     }
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
+/// `name` on `PATH`, with `.exe` on Windows.
+pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
     std::env::split_paths(&std::env::var_os("PATH")?)
         .flat_map(|dir| exts.iter().map(move |ext| dir.join(format!("{name}{ext}"))))
@@ -337,17 +338,30 @@ fn tail(bytes: &[u8]) -> String {
     s[start..].trim().to_owned()
 }
 
-/// Run `cmd` (stdout discarded, stderr captured) for at most `timeout`.
-pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<(), SidecarError> {
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+/// Run `cmd` for at most `timeout`, capturing stderr, and stdout when `keep_stdout` (otherwise it is discarded).
+/// Returns stdout.
+pub(crate) fn run_with_timeout(
+    mut cmd: Command,
+    timeout: Duration,
+    keep_stdout: bool,
+) -> Result<Vec<u8>, SidecarError> {
+    cmd.stdout(if keep_stdout {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stderr(Stdio::piped());
     let mut tree = Tree::spawn(cmd).map_err(SidecarError::Spawn)?;
-    // Drain stderr on a thread so a chatty process can't block on a full pipe.
-    let mut pipe = tree.0.stderr().take().expect("stderr is piped");
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = pipe.read_to_end(&mut buf);
-        buf
-    });
+    // Drain the pipes on threads so a chatty process can't block on a full one.
+    fn drain(mut pipe: impl Read + Send + 'static) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            let _ = pipe.read_to_end(&mut buf);
+            buf
+        })
+    }
+    let reader = drain(tree.0.stderr().take().expect("stderr is piped"));
+    let out_reader = tree.0.stdout().take().map(drain);
     let started = Instant::now();
     let waited = loop {
         match tree.0.try_wait() {
@@ -359,8 +373,11 @@ pub(crate) fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<()
     };
     drop(tree); // kill and reap what is left, which also closes the pipe
     let stderr = tail(&reader.join().unwrap_or_default());
+    let stdout = out_reader
+        .map(|r| r.join().unwrap_or_default())
+        .unwrap_or_default();
     match waited.map_err(SidecarError::Spawn)? {
-        Some(status) if status.success() => Ok(()),
+        Some(status) if status.success() => Ok(stdout),
         Some(status) => Err(SidecarError::Failed { status, stderr }),
         None => Err(SidecarError::Timeout {
             after: timeout,
@@ -441,7 +458,7 @@ mod tests {
     fn failure_keeps_stderr() {
         let mut cmd = rustc();
         cmd.arg("--no-such-flag");
-        match run_with_timeout(cmd, Duration::from_secs(60)) {
+        match run_with_timeout(cmd, Duration::from_secs(60), false) {
             Err(SidecarError::Failed { stderr, .. }) => {
                 assert!(stderr.contains("no-such-flag"), "{stderr}")
             }
@@ -456,7 +473,7 @@ mod tests {
         cmd.arg("-").stdin(Stdio::piped());
         let started = Instant::now();
         assert!(matches!(
-            run_with_timeout(cmd, Duration::from_millis(300)),
+            run_with_timeout(cmd, Duration::from_millis(300), false),
             Err(SidecarError::Timeout { .. })
         ));
         assert!(started.elapsed() < Duration::from_secs(10));
@@ -525,7 +542,7 @@ mod tests {
 
     /// Runs `role` as a sidecar with `timeout` and returns the runner's result once the grandchild is gone; panics if
     /// it survives.
-    fn run_tree(test: &str, role: &str, timeout: Duration) -> Result<(), SidecarError> {
+    fn run_tree(test: &str, role: &str, timeout: Duration) -> Result<Vec<u8>, SidecarError> {
         let d = temp_dir(role);
         let pidfile = d.join("grandchild.pid");
         let cmd = myself(test, role, &pidfile);
@@ -533,7 +550,7 @@ mod tests {
         // runner's reader and hang the test instead of failing it.
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(run_with_timeout(cmd, timeout));
+            let _ = tx.send(run_with_timeout(cmd, timeout, false));
         });
         let result = rx
             .recv_timeout(timeout + Duration::from_secs(30))
