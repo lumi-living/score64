@@ -391,5 +391,9 @@ mod tests {
         s.report().unwrap();
         assert_eq!(s.unreported_frames, 0);
         assert!(s.render(1, false).is_ok(), "after a Report");
+        // A new Init starts the count again too.
+        s.unreported_frames = fits;
+        s.init(0x1000, 0x1000, 0).unwrap();
+        assert!(s.render(1, false).is_ok(), "after a new Init");
     }
 }
