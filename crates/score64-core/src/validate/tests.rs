@@ -415,13 +415,72 @@ fn rule_5_a_layer_shared_by_sets_must_switch_alike() {
     assert!(
         conflicts[0]
             .message
-            .contains("adaptive sets `explore` and `fight`"),
+            .contains("adaptive sets `explore`, `fight`"),
         "{}",
         conflicts[0].message
     );
+    // The off-switch mark at row 16 is not also warned about: `explore` switches there, and the error covers it.
+    let p = validate(&song, &ctx);
+    assert!(!p.iter().any(|p| p.severity == Severity::Warning), "{p:?}");
     // Rows that differ only in how they're declared are the same switch points.
     ctx.adaptive[1] = set("fight", &["calm"], Switch::Rows(vec![0, 16]));
     assert_eq!(validate(&song, &ctx), []);
+    // The same number of switch rows, at different rows, still conflicts.
+    ctx.adaptive[1] = set("fight", &["calm"], Switch::Rows(vec![0, 8]));
+    let errors = |c: &Context| -> Vec<String> {
+        validate(&song, c)
+            .into_iter()
+            .filter(|p| p.message.contains("switch at different rows"))
+            .map(|p| p.subtune.unwrap().as_str().to_string())
+            .collect()
+    };
+    assert_eq!(errors(&ctx), ["calm"]);
+    // Two shared layers: an error for each.
+    ctx.adaptive[1] = set("fight", &["calm", "tension"], every(2));
+    assert_eq!(errors(&ctx), ["calm", "tension"]);
+    // Three sets that differ: one error for the layer, naming all three.
+    ctx.adaptive = vec![
+        set("a", &["calm"], Switch::EveryBar),
+        set("b", &["calm"], every(2)),
+        set("c", &["calm"], Switch::Rows(vec![0, 8])),
+    ];
+    let p = validate(&song, &ctx);
+    let e: Vec<_> = p
+        .iter()
+        .filter(|p| p.message.contains("switch at different rows"))
+        .collect();
+    assert_eq!(e.len(), 1, "{p:?}");
+    assert!(e[0].message.contains("`a`, `b`, `c`"), "{}", e[0].message);
+}
+
+#[test]
+fn rule_5_reports_each_stray_mark_once() {
+    let (mut song, mut ctx) = layered();
+    let every_two = Switch::EveryBars(NonZeroU32::new(2).unwrap());
+    // Two sets that switch alike share `calm`, whose bar-1 mark is written twice: one warning, not four.
+    ctx.adaptive = vec![
+        AdaptiveSet::with_switch("explore", vec![sname("calm")], every_two.clone()).unwrap(),
+        AdaptiveSet::with_switch("rest", vec![sname("calm")], every_two).unwrap(),
+    ];
+    song.subtunes[1].marks = vec![0, 16, 16];
+    let marks: Vec<_> = validate(&song, &ctx)
+        .into_iter()
+        .filter(|p| p.rule == Rule::TimingMarks)
+        .collect();
+    assert_eq!(marks.len(), 1, "{marks:?}");
+    assert_eq!(
+        (marks[0].severity, marks[0].row),
+        (Severity::Warning, Some(16))
+    );
+}
+
+#[test]
+fn rule_5_leaves_marks_past_the_end_to_rule_2() {
+    let (mut song, ctx) = layered();
+    song.subtunes[1].marks = vec![0, 16, 40]; // `calm` is 32 rows
+    let p = validate(&song, &ctx);
+    assert!(p.iter().any(|p| p.rule == Rule::Grid), "{p:?}");
+    assert!(!p.iter().any(|p| p.rule == Rule::TimingMarks), "{p:?}");
 }
 
 #[test]

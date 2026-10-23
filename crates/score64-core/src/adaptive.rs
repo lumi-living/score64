@@ -186,7 +186,9 @@ impl AdaptiveSet {
                     });
                 }
             }
-            for &row in &subtune.marks {
+            // Each mark once; marks past the end are rule 2's.
+            let marks: std::collections::BTreeSet<u32> = subtune.marks.iter().copied().collect();
+            for row in marks {
                 if row < subtune.length.get() && !points.contains(&row) {
                     out.push(LayerProblem::OffSwitch {
                         layer: layer.clone(),

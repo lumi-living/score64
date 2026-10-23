@@ -16,13 +16,13 @@ The validator in `score64-core` rejects a song that:
 2. places a note off the row grid,
 3. exceeds the voice count of its profile,
 4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width (and warns about lead, bass or long notes there),
-5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
+5. breaks a declared adaptive set: a layer missing or out of order, a declared switch point without a timing mark, or a layer shared by sets that switch at different rows (and warns about marks where no set switches) (§3.1),
 6. violates the role's pitch range after octave folding (a warning),
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
 8. packs larger than the configured budget, or uses zero page outside the configured pair,
 9. gives an instrument a gate timer that is not below the tempo on a row it plays, or turns a note's gate off before it can sound (and warns when a note keeps only one or two gated frames, or when a fresh note's instrument has gate-off disabled so it won't retrigger; see `reference/sid.md` §Hard restart).
 
-`score64_core::validate(song, &Context)` checks rules 1–6 and 9 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste: pitch ranges by role, lead or bass on an expendable voice, long notes on an expendable voice, notes a hard restart leaves with only one or two gated frames, and fresh notes whose instrument can't retrigger them (gate-off disabled). The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `score64 validate <song> [--context <file>] [--json]` (the engine's `validate` command) prints every problem with its severity. It exits 0 when there are no errors, warnings included; 1 when there are errors; and 2 when the command itself fails. Until the project files (E4) carry the context, an optional **validation context file** supplies it. That's a provisional format, replaced by E4. It's JSON or TOML (by extension, any case), and it holds:
+`score64_core::validate(song, &Context)` checks rules 1–6 and 9 and returns every `Problem` with its rule, **severity**, subtune, bar, row, voice, a message and a fix hint, in subtune, bar and voice order. **Errors** are things the player or the format gets wrong. **Warnings** are matters of taste or of tidiness: pitch ranges by role, timing marks that no set switches on, lead or bass on an expendable voice, long notes on an expendable voice, notes a hard restart leaves with only one or two gated frames, and fresh notes whose instrument can't retrigger them (gate-off disabled). The CLI, the MCP server and the app fail only on errors (`has_errors`); they show warnings. `score64 validate <song> [--context <file>] [--json]` (the engine's `validate` command) prints every problem with its severity. It exits 0 when there are no errors, warnings included; 1 when there are errors; and 2 when the command itself fails. Until the project files (E4) carry the context, an optional **validation context file** supplies it. That's a provisional format, replaced by E4. It's JSON or TOML (by extension, any case), and it holds:
 
 - `schema = 1` (absent means 1; newer versions are refused);
 - `[[profile]]` entries (as in §3.1);
@@ -137,6 +137,9 @@ Roles can be narrowed per voice so the validator catches, say, a lead line in a 
 - every layer exists;
 - the layers sit at consecutive positions in the declared order, so the game can step through them by subtune number;
 - every **switch point** the set declares has a timing mark in every layer, so the game knows when it may switch. A set switches on every bar by default (`switch = "every_bar"`), or on every N bars (`switch = { every_bars = 4 }`), or on explicit rows only (`switch = { rows = [0, 64, 128] }`). Explicit rows past a layer's end are problems too.
+
+- a mark at a row where no set containing the layer switches gets no `DXY` and does nothing, which is a warning; and
+- a subtune may be a layer of several sets only if they switch at the same rows in it, since it can carry only one set of timing-mark values (an error naming every set involved).
 
 A song may hold other subtunes before or after a set, such as a title tune.
 
