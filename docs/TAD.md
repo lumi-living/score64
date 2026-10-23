@@ -175,6 +175,17 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
 - **Choice.** Candidates are the bars from 1 on whose context ends before the ending's starts; bars with silent context are skipped. The best candidate at or above `min_similarity` (0.8) wins, and the earliest on a tie, which gives the longest loop. With none, the loop row is 0, at confidence 0.
 - **Decision.** One `LoopRow` decision (`loop`), as sure as the similarity. It's half as sure when the subtune ends inside a bar or after silence, because the jump then comes from music the comparison didn't see. Every candidate's score is returned for review. Tempo isn't compared: a loop row whose tempo differs from the ending's is not penalised.
 
+**Chords** (`reduce::detect_chords` and `reduce::arpeggiate`, rule `chords@1`, #42) find the harmony beat by beat and play it as arpeggios.
+- **Detection.** Each beat's 12 pitch classes are weighted by the rows each note sounds in that beat, times its confidence. Templates for every root and quality are scored: major, minor, sus4, sus2, dominant 7th, minor 7th and major 7th.
+  - **Score:** the weight on the template's tones minus the weight off them, over the beat's total weight. That is scaled by how fully the template's tones sound: a tone counts fully from a quarter of the tones' mean weight and in proportion below that, so a faint note adds little and a doubled one costs nothing. There is a small cost for each tone past three. A chord's root must sound. A beat whose best chord scores under 0.4 has no chord: a cluster, noise, or a lone note, since a melody on its own isn't harmony.
+  - **Ties:** the chord rooted on the beat's lowest note wins, then the simpler quality, then the lower root. A bare fifth with its root in the bass therefore reads as major (with the fifth in the bass, as a sus4 on the fifth). Of the sus2 on D and the sus4 on A, which are the same notes, the bass decides.
+  - **Changes:** a chord already sounding carries on through a beat while it scores at least half the floor and no other chord beats it by 0.25. A chord change needs clear evidence, so passing notes over a held chord don't spell a new one.
+  - **Spans:** beats with the same chord merge into one `ChordSpan`, whose confidence is the mean of its beats' scores. A silent beat has no chord.
+- **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
+  - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
+  - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
+  - GoatTracker's wavetable encoding of an arpeggio belongs to the `.sng` writer (#47).
+
 **Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
 1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
 2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
@@ -200,10 +211,26 @@ They're unique within the subtune when each voice is monophonised once, with all
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat; no file holds decisions yet, so the kinds can still change shape), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
-Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
+Manual decisions override LLM suggestions, which override rules. `score64_core::decide::resolve` (#45) applies that wherever decisions meet.
+- **Slots.** Two decisions compete when they are about the same thing, their `Slot`:
+  - a voice's role, the lead's source, or the tempo, from a bar on;
+  - a voice's octave in a bar;
+  - the chord from a row;
+  - the subtune's loop row;
+  - a note's trim, its drop, or its fresh start, by voice, row and pitch. A drop also uses the note's length, which tells two repeats on one row apart. These are three separate slots, since one note can have all three.
+- **Ranks.** In each slot the strongest wins:
+  1. a person's decision, or a model's that a person has accepted (`reviewed`);
+  2. a model's, not yet reviewed;
+  3. the rules'.
+
+  Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
+- **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
+- **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
+
+A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
 
 ## 4. Project and versions (`score64-project`)
 
@@ -219,6 +246,14 @@ Manual decisions override LLM suggestions, which override rules. A decision neve
 - **Writing.** `put` writes an entry whole into a fresh temporary directory, syncs it, and renames it into place. The directory is named by pid, counter and clock, so another process or container can't share it, and a crashed run's leftovers never block one. If two writers race, the first rename wins and the other returns that entry; stages are pure, so either copy is right. Something that isn't a whole entry in the way, damaged or from an older layout, is replaced. If what was moved aside turns out whole, another writer got there first, and it is put back and kept. An entry from a newer Score64 is left alone.
 - **Reading.** `get` checks the manifest and every artifact's hash. A missing, partial or damaged entry is a miss, never a wrong hit.
 - **Names.** Stage and artifact names are plain names, so nothing writes outside the cache. They are also safe on every system: no leading or trailing dot, no Windows device names, and no two artifacts whose names differ only by case.
+
+**`decisions.toml`** (`score64_project::DecisionsFile`, #25) holds a track's decisions: `schema = 1`, then one `[[decision]]` table per decision, in the shape of §3.3. Each one carries `id`, `subtune`, `bar`, `confidence` and `reviewed`, a `[decision.proposal]` table tagged by `change`, and a `[decision.provenance]` table tagged by `by`.
+- **Writing.** Decisions are sorted by subtune and then id. Each one's plain fields come in declaration order, then its tables, so the same decisions always give the same bytes. A file is written to a uniquely named temporary file beside it, synced, then renamed into place.
+- **Reading.** A missing `schema` means 1, and any other version is refused.
+  - An unknown field, a bad value or a TOML error is reported with its file, line and column. One inside a `proposal` or `provenance` table points at that table's header.
+  - A manual provenance with stray fields is refused.
+  - Two decisions with one id in one subtune are reported with both `[[decision]]` lines.
+- **Not yet.** `track.toml`, the track's own intent (sources, profile, video standard, rule settings), needs its own ADR first.
 
 A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
 

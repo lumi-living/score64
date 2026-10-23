@@ -6,6 +6,7 @@
 //! carries the melody, bar by bar. [`fold_octaves`] (#41) moves a line's bars by whole octaves into its roles'
 //! ranges. [`fold_drums`] and [`interleave_drums`] (#43) put drum hits on a voice of their own or into another line.
 //! [`find_loop`] (#44) proposes where a subtune loops back to.
+//! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -16,10 +17,14 @@ use serde::{Deserialize, Serialize};
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
+mod chords;
 mod lead;
 mod looping;
 pub use looping::{Candidate, FIND_LOOP, LoopChoice, LoopRules, find_loop};
 mod octave;
+pub use chords::{
+    Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, MIN_SCORE, arpeggiate, detect_chords,
+};
 pub use lead::{
     Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
 };

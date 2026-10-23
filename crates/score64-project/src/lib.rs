@@ -2,5 +2,7 @@
 //! and the rebuildable index (ADR-004). Files are the source of truth; nothing lives only in the index.
 
 pub mod cache;
+pub mod decisions;
 
 pub use cache::Cache;
+pub use decisions::DecisionsFile;

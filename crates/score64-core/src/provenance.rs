@@ -280,8 +280,10 @@ pub enum Proposal {
         /// Octaves, negative for down.
         shift: i8,
     },
-    /// The chord in this bar, for the arpeggio.
+    /// The chord from this row on, for the arpeggio. Chords change by the beat, so a bar may hold several.
     Chord {
+        /// The row the chord starts on, inside the decision's bar.
+        row: u32,
         /// Root as a pitch class, 0 (C) to 11 (B).
         root: u8,
         /// Semitones above the root, starting with 0.
