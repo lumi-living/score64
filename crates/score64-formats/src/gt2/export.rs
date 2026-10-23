@@ -625,8 +625,7 @@ fn silence_after_release(
         } else {
             continue;
         };
-        let Some(r) = (key_off + 1..until)
-            .find(|&r| quiet(b, subtune, &tails, keyed_off_on_loop, r, options.video))
+        let Some(r) = (key_off + 1..until).find(|&r| quiet(b, subtune, &tails, r, options.video))
         else {
             continue;
         };
@@ -657,14 +656,7 @@ fn silence_after_release(
 /// for its release to have run out ([`release_frames`], from the gate-off its instrument's gate timer before the
 /// key-off row) and its wavetable program to have stopped ([`wave_program_frames`]); a program that never stops would
 /// overwrite the waveform anyway.
-fn quiet(
-    b: &Builder<'_>,
-    subtune: &Subtune,
-    tails: &[Tail],
-    keyed_off_on_loop: bool,
-    r: u32,
-    video: VideoStandard,
-) -> bool {
+fn quiet(b: &Builder<'_>, subtune: &Subtune, tails: &[Tail], r: u32, video: VideoStandard) -> bool {
     let length = subtune.length.get();
     let loop_row = subtune.loop_row;
     // Frames from row `from` to row `r`: on this pass, or (`wrapped`) from `from` to the end and on from the loop row.
@@ -694,21 +686,13 @@ fn quiet(
         return false;
     }
     // After the jump back, when no note between the loop row and this one takes over: the song's last note, keyed off
-    // where it ends, or on the loop row if it runs to the end.
-    if r >= loop_row
-        && !tails.iter().any(|t| t.row >= loop_row && t.row < r)
-        && let Some(t) = tails.last()
-    {
-        let decayed = if t.end >= length {
-            keyed_off_on_loop && settled(t, length, true)
-        } else {
-            settled(t, t.end, true)
-        };
-        if !decayed {
-            return false;
-        }
-    }
-    true
+    // where it ends, or on the loop row if it runs to the end (the export keys it off there, the loop row being
+    // silent).
+    let after_the_jump = r >= loop_row && !tails.iter().any(|t| t.row >= loop_row && t.row < r);
+    !after_the_jump
+        || tails
+            .last()
+            .is_none_or(|t| settled(t, t.end.min(length), true))
 }
 
 /// The frames the wavetable program from row `start` (1-based; 0 for none) writes the waveform for, from its note's

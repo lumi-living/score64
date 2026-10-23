@@ -1080,6 +1080,21 @@ fn the_wavetable_program_has_to_have_stopped() {
         ]),
         [(11, 0x00)]
     );
+    // An arpeggio ending inside the note points the voice back at the program, which starts again there: from row 3
+    // of a note keyed off on row 6, it runs to row 14 rather than 11.
+    let (mut lib, options) = silencing(0, 2);
+    lib.get_mut(&preset("lead")).unwrap().wave.rows = vec![
+        (0x41, 0x00),
+        (0x0F, 0x00),
+        (0x0F, 0x00),
+        (0x0F, 0x00),
+        (0x41, 0x00),
+        (WAVE_JUMP, 0x00),
+    ];
+    let mut s = gap_song(None, vec![]);
+    s.subtunes[0].voices[0].notes[0].length = NonZeroU32::new(6).unwrap();
+    s.subtunes[0].voices[0].arps = vec![arp(0, 3, &[0, 4, 7])];
+    assert_eq!(silences(&s, &lib, &options), [(14, 0x00)]);
     // One that runs a pattern command could change the envelope or the waveform.
     assert_eq!(
         program(vec![(0x41, 0x00), (0xF1, 0x00), (WAVE_JUMP, 0x00)]),
