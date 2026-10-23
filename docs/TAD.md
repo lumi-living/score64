@@ -151,11 +151,7 @@ A song may hold other subtunes before or after a set, such as a title tune.
 - A loop with fewer than two marks can't change the byte on every pass, and `loop_changes` says so.
 - The `.sng` export (`score64_formats::gt2::export`, #47) writes these as `DXY` commands. A packed song needs `-H1` for them to reach start+`$3F`.
 
-*Unverified until #47 checks them in x64sc:*
-- what start+`$3F` does across a loop jump and across init;
-- whether a layer's row-0 mark registers right after the game switches to it.
-
-Every layer starts at `$10`, so a game should treat its own init call as the switch rather than wait for a change.
+**What the game sees** (#52, `crates/score64-adapters/tests/timing_marks.rs`): a two-layer set exported, packed with `-H1` and traced in the emulator helper with start+`$3F` watched. The byte changes on exactly the switch-point frames the tempo map gives, including each first switch point after the loop back, and on no other frame. Init doesn't reset the byte, so a layer the game switches to keeps the old value until its row-0 mark on the eighth play call after init (`reference/player.md` §Timing marks). Every layer's row 0 is `$10`, which may equal the old value, so a game should treat its own init call as the switch rather than wait for a change. VICE confirmation belongs to the harness (§6).
 
 An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
@@ -283,6 +279,14 @@ Manual decisions override LLM suggestions, which override rules. `score64_core::
 
   Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
 - **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
+- **Checked first.** `decide::check(decisions, &song, sources)` runs before `resolve`, so a decision that can't apply never holds a slot against one that can (#167). `sources` lists each subtune's parts. A decision can't apply when it names:
+  - a subtune that isn't in the song;
+  - a bar, or a row, past the subtune's end;
+  - a row outside its own bar;
+  - an octave shift beyond ±7, a chord root above 11, chord intervals that don't start at 0 and rise, or a chord whose top note is past G#7 even on its lowest root;
+  - a lead source that isn't one of its own subtune's parts.
+
+  Each one comes back whole with its `Unapplied` reason, since an id is only unique within its subtune. Whether a note-level decision's note exists is left to the reduction that applies it. The rules only ever make decisions that pass, as a property test checks, as long as parts are clipped to the subtune before they're reduced.
 - **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
 
 A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
@@ -402,7 +406,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
 | Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Any note soup monophonises to a line with no errors, every note kept or dropped by a decision, whatever the input order (#40); octave folding only moves pitches, by whole octaves, never leaves a bar with more notes out of range, and picks each bar's best playable shift (#41) |
 | Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
-| GoatTracker | The `.sng` layer against GoatTracker itself. `crates/score64-adapters/tests/sng_export.rs` packs exported songs with the real `gt2reloc` and plays them in the emulator helper (#185), and `tests/pack_facts.rs` reads the same player back from every output container and passes rule 8 (#51); it runs where `gt2reloc` is installed and skips visibly elsewhere, CI included. The layout was read against GoatTracker's `gsong.c` in review (#181). Listening sets for `needs-vice-check` PRs come from `cargo xtask listen` (`docs/TOOLING.md`) |
+| GoatTracker | The `.sng` layer against GoatTracker itself. `crates/score64-adapters/tests/sng_export.rs` packs exported songs with the real `gt2reloc` and plays them in the emulator helper (#185), and `tests/pack_facts.rs` reads the same player back from every output container and passes rule 8 (#51), and `tests/timing_marks.rs` traces start+`$3F` in a packed adaptive song (#52); it runs where `gt2reloc` is installed and skips visibly elsewhere, CI included. The layout was read against GoatTracker's `gsong.c` in review (#181). Listening sets for `needs-vice-check` PRs come from `cargo xtask listen` (`docs/TOOLING.md`) |
 | Differential | Ports against originals: Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |
 | Audio regression (slow) | Reference tracks: melody similarity, onset F1, voice-3 dropout, both chips |
