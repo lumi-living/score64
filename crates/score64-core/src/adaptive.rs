@@ -140,12 +140,12 @@ impl AdaptiveSet {
                 .into_iter()
                 .filter(|r| !subtune.marks.contains(r))
                 .collect();
-            if new.is_empty() {
-                continue;
-            }
             subtune.marks.extend(&new);
             subtune.marks.sort_unstable();
             subtune.marks.dedup();
+            if new.is_empty() {
+                continue;
+            }
             added.push((layer.clone(), new));
         }
         added
@@ -425,42 +425,55 @@ pub struct TimingMark {
     pub value: u8,
 }
 
-/// A subtune's timing marks with their values.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// A layer's timing marks with their values.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
 pub struct TimingMarks {
-    /// The marks, in row order.
+    /// The marks at the set's switch points, in row order: these are the `DXY` commands to write.
     pub marks: Vec<TimingMark>,
+    /// The layer's marks that are not switch points, which get no `DXY`: a change of start+$3F there would let the
+    /// game switch where the set does not allow it.
+    pub off_switch: Vec<u32>,
     /// Whether every pass round the loop changes start+$3F at each mark it reaches. False when the loop (from
-    /// `loop_row` to the end) holds a single mark: it writes the same value every time, so only the first pass shows a
-    /// change.
+    /// `loop_row` to the end) holds fewer than two marks: it writes the same value every time, or none, so only the
+    /// first pass shows a change.
     pub loop_changes: bool,
 }
 
-/// The `DXY` values for `subtune`'s marks: `$10` and `$11` in turn, so each mark changes start+$3F. When the song
-/// loops back to a mark with the same value as its last one, the last takes `$12`, so the jump back changes it too.
-pub fn timing_marks(subtune: &Subtune) -> TimingMarks {
-    let mut rows: Vec<u32> = subtune.marks.clone();
-    rows.sort_unstable();
-    rows.dedup();
-    let mut marks: Vec<TimingMark> = rows
-        .iter()
-        .enumerate()
-        .map(|(i, &row)| TimingMark {
-            row,
-            value: FIRST_MARK_VALUE + (i % 2) as u8,
-        })
-        .collect();
-    let in_loop = marks.iter().filter(|m| m.row >= subtune.loop_row).count();
-    let first_in_loop = marks.iter().position(|m| m.row >= subtune.loop_row);
-    if let (Some(first), true) = (first_in_loop, in_loop >= 2) {
-        let last = marks.len() - 1;
-        if marks[first].value == marks[last].value {
-            marks[last].value = FIRST_MARK_VALUE + 2;
+impl AdaptiveSet {
+    /// The `DXY` values for `layer`'s marks at this set's switch points: `$10` and `$11` in turn, so each one changes
+    /// start+$3F. When the song loops back to a mark with the same value as its last one, the last takes `$12`, so the
+    /// jump back changes it too. Switch points without a mark get none (rule 5 reports them; [`Self::place_marks`]
+    /// adds them).
+    pub fn timing_marks(&self, layer: &Subtune) -> TimingMarks {
+        let (points, _) = self.switch.points(layer);
+        let (rows, off_switch): (Vec<u32>, Vec<u32>) =
+            layer.marks.iter().partition(|r| points.contains(r));
+        let mut rows = rows;
+        rows.sort_unstable();
+        rows.dedup();
+        let mut marks: Vec<TimingMark> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, &row)| TimingMark {
+                row,
+                value: FIRST_MARK_VALUE + (i % 2) as u8,
+            })
+            .collect();
+        let in_loop = marks.iter().filter(|m| m.row >= layer.loop_row).count();
+        let first_in_loop = marks.iter().position(|m| m.row >= layer.loop_row);
+        if let (Some(first), true) = (first_in_loop, in_loop >= 2) {
+            let last = marks.len() - 1;
+            if marks[first].value == marks[last].value {
+                marks[last].value = FIRST_MARK_VALUE + 2;
+            }
         }
-    }
-    TimingMarks {
-        marks,
-        loop_changes: in_loop != 1,
+        TimingMarks {
+            loop_changes: in_loop >= 2 || marks.is_empty(),
+            marks,
+            off_switch,
+        }
     }
 }
 
