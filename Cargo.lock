@@ -3130,6 +3130,7 @@ name = "score64-formats"
 version = "0.0.0"
 dependencies = [
  "insta",
+ "proptest",
 ]
 
 [[package]]
@@ -3140,9 +3141,11 @@ version = "0.0.0"
 name = "score64-project"
 version = "0.0.0"
 dependencies = [
+ "blake3",
  "proptest",
  "score64-core",
  "serde",
+ "serde_json",
  "toml",
 ]
 
