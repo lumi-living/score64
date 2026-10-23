@@ -33,6 +33,51 @@ pub struct SidWrite {
     pub value: u8,
 }
 
+/// What a trace collects while the CPU runs: the zero-page addresses it touches and the pages it writes outside a
+/// window. Only the CPU's own accesses count, as effective addresses (operand and pointer reads, data reads and
+/// writes); host pokes and loads don't, and the core makes no NMOS dummy reads.
+#[derive(Clone, Debug)]
+pub struct TraceLog {
+    /// Collect zero-page addresses.
+    pub zero_page: bool,
+    /// Collect pages written outside this window (inclusive).
+    pub outside: Option<(u16, u16)>,
+    /// Zero-page addresses read or written.
+    pub zero_page_used: [bool; 256],
+    /// Pages written outside the window, other than zero page, the stack page and the SID's registers
+    /// (`$D400`–`$D418`; a write to a mirror counts, since on a target with a second SID it would reach that one).
+    pub pages_outside: [bool; 256],
+}
+
+impl TraceLog {
+    /// An empty log.
+    pub fn new(zero_page: bool, outside: Option<(u16, u16)>) -> Self {
+        Self {
+            zero_page,
+            outside,
+            zero_page_used: [false; 256],
+            pages_outside: [false; 256],
+        }
+    }
+
+    fn read(&mut self, address: u16) {
+        if self.zero_page && address < 0x100 {
+            self.zero_page_used[usize::from(address)] = true;
+        }
+    }
+
+    fn write(&mut self, address: u16) {
+        self.read(address);
+        if let Some((first, last)) = self.outside
+            && address >= 0x200
+            && !(0xD400..=0xD418).contains(&address)
+            && !(first..=last).contains(&address)
+        {
+            self.pages_outside[usize::from(address >> 8)] = true;
+        }
+    }
+}
+
 /// RAM, the SID and the cycle counter.
 pub struct Memory {
     ram: Box<[u8; 0x10000]>,
@@ -44,6 +89,10 @@ pub struct Memory {
     pub writes: Vec<SidWrite>,
     /// Writes to `$00`/`$01`.
     pub port_writes: u32,
+    /// The trace, when one is running.
+    pub trace: Option<TraceLog>,
+    /// True while the host (not the CPU) writes, so a poke isn't traced.
+    host: bool,
 }
 
 impl Memory {
@@ -55,6 +104,8 @@ impl Memory {
             instruction_start: 0,
             writes: Vec::new(),
             port_writes: 0,
+            trace: None,
+            host: false,
         }
     }
 
@@ -68,7 +119,9 @@ impl Memory {
     /// Write one byte from the host (not the CPU) at `cycle`: RAM, or a SID register in `$D400`–`$D7FF`.
     pub fn poke(&mut self, address: u16, value: u8, cycle: u64) {
         self.instruction_start = cycle;
+        self.host = true;
         Bus::write(self, address, value, 0);
+        self.host = false;
     }
 
     fn sid_register(address: u16) -> Option<u8> {
@@ -80,6 +133,9 @@ impl Memory {
 
 impl Bus for Memory {
     fn read(&mut self, address: u16) -> u8 {
+        if let Some(t) = &mut self.trace {
+            t.read(address);
+        }
         match Self::sid_register(address) {
             Some(register) => {
                 // Reads happen early in an instruction; catching up to its start is within a few cycles.
@@ -91,6 +147,11 @@ impl Bus for Memory {
     }
 
     fn write(&mut self, address: u16, value: u8, cycle: u8) {
+        if !self.host
+            && let Some(t) = &mut self.trace
+        {
+            t.write(address);
+        }
         if address <= 1 {
             self.port_writes += 1;
         }
