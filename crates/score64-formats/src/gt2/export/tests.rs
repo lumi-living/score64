@@ -872,3 +872,26 @@ fn the_restore_points_at_the_sounding_notes_own_program() {
     let rows = rows_of(&out.sng, 0, 1);
     assert_eq!((rows[8].command, rows[8].data), (SET_WAVE_POINTER, 3));
 }
+
+#[test]
+fn an_arpeggio_running_to_the_end_cant_end_on_a_loop_row_tie() {
+    let mut l = line(
+        1,
+        "lead",
+        vec![
+            note(8, 8, "C-3", Attack::Fresh),
+            note(16, 8, "D-3", Attack::Legato),
+            note(24, 8, "E-3", Attack::Fresh),
+        ],
+    );
+    l.arps = vec![arp(24, 8, &[0, 4])];
+    let mut s = subtune("m", vec![l]);
+    s.loop_row = 16;
+    assert!(matches!(
+        export(&song(vec![s.clone()]), &library(), &[], &header()),
+        Err(ExportError::CommandClash { row: 16, what, .. }) if what.contains("tie")
+    ));
+    // Ending before the end, it restores inside the subtune as usual.
+    s.voices[0].arps = vec![arp(24, 4, &[0, 4])];
+    assert!(export(&song(vec![s]), &library(), &[], &header()).is_ok());
+}

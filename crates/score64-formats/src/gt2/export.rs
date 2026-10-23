@@ -587,14 +587,21 @@ fn voice_rows(
             .find(|(n, _)| (n.row as usize) < to && to < (n.row + n.length.get()) as usize);
         let next_arp = arps.get(k + 1).is_some_and(|a| a.row as usize == to);
         // A tie where the event ends keeps the arpeggio running, and its row's slot holds the tie, so the program
-        // can't be stopped there.
-        if to < length
-            && !next_arp
+        // can't be stopped there. An event running to the end ends, after the jump back, on the loop row.
+        let (end_row, after) = if to < length {
+            (to, next_arp)
+        } else {
+            (
+                loop_row,
+                arps.first().is_some_and(|a| a.row as usize == loop_row),
+            )
+        };
+        if !after
             && notes
                 .iter()
-                .any(|n| n.row as usize == to && n.attack == Attack::Legato)
+                .any(|n| n.row as usize == end_row && n.attack == Attack::Legato)
         {
-            return Err(clash(to, "an arpeggio's end and a tie"));
+            return Err(clash(end_row, "an arpeggio's end and a tie"));
         }
         if let Some((_, (_, instrument))) = sounding
             && to < length
