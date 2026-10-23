@@ -144,8 +144,7 @@ pub fn monophonise(
 ///
 /// A note an override names that isn't there (a different note is in its place, or the rule dropped it) is reported
 /// as `no_such_note`. The rule records no decision of its own for what an override did. A note an override changed
-/// records the override's id in place of this rule's (the last override to change it, in slot order); an id from an
-/// earlier rule stays. The order of `overrides` doesn't matter.
+/// records the override's id in place of this rule's; an id from an earlier rule stays. The order of `overrides` doesn't matter.
 pub fn monophonise_with(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
