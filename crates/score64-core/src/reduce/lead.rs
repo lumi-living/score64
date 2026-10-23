@@ -97,20 +97,7 @@ pub struct PartSalience {
     pub bars: Vec<Salience>,
 }
 
-/// Why an override decision was not applied.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Unapplied {
-    /// Its source is not one of the parts.
-    UnknownSource,
-    /// Its bar is past the end of the subtune.
-    PastEnd,
-    /// A model's choice where a person's is in force.
-    Overruled,
-    /// Another override of the same rank on the same bar has the lower id, and wins.
-    Outranked,
-}
+use crate::decide::Unapplied;
 
 /// What [`choose_lead`] chose.
 #[derive(Clone, Debug, PartialEq)]
