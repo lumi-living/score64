@@ -185,7 +185,9 @@ impl Bench {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let exe = dir.join(fake_exe().file_name().unwrap());
-        std::fs::copy(fake_exe(), &exe).unwrap();
+        // A hard link, not a copy: copying holds the new executable open for writing, and a process another test
+        // forks meanwhile inherits that handle, so running it fails with "text file busy" on Linux.
+        std::fs::hard_link(fake_exe(), &exe).unwrap();
         std::fs::write(dir.join("mode.txt"), mode).unwrap();
         // A name far over gt2reloc's 59-byte limit for the song path, starting with a dash.
         let song = dir.join(format!("-{}.sng", "long".repeat(20)));
