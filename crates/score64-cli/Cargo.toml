@@ -18,6 +18,9 @@ clap = { workspace = true }
 score64-engine = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+score64-core = { workspace = true }
+
 [lints]
 workspace = true
 
