@@ -34,6 +34,32 @@ fn every_format_holds_the_same_player() {
                     .pack(&song, &dir.join(format!("tune.{ext}")), &options)
                     .unwrap();
                 assert_eq!(packed.start, 0x2000);
+                // The containers' layouts (docs/reference/player.md): the bytes, plus a load address, plus a PSID
+                // header of $7C bytes whose own load address is 0.
+                let bytes = std::fs::read(&packed.path).unwrap();
+                let header = match *ext {
+                    "bin" => 0,
+                    "prg" => 2,
+                    _ => 0x7C + 2,
+                };
+                assert_eq!(bytes.len() as u32, packed.size + header, "{ext}");
+                if *ext == "sid" {
+                    assert_eq!(
+                        &bytes[4..10],
+                        [0x00, 0x02, 0x00, 0x7C, 0x00, 0x00],
+                        "version 2, data at $7C, load 0"
+                    );
+                    assert_eq!(
+                        &bytes[10..14],
+                        [0x20, 0x00, 0x20, 0x03],
+                        "init $2000, play $2003"
+                    );
+                    assert_eq!(
+                        &bytes[0x7C..0x7E],
+                        [0x00, 0x20],
+                        "the load address first in the data"
+                    );
+                }
                 (packed.size, packed.payload().unwrap())
             })
             .collect();
@@ -47,8 +73,9 @@ fn every_format_holds_the_same_player() {
         let jumps = first.jump_table();
         let inside = |j: Option<u16>| j.is_some_and(|to| (0x2000..end).contains(&u32::from(to)));
         assert!(inside(jumps[0]) && inside(jumps[1]), "{jumps:04X?}");
-        // Without -D1 the third entry is not a jump into the tune.
+        // Without -D1 there is no third entry: start+6 isn't a JMP at all.
         assert_eq!(inside(jumps[2]), effects, "{jumps:04X?}");
+        assert_eq!(jumps[2].is_none(), !effects, "{jumps:04X?}");
         // The measured facts pass rule 8 for a window at $2000, with the effect entry required only when packed for
         // it. (The zero-page and outside-write sets come from the helper's trace; empty here.)
         let facts = PackFacts {
@@ -57,6 +84,7 @@ fn every_format_holds_the_same_player() {
             jump_table: jumps,
             zero_page_used: BTreeSet::new(),
             pages_written_outside: BTreeSet::new(),
+            traced_window: None,
             max_play_cycles: None,
         };
         let budget = |sound_effects| PackBudget {

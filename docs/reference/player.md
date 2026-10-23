@@ -11,11 +11,11 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 | +6 | Play sound effect (only when packed with sound-effect support) | `LDA #<effect` · `LDY #>effect` · `LDX #channel` (0, 7 or 14 for voices 1–3) · `JSR start+6` |
 | +6 or +9 | Set master volume (only with volume-change support; +9 when sound effects are also enabled) | `LDA #volume (0–15)` · `JSR …` |
 
-Each entry is a `JMP abs` (`$4C lo hi`) into the player. Without sound-effect support (`-D0`) there is no entry at +6: the bytes there are the start of the player's code (`B9 76 24`, `LDA $2476,Y`, in the fixture below). Rule 8 refuses a pack whose init or play entry, or with effects configured its effect entry, isn't a `JMP abs` into the tune.
+Each entry is a `JMP abs` (`$4C lo hi`) into the player. Without sound-effect support (`-D0`) and without volume-change support (`-E0`, which Score64 never uses) there is no entry at +6: the bytes there are the start of the player's code (`B9 76 24`, `LDA $2476,Y`, in the fixture below). Rule 8 refuses a pack whose init or play entry, or with effects configured its effect entry, isn't a `JMP abs` into the tune past the jump table.
 
 ## Output containers
 
-gt2reloc picks the container from the output's extension (`sid`, `prg` or `bin`, lowercase; anything else is a `.prg`). All three hold the same bytes, which load at the player page (`-W`):
+gt2reloc picks the container from the output's extension (`sid`, `prg` or `bin`, lowercase; anything else, `.SID` or no extension included, gives a `.prg`). All three hold the same bytes, which load at the player page (`-W`):
 
 | Container | Layout |
 |---|---|
@@ -26,12 +26,12 @@ gt2reloc picks the container from the output's extension (`sid`, `prg` or `bin`,
 The size gt2reloc reports is the bytes without any header or load address, so `.prg` is that size plus 2 and `.sid` that size plus `$7C` + 2.
 
 **Evidence.** `fixtures/gt2-original/sixteen-steps.sng` packed by gt2reloc 2.73 with `-W20 -ZFB` (2026-10-23):
-- with `-D1` it reports 2,028 bytes: `.bin` is 2,028 bytes, `.prg` 2,030 and `.sid` 2,154;
+- with `-D1` it reports 2,028 bytes: `.bin` is 2,028 bytes, `.prg` 2,030 and `.sid` 2,154; `.SID`, `.Prg`, `.xyz` or no extension give the 2,030-byte `.prg`;
 - the `.prg` starts `00 20 4C 7D 20 4C B2 20 4C 87 20`;
-- the `.sid` header starts `50 53 49 44 00 02 00 7C 00 00 20 00 20 03`, and its data starts `00 20 4C 7D 20`;
-- with `-D0` the `.prg` starts `00 20 4C 7A 20 4C 84 20 B9 76 24`.
+- the `.sid` header starts `50 53 49 44 00 02 00 7C 00 00 20 00 20 03`, its name, author and copyright fields are the song's (`Sixteen Steps`, …), and its data starts `00 20 4C 7D 20`;
+- with `-D0` it reports 1,769 bytes, and the `.prg` starts `00 20 4C 7A 20 4C 84 20 B9 76 24`.
 
-`crates/score64-adapters/tests/pack_facts.rs` checks this for every container, with and without `-D1`.
+`crates/score64-adapters/tests/pack_facts.rs` checks, for every container with and without `-D1`: the same bytes at the player page, each file's length, the `.sid` header's version, data offset, load address 0, init and play, the jump table, and no `JMP` at +6 without `-D1`.
 
 ## gt2reloc options used by Score64
 

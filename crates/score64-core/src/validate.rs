@@ -968,16 +968,20 @@ pub struct PackFacts {
     pub jump_table: [Option<u16>; 3],
     /// Every zero-page address the player read or wrote, over init, play and effect calls.
     pub zero_page_used: std::collections::BTreeSet<u8>,
-    /// The high byte of every address the player wrote outside the window, other than zero page, the stack page and
-    /// the SID (`$D400`–`$D7FF`). A window that doesn't end on a page boundary shares its last page with addresses
-    /// outside it; a write to those reports that page.
+    /// The high byte of every address the player wrote outside [`PackFacts::traced_window`], other than zero page,
+    /// the stack page and the SID's registers (`$D400`–`$D418`; a write to a mirror or another SID's address counts).
+    /// A window that doesn't end on a page boundary shares its last page with addresses outside it; a write to those
+    /// reports that page.
     pub pages_written_outside: std::collections::BTreeSet<u8>,
+    /// The window (first and last address) the trace measured writes outside of; `None` when nothing was traced.
+    /// It must be the budget's window.
+    pub traced_window: Option<(u16, u16)>,
     /// The longest play call measured, in CPU cycles, if it was measured.
     pub max_play_cycles: Option<u32>,
 }
 
 /// `$XXXX`.
-fn addr(a: u32) -> String {
+fn addr(a: u64) -> String {
     format!("${a:04X}")
 }
 
@@ -997,8 +1001,10 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
             hint: hint.into(),
         })
     };
-    let (first, last) = (u32::from(budget.first), u32::from(budget.last));
-    if first > last {
+    let (first, last) = (u64::from(budget.first), u64::from(budget.last));
+    // An inverted window makes every check against it meaningless; those are skipped.
+    let window_ok = first <= last;
+    if !window_ok {
         problem(
             format!(
                 "the memory window {}–{} ends before it starts",
@@ -1020,10 +1026,9 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
     // The tune occupies start..end (exclusive); u64, since the facts may come from anywhere.
     let start = u64::from(facts.start);
     let end = start + u64::from(facts.size);
-    let empty = facts.size == 0;
     // Where the tune itself is wrong, its jump table says nothing more.
-    let placed = !empty && end <= 0x10000;
-    if empty {
+    let placed = facts.size > 0 && end <= 0x10000;
+    if facts.size == 0 {
         problem(
             "the packed tune is empty".into(),
             "check that the packer was given a song",
@@ -1032,22 +1037,22 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
         problem(
             format!(
                 "the tune at {} is {} bytes, which runs past $FFFF",
-                addr(start as u32),
+                addr(start),
                 facts.size
             ),
             "shorten patterns, share instruments or pack lower in memory",
         );
-    } else if start < u64::from(first) || end - 1 > u64::from(last) {
+    } else if window_ok && (start < first || end - 1 > last) {
         problem(
             format!(
                 "the tune takes {}–{} ({} bytes), outside the window {}–{}",
-                addr(start as u32),
-                addr((end - 1) as u32),
+                addr(start),
+                addr(end - 1),
                 facts.size,
                 addr(first),
                 addr(last)
             ),
-            if end - start > u64::from(last.saturating_sub(first)) + 1 {
+            if end - start > last - first + 1 {
                 "shorten patterns, share instruments or give the tune a larger window"
             } else {
                 "pack with the player page at the window's start"
@@ -1059,24 +1064,45 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
     } else {
         &[(0, "init"), (1, "play")]
     };
-    for &(i, name) in entries.iter().filter(|_| placed) {
-        let at = start + 3 * i as u64;
-        // An entry needs its three bytes inside the tune.
-        let fits = at + 3 <= end;
-        match facts.jump_table[i].filter(|_| fits) {
+    // The jump table needs three bytes per entry inside the tune.
+    let table_end = start + 3 * entries.len() as u64;
+    if placed && table_end > end {
+        problem(
+            format!(
+                "the tune is {} bytes, too short for its jump table ({} bytes{})",
+                facts.size,
+                3 * entries.len(),
+                if budget.sound_effects {
+                    " with the sound-effect entry"
+                } else {
+                    ""
+                }
+            ),
+            "check the packer's output format and that it was given a song",
+        );
+    }
+    for &(i, name) in entries.iter().filter(|_| placed && table_end <= end) {
+        let at = addr(start + 3 * i as u64);
+        match facts.jump_table[i].map(u64::from) {
             None => problem(
-                format!("no JMP at {}, the {name} entry", addr(at as u32)),
+                format!("no JMP at {at}, the {name} entry"),
                 if i == 2 {
                     "pack with sound-effect support (gt2reloc -D1)"
                 } else {
                     "check the packer's start address and output format"
                 },
             ),
-            Some(to) if !(start..end).contains(&u64::from(to)) => problem(
+            Some(to) if !(start..end).contains(&to) => problem(
                 format!(
-                    "the {name} entry at {} jumps to {}, outside the tune",
-                    addr(at as u32),
-                    addr(u32::from(to))
+                    "the {name} entry at {at} jumps to {}, outside the tune",
+                    addr(to)
+                ),
+                "check the packer's start address",
+            ),
+            Some(to) if to < table_end => problem(
+                format!(
+                    "the {name} entry at {at} jumps to {}, inside the jump table",
+                    addr(to)
                 ),
                 "check the packer's start address",
             ),
@@ -1103,22 +1129,35 @@ pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
             "pack with gt2reloc -Z set to the configured pair",
         );
     }
-    if !facts.pages_written_outside.is_empty() {
-        let pages: Vec<String> = facts
-            .pages_written_outside
-            .iter()
-            .map(|p| format!("${p:02X}xx"))
-            .collect();
-        problem(
+    match facts.traced_window {
+        Some((a, b)) if window_ok && (a, b) != (budget.first, budget.last) => problem(
             format!(
-                "the player writes outside its window {}–{}, in page{} {}",
+                "the trace measured writes outside {}–{}, not the window {}–{}",
+                addr(u64::from(a)),
+                addr(u64::from(b)),
                 addr(first),
-                addr(last),
-                if pages.len() == 1 { "" } else { "s" },
-                pages.join(", ")
+                addr(last)
             ),
-            "check the packer's start address and the player's variables (gt2reloc -W)",
-        );
+            "trace with the budget's window",
+        ),
+        _ if window_ok && !facts.pages_written_outside.is_empty() => {
+            let pages: Vec<String> = facts
+                .pages_written_outside
+                .iter()
+                .map(|p| format!("${p:02X}xx"))
+                .collect();
+            problem(
+                format!(
+                    "the player writes outside its window {}–{}, in page{} {}",
+                    addr(first),
+                    addr(last),
+                    if pages.len() == 1 { "" } else { "s" },
+                    pages.join(", ")
+                ),
+                "check the packer's start address and the player's variables (gt2reloc -W)",
+            )
+        }
+        _ => {}
     }
     if let Some(max) = budget.max_play_cycles {
         match facts.max_play_cycles {

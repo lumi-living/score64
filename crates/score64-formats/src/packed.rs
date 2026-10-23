@@ -206,9 +206,34 @@ mod tests {
             e.to_string(),
             "the PSID header's init $1000 and play $1006 are not the jump table at $1000 and $1003"
         );
+        // The init address is checked as well as the play address.
+        assert!(matches!(
+            Payload::read(&psid(0x1000, 0x1001, 0x1003, &PLAYER), Container::Sid),
+            Err(PayloadError::PsidEntries { init: 0x1001, .. })
+        ));
         assert!(matches!(
             Payload::read(b"RSID", Container::Sid),
             Err(PayloadError::Psid(PsidError::NotPsid))
         ));
+    }
+
+    #[test]
+    fn psid_header_variants() {
+        let want = Payload {
+            load: 0x1000,
+            data: PLAYER.to_vec(),
+        };
+        // Init 0 means the load address.
+        assert_eq!(
+            Payload::read(&psid(0x1000, 0, 0x1003, &PLAYER), Container::Sid).unwrap(),
+            want
+        );
+        // A version 1 header is $76 bytes.
+        let mut v1 = psid(0x1000, 0x1000, 0x1003, &[]);
+        v1.truncate(0x76);
+        v1[4..6].copy_from_slice(&1u16.to_be_bytes());
+        v1[6..8].copy_from_slice(&0x76u16.to_be_bytes());
+        v1.extend_from_slice(&PLAYER);
+        assert_eq!(Payload::read(&v1, Container::Sid).unwrap(), want);
     }
 }
