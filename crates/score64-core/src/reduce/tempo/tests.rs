@@ -227,3 +227,11 @@ fn a_tempo_in_force_is_checked_like_any_tempo() {
         "a gate timer of 3 is not"
     );
 }
+
+#[test]
+fn changes_already_there_are_left_alone() {
+    // 4 from row 32 already; a decision for 4 from bar 1 makes row 32's change repeat it, and it stays.
+    let mut s = subtune();
+    apply_tempo(&mut s, &[tempo("four", 1, 4, Provenance::Manual)]);
+    assert_eq!(changes(&s), [(16, 4), (32, 4)]);
+}

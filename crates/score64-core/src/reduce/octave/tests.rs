@@ -709,3 +709,23 @@ fn a_shift_in_force_still_gives_a_valid_line() {
         .collect();
     assert!(errors.is_empty(), "{errors:#?}");
 }
+
+#[test]
+fn an_earlier_rules_id_stays_under_a_shift_in_force() {
+    let n = name();
+    let mut c = note(0, "C-4");
+    c.decision = Some(DecisionId::new("mono-trim-v2-r0").unwrap());
+    let r = fold_octaves_with(
+        vec![c, note(4, "G-4")],
+        &at(&n),
+        &Roles::constant(Role::Bass),
+        &RoleRanges::default(),
+        &[forced("low", 0, -2)],
+    );
+    let ids: Vec<_> = r
+        .notes
+        .iter()
+        .map(|x| x.decision.as_ref().map(|d| d.as_str()))
+        .collect();
+    assert_eq!(ids, [Some("mono-trim-v2-r0"), Some("low")]);
+}

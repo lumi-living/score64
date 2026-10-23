@@ -48,7 +48,8 @@ pub fn fold_octaves(
 /// [`fold_octaves`] with a model's or a person's resolved `octave` decisions in force (#167): for this subtune and
 /// voice, each sets its bar's shift in place of the rule's choice, and the next bar carries it on as it would the
 /// rule's. The rule records no decision for that bar, and the bar's folded notes record the override's id unless
-/// they already record a decision. Notes count in the bar they start in.
+/// they already record a decision, a shift of 0 included: the decision is about the bar, so it accounts for every
+/// folded note there, moved or not. Notes count in the bar they start in.
 ///
 /// An override is unapplied when its bar has no note that folds (`no_such_note`), or when its shift would take one
 /// of them past what GoatTracker can play (`out_of_range`). Of several for one bar, the strongest that can apply

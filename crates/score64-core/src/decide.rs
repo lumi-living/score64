@@ -40,20 +40,10 @@ pub enum Unapplied {
     InsideNote,
 }
 
-/// Decisions competing for one slot, in the order a rule tries them: the strongest first, then the lowest id, as
-/// [`resolve`] would choose.
+/// Decisions competing for one slot, in the order a rule tries them: [`strength`]'s, as [`resolve`] would choose.
 pub(crate) fn by_strength(mut ds: Vec<&Decision>) -> Vec<&Decision> {
-    ds.sort_by(|a, b| b.rank().cmp(&a.rank()).then_with(|| a.id.cmp(&b.id)));
+    ds.sort_by(|a, b| strength(a, b));
     ds
-}
-
-/// Why `loser` didn't apply when `winner` took the slot: a weaker decision is overruled, an equal one outranked.
-pub(crate) fn lost_to(loser: &Decision, winner: &Decision) -> Unapplied {
-    if loser.rank() < winner.rank() {
-        Unapplied::Overruled
-    } else {
-        Unapplied::Outranked
-    }
 }
 
 /// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.

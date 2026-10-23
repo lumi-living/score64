@@ -19,7 +19,8 @@ pub struct TempoApplied {
 /// Apply the resolved `frames_per_row` decisions for `subtune` that a model or a person made: each sets the tempo
 /// from its bar's first row, as the subtune's starting tempo at bar 0 and as a tempo change after that, replacing
 /// one already on that row. A decision that sets the tempo already playing there adds no change (each change is a
-/// command in the exported song), but still counts as applied.
+/// command in the exported song), but still counts as applied. Changes already in the subtune are left as they are,
+/// even when one comes to repeat a tempo a decision set before it.
 ///
 /// A decision past the subtune's end is unapplied (`past_end`). Of several for one bar, the strongest wins (the
 /// lowest id on a tie, as `resolve` would); the others are `overruled` or `outranked`. The rules' own decisions, and

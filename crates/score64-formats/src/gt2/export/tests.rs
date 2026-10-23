@@ -940,6 +940,14 @@ fn loop_rows_and_tempos_in_force_export() {
         exported.sng.subtunes[0][0].restart, 2,
         "patterns 0–15, 16–19, 20–31"
     );
+    // The tempo decision is an F04 at row 16. The loop row's tempo is the ending's, so it needs no command of its own.
+    let tempo: Vec<(usize, u8)> = rows_of(&exported.sng, 0, 0)
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.command == 0xF)
+        .map(|(i, r)| (i, r.data))
+        .collect();
+    assert_eq!(tempo, [(0, 6), (16, 4)]);
     // Inside a note (row 2 of the 0–3 note): refused, and the subtune keeps the rule's row.
     let inside = find_loop_with(
         &sub,
