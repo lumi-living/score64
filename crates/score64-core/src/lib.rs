@@ -12,25 +12,32 @@
 //! exposes [`strategies`] for property tests.
 
 pub mod adaptive;
+pub mod decide;
 pub mod grid;
 pub mod profile;
 pub mod provenance;
+pub mod reduce;
 #[cfg(feature = "schema")]
 mod schema;
 pub mod score;
 #[cfg(any(test, feature = "proptest"))]
 pub mod strategies;
+pub mod transcription;
 pub mod validate;
 
-pub use adaptive::{AdaptiveSet, LayerProblem, Switch};
-pub use grid::{BeatGrid, Quantised, TempoSnap, snap_tempo};
+pub use adaptive::{AdaptiveSet, FIRST_MARK_VALUE, LayerProblem, Switch, TimingMark, TimingMarks};
+pub use decide::{Rank, Resolution, Slot, resolve};
+pub use grid::{BeatGrid, Quantised, TempoSnap, VideoStandard, snap_tempo};
 pub use profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 pub use provenance::{
-    Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
+    Confidence, ContentHash, Decision, DecisionId, DropReason, Proposal, Provenance, SourceRef,
 };
 pub use score::{
     ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, SCHEMA_VERSION,
     Schema, Song, Subtune, SubtuneName, TempoChange, Voice, VoiceLine,
+};
+pub use transcription::{
+    DroppedNote, QuantiseReport, QuantisedPart, SourceNote, TranscribedPart, Unplaced,
 };
 pub use validate::{Context, InstrumentFacts, Problem, Rule, check_pack, validate};
 

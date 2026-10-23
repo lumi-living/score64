@@ -5,10 +5,11 @@
 //! points at notes.
 
 use std::fmt;
+use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
-use crate::score::{FramesPerRow, Role, SubtuneName, Voice};
+use crate::score::{FramesPerRow, Pitch, Role, SubtuneName, Voice};
 
 /// A blake3 hash: the identity of a file in the content-addressed cache (ADR-004). Written as 64 lowercase hex digits.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -161,7 +162,8 @@ impl From<Confidence> for f64 {
 }
 
 /// A decision's stable name, as notes and `decisions.toml` refer to it: 1–64 characters of `a`–`z`, `0`–`9`, `-`
-/// and `_`, starting with a letter or digit.
+/// and `_`, starting with a letter or digit. Unique within its subtune: a note refers to a decision of its own
+/// subtune.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct DecisionId(String);
@@ -270,15 +272,18 @@ pub enum Proposal {
         /// The stem or transcribed part, by content hash.
         source: ContentHash,
     },
-    /// Shift a voice's notes in this bar by whole octaves (octave folding).
+    /// Shift a voice's notes in this bar by whole octaves (octave folding). Notes whose role may use the whole pitch
+    /// range stay where they are.
     Octave {
         /// The voice.
         voice: Voice,
         /// Octaves, negative for down.
         shift: i8,
     },
-    /// The chord in this bar, for the arpeggio.
+    /// The chord from this row on, for the arpeggio. Chords change by the beat, so a bar may hold several.
     Chord {
+        /// The row the chord starts on, inside the decision's bar.
+        row: u32,
         /// Root as a pitch class, 0 (C) to 11 (B).
         root: u8,
         /// Semitones above the root, starting with 0.
@@ -294,4 +299,69 @@ pub enum Proposal {
         /// Frames per row.
         frames_per_row: FramesPerRow,
     },
+    /// Shorten a note so it ends where the next one on its voice starts (monophonise).
+    TrimNote {
+        /// The voice.
+        voice: Voice,
+        /// The note's start row.
+        row: u32,
+        /// Its pitch.
+        pitch: Pitch,
+        /// Its new length, in rows.
+        length: NonZeroU32,
+        /// Where in the source it came from, if it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SourceRef>,
+    },
+    /// Leave a note out of a voice (monophonise).
+    DropNote {
+        /// The voice.
+        voice: Voice,
+        /// The note's start row.
+        row: u32,
+        /// Its pitch.
+        pitch: Pitch,
+        /// Its length, in rows, which tells it from a repeat on the same row that was kept.
+        length: NonZeroU32,
+        /// Where in the source it came from, if it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SourceRef>,
+        /// Why.
+        reason: DropReason,
+    },
+    /// Start a note with a fresh attack: the note it was tied to no longer ends on its row (monophonise).
+    Retrigger {
+        /// The voice.
+        voice: Voice,
+        /// The note's start row.
+        row: u32,
+        /// Its pitch.
+        pitch: Pitch,
+        /// Where in the source it came from, if it did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<SourceRef>,
+    },
+}
+
+/// Why a [`Proposal::DropNote`] leaves a note out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DropReason {
+    /// Its confidence is below the ghost-note threshold.
+    Ghost,
+    /// It is shorter than the minimum note length.
+    TooShort,
+    /// It repeats a note of the same pitch on the same row, which keeps the longer of the two.
+    Repeat,
+    /// Another note starts on the same row, and the skyline keeps that one (the highest, or the lowest for bass).
+    Skyline,
+    /// It overlaps its neighbour too closely to trim to the minimum length, and has the lower confidence.
+    Overlap,
+    /// Another note on the same row wins: a higher-priority drum hit, or the line drums are interleaved with.
+    Clash,
+    /// A drum hit whose kind has no sound in the project's drum kit.
+    Unmapped,
+    /// A hi-hat left out when drums share a voice with another line.
+    Interleave,
 }

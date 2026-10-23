@@ -14,7 +14,7 @@ use proptest::prelude::*;
 use crate::adaptive::AdaptiveSet;
 use crate::profile::{Profile, ProfileName, Profiles, VoiceRule, VoiceUse, builtin};
 use crate::provenance::{
-    Confidence, ContentHash, Decision, DecisionId, Proposal, Provenance, SourceRef,
+    Confidence, ContentHash, Decision, DecisionId, DropReason, Proposal, Provenance, SourceRef,
 };
 use crate::score::{
     ArpEvent, Attack, FramesPerRow, Note, Pitch, PresetId, Role, RoleSpan, Roles, Schema, Song,
@@ -245,10 +245,76 @@ pub fn proposal() -> impl Strategy<Value = Proposal> {
         (voice(), role()).prop_map(|(voice, role)| Proposal::VoiceRole { voice, role }),
         content_hash().prop_map(|source| Proposal::LeadSource { source }),
         (voice(), -3i8..=3).prop_map(|(voice, shift)| Proposal::Octave { voice, shift }),
-        (0u8..12, proptest::collection::vec(0u8..24, 1..5))
-            .prop_map(|(root, intervals)| Proposal::Chord { root, intervals }),
+        (
+            0u32..1024,
+            0u8..12,
+            proptest::collection::vec(0u8..24, 1..5)
+        )
+            .prop_map(|(row, root, intervals)| Proposal::Chord {
+                row,
+                root,
+                intervals
+            }),
         (0u32..1024).prop_map(|row| Proposal::LoopRow { row }),
         frames_per_row().prop_map(|frames_per_row| Proposal::FramesPerRow { frames_per_row }),
+        (
+            voice(),
+            0u32..1024,
+            pitch(),
+            proptest::option::of(source_ref()),
+            1u32..64
+        )
+            .prop_map(|(voice, row, pitch, source, length)| Proposal::TrimNote {
+                voice,
+                row,
+                pitch,
+                source,
+                length: NonZeroU32::new(length).expect("non-zero"),
+            }),
+        (
+            voice(),
+            0u32..1024,
+            pitch(),
+            1u32..64,
+            proptest::option::of(source_ref()),
+            drop_reason()
+        )
+            .prop_map(
+                |(voice, row, pitch, length, source, reason)| Proposal::DropNote {
+                    voice,
+                    row,
+                    pitch,
+                    length: NonZeroU32::new(length).expect("non-zero"),
+                    source,
+                    reason,
+                }
+            ),
+        (
+            voice(),
+            0u32..1024,
+            pitch(),
+            proptest::option::of(source_ref())
+        )
+            .prop_map(|(voice, row, pitch, source)| Proposal::Retrigger {
+                voice,
+                row,
+                pitch,
+                source
+            }),
+    ]
+}
+
+/// Any reason to drop a note.
+pub fn drop_reason() -> impl Strategy<Value = DropReason> {
+    prop_oneof![
+        Just(DropReason::Ghost),
+        Just(DropReason::TooShort),
+        Just(DropReason::Repeat),
+        Just(DropReason::Skyline),
+        Just(DropReason::Overlap),
+        Just(DropReason::Clash),
+        Just(DropReason::Unmapped),
+        Just(DropReason::Interleave),
     ]
 }
 

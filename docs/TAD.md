@@ -56,7 +56,7 @@ Stages and ports:
 | instruments | — | preset library (`presets/*.toml` + `.ins`) |
 | render | `Renderer` | `score64-emu` helper over a pipe (GPL, separate process; reSIDfp engine, ADR-011) |
 | score | — | `score64-analysis` |
-| pack | `Packer` | gt2reloc (external program) |
+| pack | `Packer` | gt2reloc (external program; `score64_adapters::gt2reloc`, #50) |
 | report | — | static HTML |
 
 ## 3. Score model (`score64-core`)
@@ -79,10 +79,13 @@ pub struct SourceRef { content: ContentHash /* blake3 of the source or stem */, 
 ```
 
 - **Time is rows.** Notes, arpeggios, marks, tempo changes and loop points are integer rows; a note's gate ends at `row + length` unless the next note is `Legato`. Wall-clock time appears only in `SourceRef`, as integer microseconds into the source file it names by content hash (ADR-004), so provenance survives renames.
-- **Tempo** is frames per row, set per subtune and changed by `TempoChange` events on the grid (`Subtune::frames_per_row_at`, `Subtune::frames`). With four rows per beat, a tracker quotes BPM = 750 / frames-per-row at a nominal 50 Hz; a PAL C64 really runs at 50.1246 Hz, 0.249 % faster (see `reference/tempo-grid.md`). `FramesPerRow` is 3 to 127. GoatTracker tempo values below 3 select **funktempo** (alternating row lengths), which the score does **not** model yet, and a hard restart needs the frames anyway.
+- **Tempo** is frames per row, set per subtune and changed by `TempoChange` events on the grid (`Subtune::frames_per_row_at`, `Subtune::frames`). With four rows per beat, a tracker quotes BPM = 750 / frames-per-row at a nominal 50 Hz; a PAL C64 really runs at 50.1246 Hz, 0.249 % faster. The frame rate follows the target's `VideoStandard`, PAL by default; NTSC runs at 59.826 Hz, so `snap_tempo` takes the standard (see `reference/tempo-grid.md`). The project setting that picks it arrives with E4 (#139). `FramesPerRow` is 3 to 127. GoatTracker tempo values below 3 select **funktempo** (alternating row lengths), which the score does **not** model yet, and a hard restart needs the frames anyway.
 - **The grid** (`score64_core::grid`) joins the two clocks:
-  - `snap_tempo` picks the row length whose real PAL tempo is nearest a detected tempo, choosing only from 3 upwards. It reports the nominal and real tempo, the relative error and the drift per minute.
+  - `snap_tempo` picks the row length whose real tempo on the target's video standard is nearest a detected tempo, choosing only from 3 upwards. It reports the nominal and real tempo, the relative error and the drift per minute.
   - `BeatGrid` turns source times (µs) into rows from the beat tracker's beats, spreading rows evenly between beats so rubato never accumulates. `quantise` gives a note's row and length, and how far its start moved (at most half a row).
+  - `BeatGrid::quantise_part` (`score64_core::transcription`) puts a `TranscribedPart` on the grid: one stem's or instrument's `SourceNote`s in µs and MIDI pitch, with the source's content hash.
+    - **Notes:** each comes back as a fresh-attack grid note with the transcriber's confidence and a `SourceRef` to its span, in row then pitch order. Overlaps stay; the reduction resolves them (#40).
+    - **Report (`QuantiseReport`):** per part, the mean and largest start error in rows, how many starts moved more than a quarter row, how many notes were shorter than half a row and stretched to one, and every note left out, with why: a pitch GoatTracker can't play, a start before row 0 (or past the last row a song can have), or an empty span (#36). The notes come out in one canonical order whatever order the transcriber gave them in.
 - **Instruments and roles change within a line.** A voice line has a default instrument, and any note may name its own (a drum line's kick, snare and hi-hat). Its roles are spans from a row on, the first at row 0, so a voice can switch role at a bar line (for example, voice 3 from bass to drums under `sfx-shares-v3`), as `voice_role` decisions do.
 - **Subtunes have stable names** (`title`, `calm`, `peak`, …), unique in the song. The position in the list is the number the game passes to init; decisions and project files refer to the name, so adding or reordering subtunes cannot re-target them.
 - **Timing marks belong to the subtune.** The player has one mark byte (start+$3F with `-H1`), which the game reads per subtune.
@@ -128,18 +131,120 @@ Roles can be narrowed per voice so the validator catches, say, a lead line in a 
 
 A song may hold other subtunes before or after a set, such as a title tune.
 
+**Placing the marks** (#52):
+- `AdaptiveSet::place_marks` adds a timing mark at every switch point of every layer that has none, which satisfies rule 5's mark check.
+- `AdaptiveSet::timing_marks` gives each mark at a switch point its `DXY` parameter. Values alternate `$10` and `$11`, so each one changes start+`$3F`.
+- A layer's marks that aren't switch points get no `DXY`, so the byte changes only where the set allows a switch.
+- If the loop goes back to a mark with the same value as the last one, the last takes `$12`, so the jump back changes the byte too.
+- A loop with fewer than two marks can't change the byte on every pass, and `loop_changes` says so.
+- The `.sng` writer (#47) writes these as `DXY` commands.
+
+*Unverified until #47 checks them in x64sc:*
+- what start+`$3F` does across a loop jump and across init;
+- whether a layer's row-0 mark registers right after the game switches to it.
+
+Every layer starts at `$10`, so a game should treat its own init call as the switch rather than wait for a change.
+
 An expendable voice comes back after an effect only at the music's next new note (#119), so short, frequent notes suit it best; the validator warns about long ones. Its notes start with an explicit pulse width, and it is not routed through the filter (rule 4).
 
 ### 3.2 Reduction
-Lead selection by salience (pitch, density, overrides) → monophonise (skyline) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → minimum note length and ghost-note removal → loop search on downbeats → timing marks on bar lines.
+Lead selection by salience (pitch, density, overrides) → monophonise (ghost-note removal, minimum note length, skyline, overlaps) → octave fold into role ranges → chord detection per beat → wavetable arpeggio → drum folding → loop search on downbeats → timing marks at the switch points each adaptive set declares (every bar by default).
+
+`score64_core::reduce` holds the rules. Each is a pure function. Most map notes to notes plus the `Decision`s they made (provenance `Rules`, with the rule's name and version); some, such as the loop finder, only propose decisions.
+
+**Choose the lead** (`reduce::choose_lead`, rule `choose-lead@1`, #39) decides which transcribed part (a `QuantisedPart`) carries the melody in each bar of a subtune.
+
+**Salience.** Every part gets a score per bar: the weighted mean (`LeadRules`) of four scores, which are kept for review.
+- **Pitch** peaks at C-5.
+- **Density** is best at about one note a beat.
+- **Continuity** rewards a single line moving in steps; a repeated pitch gets no step credit.
+- **Confidence** is the transcriber's.
+
+Notes held over a bar line count in the bars they sound in. Notes past the subtune's end don't count, including in a last bar that is only partly inside it.
+
+**Choosing.** A bar's best part becomes the lead only once it stays best for `min_run` bars, so a busy bar, a one-bar rest or the song's last bar doesn't flip it.
+
+**Overrides.**
+- A person's `LeadSource` decision holds from its bar until their next one. So does a model's decision once a person has accepted it (`reviewed`, ADR-008).
+- A model's holds the same way, but only where no person's is in force. Re-running a model never undoes a person's choice. Overrides that lose (overruled, outranked on their bar, unknown, or past the end) are reported.
+- The rules choose only before the first override.
+
+**Decisions.** Each rules choice is a `LeadSource` decision (`lead-b<bar>`). Its confidence is the lead's mean salience margin over the best other part, relative to its own, over its run. It is 1 when no other part plays.
+
+**Fold drums** (`reduce::fold_drums`, rule `fold-drums@1`, and `reduce::interleave_drums`, rule `interleave-drums@1`, #43) put transcribed drum hits on a voice.
+- **Kinds.** A hit's General MIDI note gives its `DrumKind`: kick, snare, hat (and cymbals) or other.
+- **Kit.** A project's `DrumKit` maps each kind to a `DrumSound`: an instrument preset, a pitch and a length in rows. The sounds themselves, such as a noise snare or a triangle kick, are presets, which Score64 doesn't name.
+- **A voice of their own.** The highest-priority hit on a row wins (kick, snare, hat, other), and each note lasts its sound's rows or until the next hit. Clashing hits and kinds missing from the kit are dropped as decisions (`clash`, `unmapped`).
+- **Interleaving.** Where no voice is free, `interleave_drums` takes the hits and another monophonic line, such as a bass, and folds the hits itself. That way it always knows which notes are drums, even when several kinds share one preset or the line plays a kit preset.
+  - A hit cuts the line note sounding over it (a `TrimNote` decision), and that note doesn't resume.
+  - `on_clash` decides a row that both start on, at confidence 0.5.
+  - Hi-hats are dropped before lengths are set (`interleave`) unless allowed.
+  - A line note after a drum hit always starts fresh (`Retrigger`).
+  - The drums keep their own instruments.
+- **Decision ids.** `drums-…` and `inter-…` ids follow monophonise's scheme (`<prefix>-<kind>-v<voice>-r<row>`, plus `-p<semitone>` for drops). A clash between kinds is certain, because priority is fixed. A clash within one kind is as sure as the winner was more confident.
+
+**Find the loop** (`reduce::find_loop`, rule `find-loop@1`, #44) proposes where a subtune jumps back to at its end.
+- **Score.** A subtune plays to its end and carries on from `loop_row`, so a good loop row is a bar start after which the music once went the way the ending goes. The `context` bars just before it (default 2) should sound like the ending: the last `context` whole bars, up to the last bar with music in it. A part bar at the end and any trailing silence are left out. Because transcriptions often end in silence, many proposals come out half sure; trimming the subtune to its music is a separate decision for #167.
+- **Comparison.** Bars are compared by chroma: each pitch class weighted by rows sounding times confidence, across all voices. Arpeggios count by their chord tones. The measure is cosine similarity.
+- **Choice.** Candidates are the bars from 1 on whose context ends before the ending's starts; bars with silent context are skipped. The best candidate at or above `min_similarity` (0.8) wins, and the earliest on a tie, which gives the longest loop. With none, the loop row is 0, at confidence 0.
+- **Decision.** One `LoopRow` decision (`loop`), as sure as the similarity. It's half as sure when the subtune ends inside a bar or after silence, because the jump then comes from music the comparison didn't see. Every candidate's score is returned for review. Tempo isn't compared: a loop row whose tempo differs from the ending's is not penalised.
+
+**Chords** (`reduce::detect_chords` and `reduce::arpeggiate`, rule `chords@1`, #42) find the harmony beat by beat and play it as arpeggios.
+- **Detection.** Each beat's 12 pitch classes are weighted by the rows each note sounds in that beat, times its confidence. Templates for every root and quality are scored: major, minor, sus4, sus2, dominant 7th, minor 7th and major 7th.
+  - **Score:** the weight on the template's tones minus the weight off them, over the beat's total weight. That is scaled by how fully the template's tones sound: a tone counts fully from a quarter of the tones' mean weight and in proportion below that, so a faint note adds little and a doubled one costs nothing. There is a small cost for each tone past three. A chord's root must sound. A beat whose best chord scores under 0.4 has no chord: a cluster, noise, or a lone note, since a melody on its own isn't harmony.
+  - **Ties:** the chord rooted on the beat's lowest note wins, then the simpler quality, then the lower root. A bare fifth with its root in the bass therefore reads as major (with the fifth in the bass, as a sus4 on the fifth). Of the sus2 on D and the sus4 on A, which are the same notes, the bass decides.
+  - **Changes:** a chord already sounding carries on through a beat while it scores at least half the floor and no other chord beats it by 0.25. A chord change needs clear evidence, so passing notes over a held chord don't spell a new one.
+  - **Spans:** beats with the same chord merge into one `ChordSpan`, whose confidence is the mean of its beats' scores. A silent beat has no chord.
+- **Arpeggios.** On an arp voice, each span is a root note and an `ArpEvent` of the chord's intervals.
+  - The root sits in the octave nearest the middle of the arp range that keeps every chord tone playable. A range with no such root, one narrower than an octave, gets the playable root nearest its middle.
+  - Each span is a `Chord` decision (`chord-v<voice>-r<row>`), which both the note and the arpeggio record.
+  - GoatTracker's wavetable encoding of an arpeggio belongs to the `.sng` writer (#47).
+
+**Monophonise** (`reduce::monophonise`, rule `monophonise@1`, #40) makes one voice's notes a single line, in four steps:
+1. It drops ghosts (confidence below `ghost_below`, 0.2 by default) and notes shorter than `min_rows`.
+2. It keeps one note per row. The skyline takes the highest, or the lowest for bass. A repeat of the same pitch merges into the longest; the other notes are dropped.
+3. It resolves overlaps. A note that starts less than `min_rows` after or before a more confident one is dropped; the most confident notes are placed first. Then a note that runs into the next is trimmed to end where the next starts. This covers ends that round past the next start (#138). Every drop is caused by a note that stays, so drops never cascade, and a note that trimming can keep is kept.
+4. It restarts (`Fresh`) a tie whose predecessor no longer ends on its row.
+
+Every drop, trim and restart is a decision. Its confidence is 1 for mechanical steps, 1 − the note's confidence for a ghost, 0.5 for a skyline pick, and for an overlap drop the confidence gap to the note that stays. Any order of the same notes gives the same line and the same decisions.
+
+Decision ids name what they're about, so they stay the same when notes elsewhere change:
+- `mono-trim-v<voice>-r<row>` for a trim;
+- `mono-tie-v<voice>-r<row>` for a restarted tie;
+- `mono-<reason>-v<voice>-r<row>-p<semitone>` for a drop, with `-2`, `-3` for further drops of one kind at one place. Those suffixes follow the drops' order, so another such drop can renumber them.
+
+They're unique within the subtune when each voice is monophonised once, with all its notes in one call.
+
+**Fold octaves** (`reduce::fold_octaves`, rule `fold-octaves@1`, #41) moves a voice line into the pitch range of its roles. The ranges are the validator's `RoleRanges`, which a project's presets will supply, so the reduction and rule 6 agree.
+- **One shift per bar.** Each bar gets a single whole-octave shift, so the melody keeps its shape inside the bar.
+- **Choosing the shift.** Only shifts that keep every note playable count. Among those it picks the one that leaves the fewest notes outside the range of the role at their row. On a tie, it moves nothing if that's as good, so a bar moves only to bring notes in. Next it prefers the previous bar's shift, if the bars are next to each other and in the same role, so the line doesn't jump an octave at a bar line. Then it takes the smallest.
+- **Notes that still don't fit** stay where they are, and rule 6 warns about them.
+- **Full-range roles never move.** Notes whose role may use the whole range (drums and texture, by default) are left alone and don't count. That's a property of the ranges, so narrowing the drums' range folds drums too, just as rule 6 then checks them.
+- **Decisions.** Each bar with a non-zero shift is one `Octave` decision, `octave-v<voice>-b<bar>`. Its confidence is the share of the bar's folded notes in range after the shift. The input can come in any order.
 
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord, loop row, frames per row.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat; no file holds decisions yet, so the kinds can still change shape), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
-Manual decisions override LLM suggestions, which override rules. A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
+Manual decisions override LLM suggestions, which override rules. `score64_core::decide::resolve` (#45) applies that wherever decisions meet.
+- **Slots.** Two decisions compete when they are about the same thing, their `Slot`:
+  - a voice's role, the lead's source, or the tempo, from a bar on;
+  - a voice's octave in a bar;
+  - the chord from a row;
+  - the subtune's loop row;
+  - a note's trim, its drop, or its fresh start, by voice, row and pitch. A drop also uses the note's length, which tells two repeats on one row apart. These are three separate slots, since one note can have all three.
+- **Ranks.** In each slot the strongest wins:
+  1. a person's decision, or a model's that a person has accepted (`reviewed`);
+  2. a model's, not yet reviewed;
+  3. the rules'.
+
+  Within a rank the lower id wins (ids compare as text), then the surer decision, so input order never matters.
+- **Over time.** Decisions that hold from a bar (voice role, lead source, tempo) also compete over time, as `choose_lead` treats leads. A decision made where a stronger one of its kind is already in force (made at that bar or earlier, for the same voice) is overruled by it. A person's choice therefore holds over any later model's or rules', until the person decides again.
+- **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
+
+A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
 
 ## 4. Project and versions (`score64-project`)
 
@@ -148,6 +253,21 @@ Manual decisions override LLM suggestions, which override rules. A decision neve
 | Intent: `track.toml`, `decisions.toml`, presets, scenarios, approvals, comments, `audio.lock` | git (text) |
 | Artifacts: stems, MIDI, `.sng`, renders, `.prg` / `.sid`, metrics | content-addressed cache `.score64/cache/<stage>/<hash>/` |
 | Index for the app: versions, metrics, search | SQLite `.score64/index.db`, rebuildable from manifests and git |
+
+**The stage cache** (`score64_project::Cache`, #26) lives at `.score64/cache/<stage>/<key>/`.
+- **Key.** An entry's key is `Cache::key`: blake3 of canonical JSON (keys sorted at every depth) of the stage, its version, its config and its input hashes. The same work always has the same key, and any change gives another. Numbers are taken as written, so `1` and `1.0` differ; that costs a needless miss, never a wrong hit. `put` computes the key from the run itself, so an entry can't claim inputs it wasn't made from.
+- **Contents.** An entry holds the artifacts and a `manifest.json`: schema, stage, key, the run (stage version, tool version, config, inputs, timings, optional cost) and each artifact's name, blake3 and size.
+- **Writing.** `put` writes an entry whole into a fresh temporary directory, syncs it, and renames it into place. The directory is named by pid, counter and clock, so another process or container can't share it, and a crashed run's leftovers never block one. If two writers race, the first rename wins and the other returns that entry; stages are pure, so either copy is right. Something that isn't a whole entry in the way, damaged or from an older layout, is replaced. If what was moved aside turns out whole, another writer got there first, and it is put back and kept. An entry from a newer Score64 is left alone.
+- **Reading.** `get` checks the manifest and every artifact's hash. A missing, partial or damaged entry is a miss, never a wrong hit.
+- **Names.** Stage and artifact names are plain names, so nothing writes outside the cache. They are also safe on every system: no leading or trailing dot, no Windows device names, and no two artifacts whose names differ only by case.
+
+**`decisions.toml`** (`score64_project::DecisionsFile`, #25) holds a track's decisions: `schema = 1`, then one `[[decision]]` table per decision, in the shape of §3.3. Each one carries `id`, `subtune`, `bar`, `confidence` and `reviewed`, a `[decision.proposal]` table tagged by `change`, and a `[decision.provenance]` table tagged by `by`.
+- **Writing.** Decisions are sorted by subtune and then id. Each one's plain fields come in declaration order, then its tables, so the same decisions always give the same bytes. A file is written to a uniquely named temporary file beside it, synced, then renamed into place.
+- **Reading.** A missing `schema` means 1, and any other version is refused.
+  - An unknown field, a bad value or a TOML error is reported with its file, line and column. One inside a `proposal` or `provenance` table points at that table's header.
+  - A manual provenance with stray fields is refused.
+  - Two decisions with one id in one subtune are reported with both `[[decision]]` lines.
+- **Not yet.** `track.toml`, the track's own intent (sources, profile, video standard, rule settings), needs its own ADR first.
 
 A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
 
@@ -173,7 +293,9 @@ fixtures/            rights-clear audio and MIDI with expected outputs
 sidecar/             optional Python scripts (uv), files in → files out (ADR-009)
 ```
 
-Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by the epics that need them): `clap`, `serde`, `toml`, `serde_json`, `blake3`, `rusqlite`, `midly`, `symphonia`, `cpal`, `rustfft`, `ort`, `reqwest`, `schemars`, `cmaes`, `rmcp`, `eframe`/`egui`, `egui_plot`, `egui-snarl`, `egui_material_icons`, `rfd`, `insta`, `proptest`. The SID engine (reSIDfp from libresidfp, GPL, vendored in `residfp-sys`, ADR-011; `resid-rs` kept for comparison until #59) and the 6502 core (`emulator_6502`, MIT, ADR-010) are dependencies of `score64-emu` only.
+Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by the epics that need them): `clap`, `serde`, `toml`, `serde_json`, `blake3`, `rusqlite`, `midly`, `symphonia`, `cpal`, `rustfft`, `ort`, `reqwest`, `schemars`, `cmaes`, `rmcp`, `eframe`/`egui`, `egui_plot`, `egui-snarl`, `egui_material_icons`, `rfd`, `insta`, `proptest`, and `process-wrap` for the sidecar. The SID engine (reSIDfp from libresidfp, GPL, vendored in `residfp-sys`, ADR-011; `resid-rs` kept for comparison until #59) and the 6502 core (`emulator_6502`, MIT, ADR-010) are dependencies of `score64-emu` only.
+
+A sidecar run (`score64_adapters::sidecar`) starts `uv` in a process tree of its own, a process group on Unix and a Job object on Windows (`process-wrap`), because `uv` does not pass a kill on to the Python it starts. When the run ends (a timeout, an error, a normal exit, or the runner being dropped), whatever is left of the tree is killed, so no script outlives its run (#126). If Score64 itself is killed or stopped with Ctrl-C, the tree survives, and on Unix a descendant that leaves the group (`setsid`) escapes it (#154).
 
 ### 5.1 The emulator helper
 `score64-emu serve` reads a packed player plus commands on stdin (load, init subtune, poke mailbox, render N frames, set chip model) and writes PCM frames and register logs on stdout, in the length-prefixed binary protocol of [`reference/emu-protocol.md`](reference/emu-protocol.md). The app keeps one helper process for live audition and renders in short chunks that continue one timeline; the CLI starts one per render. The codec (`score64_formats::emu_protocol`, MIT) is shared by the helper and the client (`score64_adapters::emu`, MIT), so the GPL code stays behind the process boundary. The protocol is versioned and covered by tests in both directions: the client against a scripted fake helper and against the real binary, and the helper against scripted request streams. The CPU sits behind a `Cpu` trait (ADR-010): the helper steps one instruction at a time, timestamps each SID write on the cycle it lands, and checks the core against a subset of the SingleStepTests 6502 vectors.
@@ -181,6 +303,7 @@ Dependencies are pinned in the workspace `Cargo.toml`. Expected set (added by th
 The machine the helper emulates is deliberately minimal (measured against VICE in [the #20 spike](research/2026-10-18-packed-player-spike.md)):
 
 - **Memory:** 64 KB of flat RAM with no ROMs and no bank switching. The SID is at `$D400`, mirrored every 32 bytes up to `$D7FF`; registers `$1D`–`$1F` of each mirror are ignored. The rest of `$D000`–`$DFFF` is plain RAM. `$00`/`$01` are plain RAM, not the 6510 port: with no ROMs there is nothing to switch. The helper counts writes to them, so a player that relies on banking gets noticed.
+- **PAL only.** The helper's clock and frame are PAL's (`score64_formats::emu_protocol::PAL_CLOCK_HZ`, `PAL_CYCLES_PER_FRAME`), so a project targeting NTSC can't be rendered or auditioned yet (#139).
 - **Interrupts: none.** The harness calls init once, then play once per PAL frame (19,656 cycles) from its own loop, as a game's raster interrupt would, and calls the sound-effect entry (start+6) the same way. The IRQ/NMI vectors at `$FFFA`–`$FFFF` are not used and no CIA or VIC is emulated, so there is no interrupt latency and no bad-line cycle stealing. PSID files whose play address is 0, and RSID files, are rejected. On a real machine interrupt latency moves the play call by a few cycles from frame to frame; the helper's is exact.
 - **Write log:** every SID write is recorded in order with its cycle inside the frame. Oracle tests diff these per frame (register, value and cycle) as well as the audio. Gate-off and hard-restart timing, where the ADSR bug shows up, depends on this order and timing.
 - **SID engine:** behind a `SidEngine` trait. The default is reSIDfp (libresidfp 1.2.3, vendored in `residfp-sys`, ADR-011), set up as sidplayfp 3.2.2 sets it (filter curves and 6581 range 0.5, combined waveforms average, resampling). Fed VICE's exact write log, it matches sidplayfp's own render at waveform r 0.998 (6581) and 0.996 (8580). Where material depends on the free-running envelope counters (slow decays), two sidplayfp runs with different power-on delays differ by as much as our engine does. `--engine resid-rs` keeps the old engine for comparison until #59.
@@ -198,7 +321,7 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Layer | What |
 |---|---|
 | Unit | Score model operations, reduction rules, tempo snapping, sound-effect encoding |
-| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Once the reduction exists, any note soup must reduce to lines with no errors (E6, #40) |
+| Property (`proptest`) | `score64_core::strategies` generates checked songs (a song plus the `Context` it satisfies), note soups and valid profiles. Properties: checked songs raise no errors (no false positives); breaking any one rule (1–6, 9) in its own way gets that rule reported (no misses), including a layer removed from or misplaced in a declared set, and rule 9's two warnings (as warnings, with no error); validation is unchanged by a JSON round trip (ADR-004); on any note soup, rule 1 fires exactly when the soup is not already a clean line; model files and encoders round-trip byte for byte. Any note soup monophonises to a line with no errors, every note kept or dropped by a decision, whatever the input order (#40); octave folding only moves pitches, by whole octaves, never leaves a bar with more notes out of range, and picks each bar's best playable shift (#41) |
 | Snapshot (`insta`) | Annotated dumps (`score64_formats::annotate`) of GoatTracker song, instrument and sound-effect bytes: one line per header field, orderlist, instrument, table row, pattern row and effect frame, accounting for every byte. Today they cover the committed fixtures (`fixtures/gt2-original`); the `.sng` and effect writers (#47, #86) snapshot their output the same way, and fixture MIDI → `.sng` follows |
 | Differential | Ports against originals: `.sng` writer vs pygoattracker; Basic Pitch vs the Python package (#21, end to end through the sidecar); features vs librosa. The sidecar (`sidecar/`, ADR-009) is a locked uv project whose scripts write a blake3 manifest that `score64_adapters::sidecar` validates. These tests are opt-in (`SCORE64_SIDECAR=1`), print SKIPPED otherwise, and run in CI's `sidecar` job |
 | Oracle | Packed player rendered by `score64-emu` vs sidplayfp, within tolerance |

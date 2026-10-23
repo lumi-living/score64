@@ -57,6 +57,7 @@ Pure Rust, one cargo workspace (native: macOS, Windows, Linux):
 - `crates/score64-app` — Score64 Studio (egui/eframe).
 - `crates/score64-emu` — **GPL-3.0-or-later** helper binary: 6502 + SID emulation for rendering and live audition. Kept separate so everything else stays MIT ([ADR-002](docs/adr/ADR-002-mit-with-gpl-emulator-helper.md)).
 - `crates/residfp-sys` — **GPL-2.0-or-later**: reSIDfp (libresidfp, vendored) behind a C shim, the helper's SID engine ([ADR-011](docs/adr/ADR-011-residfp-sid-engine.md)). Only `score64-emu` uses it.
+- `xtask/` — maintenance tasks (`cargo xtask …`).
 
 ## Roadmap
 
