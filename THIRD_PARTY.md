@@ -70,6 +70,36 @@ Attribution 4.0 International. The dataset can be found at:
 https://zenodo.org/record/5578807#.YnRm5vPMKDU
 ```
 
+## ONNX Runtime (linked library)
+
+- **What:** ONNX Runtime 1.31.0, linked statically into the `score64` CLI through the `ort` crate (2.0.0-rc.14, MIT or Apache-2.0), which downloads pyke's prebuilt builds of it. It runs the Basic Pitch model.
+- **Source:** Microsoft, <https://github.com/microsoft/onnxruntime>. Its own third-party notices: <https://github.com/microsoft/onnxruntime/blob/v1.31.0/ThirdPartyNotices.txt>.
+- **Licence:** MIT:
+
+```
+MIT License
+
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## vocadito (derived test data)
 
 - **What:** `crates/score64-adapters/testdata/basic-pitch/vocadito_10/`: Basic Pitch activations computed from `vocadito_10.wav` (the audio itself is not committed).

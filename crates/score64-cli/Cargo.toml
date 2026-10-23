@@ -23,3 +23,9 @@ score64-core = { workspace = true }
 
 [lints]
 workspace = true
+
+# Built and released by dist (dist-workspace.toml).
+[package.metadata.dist]
+dist = true
+# Notices for the third-party code linked into the CLI: ONNX Runtime and the Basic Pitch port.
+include = ["../../THIRD_PARTY.md"]
