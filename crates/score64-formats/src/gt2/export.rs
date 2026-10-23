@@ -31,7 +31,9 @@ const TIMING_MARK: u8 = 0xD;
 const TEMPO: u8 = 0xF;
 /// The highest note the player's frequency table holds, B-7: a note plus an arpeggio interval must stay at or below
 /// it, because the player adds them modulo 128.
-const HIGHEST_NOTE: u8 = 95;
+const HIGHEST_NOTE: u16 = 95;
+/// Instruments 1–62: 63 is left free, because it can carry a tempo setting.
+const MAX_INSTRUMENTS: usize = sng::MAX_INSTRUMENTS - 1;
 
 /// Instruments by preset id: each a GoatTracker instrument with its own tables, as in a `.ins` file.
 pub type Library = BTreeMap<PresetId, Ins>;
@@ -54,6 +56,9 @@ pub struct Exported {
     pub sng: Sng,
     /// Each preset's instrument number (1-based), in number order.
     pub instruments: Vec<(PresetId, u8)>,
+    /// Whether the song writes timing marks, so it must be packed with author info and timing marks on (`-H1`);
+    /// without it gt2reloc drops them.
+    pub timing_marks: bool,
 }
 
 /// Why a score can't be written as a GoatTracker song.
@@ -143,6 +148,7 @@ struct Builder<'a> {
     order: Vec<PresetId>,
     sng: Sng,
     patterns: HashMap<Pattern, u8>,
+    timing_marks: bool,
 }
 
 impl Builder<'_> {
@@ -155,17 +161,22 @@ impl Builder<'_> {
             .library
             .get(preset)
             .ok_or_else(|| ExportError::UnknownPreset(preset.clone()))?;
-        if self.sng.instruments.len() >= sng::MAX_INSTRUMENTS {
+        // Instrument 63 can carry a tempo setting (`docs/reference/goattracker-files.md`), so it stays unused.
+        if self.sng.instruments.len() >= MAX_INSTRUMENTS {
             return Err(ExportError::TooMuch(format!(
-                "more than {} instruments",
-                sng::MAX_INSTRUMENTS
+                "more than {MAX_INSTRUMENTS} instruments"
             )));
         }
+        let offsets = Offsets {
+            pulse: self.sng.pulse.rows.len(),
+            filter: self.sng.filter.rows.len(),
+            speed: self.sng.speed.rows.len(),
+        };
         let mut i = ins.instrument.clone();
-        i.wave = merge(&mut self.sng.wave, &ins.wave, i.wave, true)?;
-        i.pulse = merge(&mut self.sng.pulse, &ins.pulse, i.pulse, true)?;
-        i.filter = merge(&mut self.sng.filter, &ins.filter, i.filter, true)?;
-        i.vibrato = merge(&mut self.sng.speed, &ins.speed, i.vibrato, false)?;
+        i.wave = merge(&mut self.sng.wave, &ins.wave, i.wave, Some(&offsets))?;
+        i.pulse = merge(&mut self.sng.pulse, &ins.pulse, i.pulse, None)?;
+        i.filter = merge(&mut self.sng.filter, &ins.filter, i.filter, None)?;
+        i.vibrato = merge_speed(&mut self.sng.speed, &ins.speed, i.vibrato)?;
         self.sng.instruments.push(i);
         let n = self.sng.instruments.len() as u8;
         self.numbers.insert(preset.clone(), n);
@@ -191,22 +202,50 @@ impl Builder<'_> {
     }
 }
 
-/// Append `from` to `into` and return where `pointer` (1-based into `from`, 0 for none) now points. With `jumps`,
-/// `$FF` rows' targets move too (the wave, pulse and filter tables; the speedtable has none).
-fn merge(into: &mut Table, from: &Table, pointer: u8, jumps: bool) -> Result<u8, ExportError> {
+/// Where an instrument's pulse, filter and speed tables start in the song's, for the wavetable's command rows.
+struct Offsets {
+    pulse: usize,
+    filter: usize,
+    speed: usize,
+}
+
+/// Append `from` (a wave, pulse or filter table) to `into` and return where `pointer` (1-based into `from`, 0 for
+/// none) now points. `$FF` rows' jump targets move with it. For the wavetable, `wave` also moves the table pointers of
+/// its command rows (`$F0`–`$FE`): commands 1–4 and E index the speedtable, 9 the pulsetable and A the filtertable, as
+/// gt2reloc relocates them.
+fn merge(
+    into: &mut Table,
+    from: &Table,
+    pointer: u8,
+    wave: Option<&Offsets>,
+) -> Result<u8, ExportError> {
     let offset = into.rows.len();
     if offset + from.rows.len() > 255 {
         return Err(ExportError::TooMuch(
             "the instruments' tables pass 255 rows".into(),
         ));
     }
-    into.rows.extend(from.rows.iter().map(|&(l, r)| {
-        if jumps && l == WAVE_JUMP && r != 0 {
-            (l, r + offset as u8)
-        } else {
-            (l, r)
-        }
-    }));
+    let shift = |r: u8, by: usize| if r == 0 { 0 } else { r + by as u8 };
+    into.rows
+        .extend(from.rows.iter().map(|&(l, r)| match (l, wave) {
+            (WAVE_JUMP, _) => (l, shift(r, offset)),
+            (0xF1..=0xF4 | 0xFE, Some(o)) => (l, shift(r, o.speed)),
+            (0xF9, Some(o)) => (l, shift(r, o.pulse)),
+            (0xFA, Some(o)) => (l, shift(r, o.filter)),
+            _ => (l, r),
+        }));
+    Ok(shift(pointer, offset))
+}
+
+/// Append a speedtable, which has no jumps, and return where the vibrato pointer now points.
+fn merge_speed(into: &mut Table, from: &Table, pointer: u8) -> Result<u8, ExportError> {
+    let offset = into.rows.len();
+    if offset + from.rows.len() > 255 {
+        return Err(ExportError::TooMuch(
+            "the instruments' tables pass 255 rows".into(),
+        ));
+    }
+    into.rows.extend_from_slice(&from.rows);
     Ok(if pointer == 0 {
         0
     } else {
@@ -234,8 +273,10 @@ pub fn export(
         order: Vec::new(),
         sng,
         patterns: HashMap::new(),
+        timing_marks: false,
     };
     for subtune in &song.subtunes {
+        shape(subtune)?;
         let lists = subtune_rows(&mut b, subtune, adaptive)?;
         let cuts = cuts(subtune);
         let mut voices: [Orderlist; 3] = Default::default();
@@ -247,7 +288,7 @@ pub fn export(
             list.restart = cuts
                 .iter()
                 .position(|&c| c == subtune.loop_row)
-                .unwrap_or(0) as u8;
+                .expect("the loop row starts a pattern") as u8;
         }
         b.sng.subtunes.push(voices);
     }
@@ -265,7 +306,59 @@ pub fn export(
     Ok(Exported {
         sng: b.sng,
         instruments,
+        timing_marks: b.timing_marks,
     })
+}
+
+/// What the export relies on that the validator checks too (rules 1 and 2), refused here rather than written wrong:
+/// notes, tempo changes and the loop row inside the subtune, notes on one voice not overlapping, a legato note
+/// straight after the note it ties to, and no note sounding across the loop row (after the jump back it couldn't).
+fn shape(subtune: &Subtune) -> Result<(), ExportError> {
+    let length = subtune.length.get();
+    let bad = |why: String| {
+        Err(ExportError::Invalid(format!(
+            "`{}`: {why}",
+            subtune.name.as_str()
+        )))
+    };
+    if subtune.loop_row >= length {
+        return bad(format!("the loop row {} is past the end", subtune.loop_row));
+    }
+    if let Some(t) = subtune.tempo.iter().find(|t| t.row >= length) {
+        return bad(format!("a tempo change at row {} is past the end", t.row));
+    }
+    for line in &subtune.voices {
+        let v = line.voice.get();
+        let mut notes: Vec<_> = line.notes.iter().collect();
+        notes.sort_by_key(|n| n.row);
+        let mut sounding_until = None;
+        for n in &notes {
+            let end = u64::from(n.row) + u64::from(n.length.get());
+            if end > u64::from(length) {
+                return bad(format!(
+                    "voice {v}: a note at row {} runs past the end",
+                    n.row
+                ));
+            }
+            if sounding_until.is_some_and(|e| u64::from(n.row) < e) {
+                return bad(format!("voice {v}: notes overlap at row {}", n.row));
+            }
+            if n.attack == Attack::Legato && sounding_until != Some(u64::from(n.row)) {
+                return bad(format!(
+                    "voice {v}: the legato note at row {} has no note to tie to",
+                    n.row
+                ));
+            }
+            if n.row < subtune.loop_row && end > u64::from(subtune.loop_row) {
+                return bad(format!(
+                    "voice {v}: a note sounds across the loop row {}; start one on it or end it before",
+                    subtune.loop_row
+                ));
+            }
+            sounding_until = Some(end);
+        }
+    }
+    Ok(())
 }
 
 /// Where patterns start and end: every bar start and the loop row, with pieces longer than 128 rows split, and the
@@ -323,10 +416,25 @@ fn subtune_rows(
             "a tempo change".to_string(),
         )
     }));
+    // After the jump back the tempo is whatever played last, so the loop row sets its own if that differs.
+    let at_loop = subtune.frames_per_row_at(subtune.loop_row);
+    let at_end = subtune.frames_per_row_at(subtune.length.get() - 1);
+    if subtune.loop_row > 0
+        && at_loop != at_end
+        && !subtune.tempo.iter().any(|t| t.row == subtune.loop_row)
+    {
+        global.push((
+            subtune.loop_row,
+            TEMPO,
+            at_loop.get(),
+            "the tempo after the loop".to_string(),
+        ));
+    }
     if let Some(set) = adaptive.iter().find(|s| s.layers().contains(&subtune.name)) {
+        let marks = set.timing_marks(subtune).marks;
+        b.timing_marks |= !marks.is_empty();
         global.extend(
-            set.timing_marks(subtune)
-                .marks
+            marks
                 .into_iter()
                 .map(|m| (m.row, TIMING_MARK, m.value, "a timing mark".to_string())),
         );
@@ -360,79 +468,113 @@ fn voice_rows(
     rows: &mut Rows,
 ) -> Result<(), ExportError> {
     let length = rows.len();
-    let clash = |row: u32, what: &str| ExportError::CommandClash {
+    let clash = |row: usize, what: &str| ExportError::CommandClash {
         subtune: subtune.name.clone(),
         voice: Some(line.voice),
-        row,
+        row: row as u32,
         what: what.to_string(),
     };
     let mut notes: Vec<_> = line.notes.iter().collect();
     notes.sort_by_key(|n| n.row);
+    // The instrument each note plays with: its own, or its line's; a tie keeps the one it ties to.
+    let mut playing = Vec::with_capacity(notes.len());
     for (k, note) in notes.iter().enumerate() {
         let r = note.row as usize;
-        let preset = note.instrument.as_ref().unwrap_or(&line.instrument);
-        let instrument = b.instrument(preset)?;
         rows[r].note = NOTE_FIRST + note.pitch.semitone();
         match note.attack {
-            Attack::Fresh => rows[r].instrument = instrument,
+            Attack::Fresh => {
+                let preset = note.instrument.as_ref().unwrap_or(&line.instrument);
+                let instrument = b.instrument(preset)?;
+                rows[r].instrument = instrument;
+                playing.push((preset.clone(), instrument));
+            }
             Attack::Legato => {
                 rows[r].command = TIE;
                 rows[r].data = 0;
+                let before = playing
+                    .last()
+                    .cloned()
+                    .expect("shape: a tie follows a note");
+                playing.push(before);
             }
         }
-        let end = (note.row + note.length.get()) as usize;
+        let end = r + note.length.get() as usize;
         let next = notes.get(k + 1).map(|n| n.row as usize);
         if end < length && next != Some(end) {
             rows[end].note = KEY_OFF;
         }
     }
-    for arp in &line.arps {
-        let r = arp.row as usize;
-        let Some(note) = notes
-            .iter()
-            .rev()
-            .find(|n| n.row <= arp.row && arp.row < n.row + n.length.get())
-        else {
-            continue; // an arpeggio over silence plays nothing
-        };
-        let preset = note.instrument.as_ref().unwrap_or(&line.instrument);
-        let instrument = b.instrument(preset)?;
-        let highest = arp.intervals.iter().copied().max().unwrap_or(0);
-        if note.pitch.semitone() + highest > HIGHEST_NOTE {
-            return Err(ExportError::TooHigh {
-                subtune: subtune.name.clone(),
-                voice: line.voice,
-                row: arp.row,
-            });
-        }
-        let ins = &b.sng.instruments[usize::from(instrument) - 1];
-        let own = ins.wave;
-        let waveform = (own > 0)
-            .then(|| b.sng.wave.rows[usize::from(own) - 1].0)
-            .filter(|&w| wave::WAVEFORMS.contains(&w) && w & wave::GATE != 0 && w & wave::TEST == 0)
-            .ok_or_else(|| ExportError::NoArpWaveform(preset.clone()))?;
-        let start = wave::arpeggio(
-            &mut b.sng.wave,
-            waveform,
-            &arp.intervals,
-            NonZeroU8::new(1).expect("one"),
-        )
-        .map_err(|e| ExportError::TooMuch(e.to_string()))?;
-        if rows[r].command != 0 {
-            return Err(clash(arp.row, "an arpeggio and a tie"));
-        }
-        rows[r].command = SET_WAVE_POINTER;
-        rows[r].data = start;
-        // Back to the instrument's own program where the event ends, if the note sounds on.
-        let end = (arp.row + arp.length.get()) as usize;
-        let note_end = (note.row + note.length.get()) as usize;
-        let new_note = notes.iter().any(|n| n.row as usize == end);
-        if end < length && end < note_end && !new_note {
-            if rows[end].command != 0 {
-                return Err(clash(end as u32, "an arpeggio's end and another command"));
+    // A note sounding at the end would sound on after the jump back; a key-off on the loop row stops it, unless a
+    // note starts there (shape: none sounds across it).
+    let loop_row = subtune.loop_row as usize;
+    let at_end = notes
+        .last()
+        .is_some_and(|n| (n.row + n.length.get()) as usize == length);
+    if at_end && rows[loop_row].note == REST {
+        rows[loop_row].note = KEY_OFF;
+    }
+    let mut arps: Vec<_> = line.arps.iter().collect();
+    arps.sort_by_key(|a| a.row);
+    for (k, arp) in arps.iter().enumerate() {
+        let (from, to) = (arp.row as usize, (arp.row + arp.length.get()) as usize);
+        let highest = arp.intervals.iter().copied().max().map_or(0, u16::from);
+        // Every note that sounds during the event: the one under its start, and each fresh note inside it, whose
+        // start resets the wave pointer. A tie keeps the program running.
+        for (n, (preset, instrument)) in notes.iter().zip(&playing) {
+            let (start, end) = (n.row as usize, (n.row + n.length.get()) as usize);
+            if end <= from || start >= to {
+                continue;
             }
-            rows[end].command = SET_WAVE_POINTER;
-            rows[end].data = own;
+            if u16::from(n.pitch.semitone()) + highest > HIGHEST_NOTE {
+                return Err(ExportError::TooHigh {
+                    subtune: subtune.name.clone(),
+                    voice: line.voice,
+                    row: n.row.max(arp.row),
+                });
+            }
+            let r = start.max(from);
+            if r > from && n.attack == Attack::Legato {
+                continue;
+            }
+            let own = b.sng.instruments[usize::from(*instrument) - 1].wave;
+            let waveform = (own > 0)
+                .then(|| b.sng.wave.rows[usize::from(own) - 1].0)
+                .filter(|&w| {
+                    wave::WAVEFORMS.contains(&w) && w & wave::GATE != 0 && w & wave::TEST == 0
+                })
+                .ok_or_else(|| ExportError::NoArpWaveform(preset.clone()))?;
+            let program = wave::arpeggio(
+                &mut b.sng.wave,
+                waveform,
+                &arp.intervals,
+                NonZeroU8::new(1).expect("one"),
+            )
+            .map_err(|e| ExportError::TooMuch(e.to_string()))?;
+            if rows[r].command != 0 {
+                return Err(clash(
+                    r,
+                    "an arpeggio and another command (a tie, or another arpeggio)",
+                ));
+            }
+            rows[r].command = SET_WAVE_POINTER;
+            rows[r].data = program;
+        }
+        // Back to the instrument's own program where the event ends, if a note sounds on there and nothing else sets
+        // the pointer: no note starts there, and no other arpeggio does.
+        let sounding = notes
+            .iter()
+            .zip(&playing)
+            .find(|(n, _)| (n.row as usize) < to && to < (n.row + n.length.get()) as usize);
+        let next_arp = arps.get(k + 1).is_some_and(|a| a.row as usize == to);
+        if let Some((_, (_, instrument))) = sounding
+            && to < length
+            && !next_arp
+        {
+            if rows[to].command != 0 {
+                return Err(clash(to, "an arpeggio's end and another command"));
+            }
+            rows[to].command = SET_WAVE_POINTER;
+            rows[to].data = b.sng.instruments[usize::from(*instrument) - 1].wave;
         }
     }
     Ok(())

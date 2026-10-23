@@ -17,7 +17,7 @@ The validator in `score64-core` rejects a song that:
 3. exceeds the voice count of its profile,
 4. routes a voice through the filter where its subtune's profile does not allow it, or starts a note on an expendable voice without an explicit pulse width (and warns about lead, bass or long notes there),
 5. breaks a declared adaptive set: a layer missing or out of order, or a declared switch point without a timing mark (§3.1),
-6. violates the role's pitch range after octave folding (a warning),
+6. violates the role's pitch range after octave folding (a warning), or plays an arpeggio note above B-7, the player's highest (an error),
 7. produces sound-effect data that breaks the format rules (`reference/goattracker-sfx.md`),
 8. packs larger than the configured budget, or uses zero page outside the configured pair,
 9. gives an instrument a gate timer that is not below the tempo on a row it plays, or turns a note's gate off before it can sound (and warns when a note keeps only one or two gated frames, or when a fresh note's instrument has gate-off disabled so it won't retrigger; see `reference/sid.md` §Hard restart).
@@ -233,19 +233,32 @@ They're unique within the subtune when each voice is monophonised once, with all
 
 ### 3.2.1 Writing a GoatTracker song
 
-`score64_formats::gt2::export(song, library, adaptive, header)` turns a validated score into an `Sng` (#47). The library maps preset ids to GoatTracker instruments with their own tables, in `.ins` form; the presets (#49) will fill it.
+`score64_formats::gt2::export(song, library, adaptive, header)` turns a validated score into an `Sng` (#47). The library maps preset ids to GoatTracker instruments with their own tables, in `.ins` form; the presets (#49) will fill it. It refuses, rather than writes wrong, what the validator also catches: notes or tempo changes past the end, overlapping notes, a legato note with nothing to tie to, and a note sounding across the loop row (after the jump back it couldn't be).
 
 - **Patterns.** Each voice's rows are cut at every bar start and at the loop row, into pieces of at most 128 rows. So all three orderlists stay in step, and the restart position is the pattern that starts at the loop row. Identical patterns are shared across voices and subtunes, up to GoatTracker's 208.
 - **Notes.**
   - A fresh note plays with its instrument.
   - A legato note ties with `3` `00` and no instrument, so it isn't retriggered (#137).
   - A note followed by silence ends with a key-off. One followed directly by another note leaves the gate to that note's hard restart.
-- **Song-wide commands.** These go on the first voice with a free command slot; a row with none is an error:
-  - the tempo (`Fxx`, all voices) on row 0 and at each tempo change;
-  - each timing mark of an adaptive layer (`DXY`, values from `AdaptiveSet::timing_marks`).
-- **Arpeggios** use `8XY` and §3.2's wavetable programs. A note plus an interval must stay at or below B-7, and the instrument's first wavetable row must give a gated waveform.
-- **Instruments** are numbered by first use, with their tables moved into the song's and pointers and jumps relocated.
-- **Evidence.** `crates/score64-adapters/tests/sng_export.rs` exports a score, packs it with the real `gt2reloc` and plays it in the emulator helper. It checks the notes' frequency ratios, the tie holding the gate, the key-off, and the arpeggio stepping each frame. (In that render, row 0 starts at frame 7 at 6 frames a row, and the gate timer closes the gate 2 frames before a key-off's row.) It runs where `gt2reloc` is installed, which CI isn't. Listening on 6581 and 8580, and VICE, are still to do.
+  - A note that runs to the end, when the loop row is silent, gets a key-off on the loop row, so it stops after the jump back.
+- **Song-wide commands.** These go on the first voice with a free command slot, after the voices' own commands; a row with none is an error:
+  - the tempo (`Fxx`, all voices) on row 0, at each tempo change, and on the loop row when the tempo there differs from the tempo at the end;
+  - each timing mark of an adaptive layer (`DXY`, values from `AdaptiveSet::timing_marks`). `Exported::timing_marks` says the song must be packed with `-H1`.
+- **Arpeggios** use `8XY` and §3.2's wavetable programs, one frame a step.
+  - Every note sounding during the event gets the pointer: the one under its start, and each fresh note inside it, since a new note resets the wave pointer. A tie keeps the program running.
+  - Where the event ends while a note sounds on, the voice goes back to that note's instrument's program, unless another arpeggio starts there.
+  - A note plus an interval must stay at or below B-7 (rule 6 checks it), and the instrument's first wavetable row must give a gated waveform.
+- **Instruments** are numbered by first use, up to 62; 63 stays free because it can carry a tempo setting. Their tables move into the song's: pointers, `$FF` jump targets, and the wavetable's command rows (`1`–`4XY` and `EXY` into the speedtable, `9XY` the pulsetable, `AXY` the filtertable), as gt2reloc relocates them.
+- **Not yet checked:** that the library's gate timers and gate-off flags match the instrument facts the validator used (#49), and that the adaptive sets passed here are the validator's.
+- **Evidence.** `crates/score64-adapters/tests/sng_export.rs` exports scores, packs them with the real `gt2reloc` and plays them in the emulator helper. It checks:
+  - the notes' frequency ratios;
+  - the tie holding the gate;
+  - each key-off;
+  - the tempo (5 frames a row, not GoatTracker's default 6);
+  - every frame of an arpeggio, from its first row to its last;
+  - after a jump back to a silent loop row, the last note stopped and the loop row's tempo restored.
+
+  In those renders the gate timer closes the gate 2 frames before a key-off's row. The test runs where `gt2reloc` is installed, which CI isn't. Listening on 6581 and 8580, and VICE, are still to do.
 
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:

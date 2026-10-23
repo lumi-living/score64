@@ -157,8 +157,12 @@ fn line_end(line: &VoiceLine) -> u32 {
 pub fn voice_line(voice: Voice) -> impl Strategy<Value = VoiceLine> {
     (roles(), preset(), notes()).prop_map(move |(roles, instrument, notes)| {
         let end = notes.last().map_or(0, |n| n.row + n.length.get());
-        // One arpeggio over the first four rows, when there is room.
-        let arps = (end >= 4)
+        // One arpeggio over the first four rows, when there is room and its top note stays at or below B-7 (rule 6).
+        let low_enough = notes
+            .iter()
+            .filter(|n| n.row < 4)
+            .all(|n| n.pitch.semitone() + 7 <= 95);
+        let arps = (end >= 4 && low_enough)
             .then(|| ArpEvent {
                 row: 0,
                 length: NonZeroU32::new(4).expect("non-zero"),

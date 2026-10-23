@@ -8,6 +8,8 @@ use score64_core::{
     ArpEvent, Confidence, FramesPerRow, Note, Pitch, Role, Roles, Schema, Switch, TempoChange,
 };
 
+use proptest::prelude::*;
+
 use super::*;
 use crate::gt2::Instrument;
 
@@ -282,14 +284,13 @@ fn timing_marks_and_tempo_changes_take_free_slots() {
                 1,
                 "lead",
                 vec![
-                    note(0, 4, "C-4", Attack::Fresh),
+                    note(0, 16, "C-4", Attack::Fresh),
                     note(16, 4, "D-4", Attack::Legato),
                 ],
             ),
             line(2, "bass", vec![note(0, 4, "C-2", Attack::Fresh)]),
         ],
     );
-    s.voices[0].notes[1].attack = Attack::Legato;
     s.tempo = vec![TempoChange {
         row: 16,
         frames_per_row: FramesPerRow::new(5).unwrap(),
@@ -428,4 +429,378 @@ fn the_song_round_trips_through_its_file() {
     assert_eq!(Sng::read(&bytes).unwrap(), out.sng);
     assert!(crate::annotate::sng(&bytes).is_ok());
     assert_eq!(out.sng.subtunes.len(), 2);
+}
+
+fn arp(row: u32, length: u32, intervals: &[u8]) -> ArpEvent {
+    ArpEvent {
+        row,
+        length: NonZeroU32::new(length).unwrap(),
+        intervals: intervals.to_vec(),
+        decision: None,
+    }
+}
+
+fn one(lead: VoiceLine) -> Result<Exported, ExportError> {
+    export(
+        &song(vec![subtune("m", vec![lead])]),
+        &library(),
+        &[],
+        &header(),
+    )
+}
+
+#[test]
+fn back_to_back_notes_have_no_key_off_between() {
+    let out = one(line(
+        1,
+        "lead",
+        vec![
+            note(0, 4, "C-4", Attack::Fresh),
+            note(4, 4, "D-4", Attack::Fresh),
+        ],
+    ))
+    .unwrap();
+    let rows = rows_of(&out.sng, 0, 0);
+    assert_eq!((rows[4].note, rows[4].instrument), (n("D-4"), 1));
+    assert_eq!(rows[8].note, KEY_OFF);
+}
+
+#[test]
+fn the_loop_stops_a_note_that_runs_to_the_end() {
+    // A note to the end, looping to a silent row 0: a key-off there, so it doesn't sound on after the jump.
+    let out = one(line(1, "lead", vec![note(16, 16, "C-4", Attack::Fresh)])).unwrap();
+    assert_eq!(rows_of(&out.sng, 0, 0)[0].note, KEY_OFF);
+    // A note on the loop row restarts anyway.
+    let out = one(line(
+        1,
+        "lead",
+        vec![
+            note(0, 4, "D-4", Attack::Fresh),
+            note(16, 16, "C-4", Attack::Fresh),
+        ],
+    ))
+    .unwrap();
+    assert_eq!(rows_of(&out.sng, 0, 0)[0].note, n("D-4"));
+    // A note across the loop row can't be played after the jump.
+    let mut s = subtune(
+        "m",
+        vec![line(1, "lead", vec![note(12, 8, "C-4", Attack::Fresh)])],
+    );
+    s.loop_row = 16;
+    assert!(matches!(
+        export(&song(vec![s]), &library(), &[], &header()),
+        Err(ExportError::Invalid(why)) if why.contains("across the loop row")
+    ));
+}
+
+#[test]
+fn the_loop_row_sets_the_tempo_it_needs() {
+    let mut s = subtune(
+        "m",
+        vec![line(1, "lead", vec![note(16, 4, "C-4", Attack::Fresh)])],
+    );
+    s.loop_row = 16;
+    s.tempo = vec![TempoChange {
+        row: 24,
+        frames_per_row: FramesPerRow::new(4).unwrap(),
+    }];
+    let out = export(&song(vec![s.clone()]), &library(), &[], &header()).unwrap();
+    let tempo = |sng: &Sng, row: usize| {
+        (0..3)
+            .map(|v| rows_of(sng, 0, v)[row])
+            .find(|r| r.command == TEMPO)
+            .map(|r| r.data)
+    };
+    assert_eq!(
+        tempo(&out.sng, 16),
+        Some(6),
+        "back to 6 after the jump from the 4 at the end"
+    );
+    assert_eq!(tempo(&out.sng, 24), Some(4));
+    // No change in the loop: nothing extra.
+    s.tempo.clear();
+    let out = export(&song(vec![s]), &library(), &[], &header()).unwrap();
+    assert_eq!(tempo(&out.sng, 16), None);
+}
+
+#[test]
+fn scores_the_validator_would_refuse_are_refused_not_written_wrong() {
+    let invalid = |lead: VoiceLine, loop_row: u32, tempo_row: Option<u32>| {
+        let mut s = subtune("m", vec![lead]);
+        s.loop_row = loop_row;
+        s.tempo = tempo_row
+            .map(|row| TempoChange {
+                row,
+                frames_per_row: FramesPerRow::new(4).unwrap(),
+            })
+            .into_iter()
+            .collect();
+        match export(&song(vec![s]), &library(), &[], &header()) {
+            Err(ExportError::Invalid(why)) => why,
+            other => panic!("{other:?}"),
+        }
+    };
+    let c = || line(1, "lead", vec![note(0, 4, "C-4", Attack::Fresh)]);
+    assert!(
+        invalid(
+            line(1, "lead", vec![note(30, 4, "C-4", Attack::Fresh)]),
+            0,
+            None
+        )
+        .contains("past the end")
+    );
+    assert!(invalid(c(), 32, None).contains("loop row 32"));
+    assert!(invalid(c(), 0, Some(40)).contains("tempo change at row 40"));
+    let overlap = line(
+        1,
+        "lead",
+        vec![
+            note(0, 8, "C-4", Attack::Fresh),
+            note(4, 4, "D-4", Attack::Fresh),
+        ],
+    );
+    assert!(invalid(overlap, 0, None).contains("overlap"));
+    let loose_tie = line(
+        1,
+        "lead",
+        vec![
+            note(0, 4, "C-4", Attack::Fresh),
+            note(8, 4, "D-4", Attack::Legato),
+        ],
+    );
+    assert!(invalid(loose_tie, 0, None).contains("no note to tie to"));
+}
+
+#[test]
+fn an_arpeggio_follows_the_notes_it_spans() {
+    // Over two fresh notes: a pointer on each, since a new note resets the wave pointer.
+    let mut l = line(
+        1,
+        "lead",
+        vec![
+            note(0, 8, "C-3", Attack::Fresh),
+            note(8, 8, "F-3", Attack::Fresh),
+        ],
+    );
+    l.arps = vec![arp(0, 16, &[0, 4, 7])];
+    let rows = rows_of(&one(l).unwrap().sng, 0, 0);
+    assert_eq!(
+        (rows[0].command, rows[8].command),
+        (SET_WAVE_POINTER, SET_WAVE_POINTER)
+    );
+    assert_eq!(rows[0].data, rows[8].data);
+    assert_eq!(rows[16].command, 0, "the event ends with the note");
+    // Starting over silence: from the first note inside it.
+    let mut l = line(1, "lead", vec![note(4, 8, "C-3", Attack::Fresh)]);
+    l.arps = vec![arp(0, 12, &[0, 3])];
+    let rows = rows_of(&one(l).unwrap().sng, 0, 0);
+    assert_eq!(
+        (rows[0].command, rows[4].command),
+        (TEMPO, SET_WAVE_POINTER)
+    );
+    // A tie inside keeps the program; the restore comes where the event ends, though the tied note sounds on.
+    let mut l = line(
+        1,
+        "lead",
+        vec![
+            note(0, 4, "C-3", Attack::Fresh),
+            note(4, 12, "D-3", Attack::Legato),
+        ],
+    );
+    l.arps = vec![arp(0, 8, &[0, 4])];
+    let rows = rows_of(&one(l).unwrap().sng, 0, 0);
+    assert_eq!(
+        (rows[4].command, rows[8].command, rows[8].data),
+        (TIE, SET_WAVE_POINTER, 1)
+    );
+    // Two arpeggios back to back on one note: the second sets its own program, with no restore between.
+    let mut l = line(1, "lead", vec![note(0, 16, "C-3", Attack::Fresh)]);
+    l.arps = vec![arp(4, 4, &[0, 4, 7]), arp(8, 4, &[0, 3, 7])];
+    let out = one(l).unwrap();
+    let rows = rows_of(&out.sng, 0, 0);
+    assert_eq!(
+        (rows[4].command, rows[8].command, rows[12].command),
+        (SET_WAVE_POINTER, SET_WAVE_POINTER, SET_WAVE_POINTER)
+    );
+    assert_ne!(rows[4].data, rows[8].data);
+    assert_eq!(rows[12].data, 1, "back to the instrument's own program");
+    // An event ending where a new note starts leaves the pointer to that note.
+    let mut l = line(
+        1,
+        "lead",
+        vec![
+            note(0, 8, "C-3", Attack::Fresh),
+            note(8, 8, "D-3", Attack::Fresh),
+        ],
+    );
+    l.arps = vec![arp(0, 8, &[0, 4])];
+    let rows = rows_of(&one(l).unwrap().sng, 0, 0);
+    assert_eq!((rows[8].note, rows[8].command), (n("D-3"), 0));
+}
+
+#[test]
+fn the_highest_arpeggio_note_is_b7() {
+    let mut ok = line(1, "lead", vec![note(0, 4, "G#7", Attack::Fresh)]);
+    ok.arps = vec![arp(0, 4, &[0, 3])];
+    assert!(one(ok).is_ok());
+    let mut high = line(1, "lead", vec![note(0, 4, "G#7", Attack::Fresh)]);
+    high.arps = vec![arp(0, 4, &[0, 4])];
+    assert!(matches!(one(high), Err(ExportError::TooHigh { .. })));
+    let mut huge = line(1, "lead", vec![note(0, 4, "C-4", Attack::Fresh)]);
+    huge.arps = vec![arp(0, 4, &[0, 255])];
+    assert!(
+        matches!(one(huge), Err(ExportError::TooHigh { .. })),
+        "no overflow"
+    );
+}
+
+#[test]
+fn wavetable_commands_and_vibrato_point_into_the_songs_tables() {
+    // An instrument whose wavetable runs 9XY (pulse), AXY (filter) and 4XY (vibrato, speedtable), with all four
+    // tables of its own, placed after another instrument that has one row of each.
+    let mut rich = ins(0x41);
+    rich.wave.rows = vec![
+        (0x41, 0),
+        (0xF9, 0x01),
+        (0xFA, 0x01),
+        (0xF4, 0x01),
+        (0xF3, 0x00),
+        (WAVE_JUMP, 0),
+    ];
+    rich.filter.rows = vec![(0x90, 0xF1), (WAVE_JUMP, 0x01)];
+    rich.speed.rows = vec![(0x02, 0x30)];
+    rich.instrument.filter = 1;
+    rich.instrument.vibrato = 1;
+    let mut first = ins(0x21);
+    first.filter.rows = vec![(0x00, 0x80)];
+    first.speed.rows = vec![(0x01, 0x10)];
+    let lib: Library = [(preset("first"), first), (preset("rich"), rich)]
+        .into_iter()
+        .collect();
+    let s = subtune(
+        "m",
+        vec![
+            line(1, "first", vec![note(0, 4, "C-4", Attack::Fresh)]),
+            line(2, "rich", vec![note(0, 4, "C-4", Attack::Fresh)]),
+        ],
+    );
+    let out = export(&song(vec![s]), &lib, &[], &header()).unwrap();
+    let r = &out.sng.instruments[1];
+    assert_eq!((r.wave, r.pulse, r.filter, r.vibrato), (3, 3, 2, 2));
+    assert_eq!(
+        out.sng.wave.rows[2..],
+        [
+            (0x41, 0),
+            (0xF9, 0x03),
+            (0xFA, 0x02),
+            (0xF4, 0x02),
+            (0xF3, 0x00),
+            (WAVE_JUMP, 0)
+        ],
+        "pulse row 1 of 2 moves to 3, filter 1 to 2, speed 1 to 2; a zero parameter stays"
+    );
+    assert_eq!(out.sng.filter.rows[1..], [(0x90, 0xF1), (WAVE_JUMP, 0x02)]);
+    assert_eq!(out.sng.speed.rows, [(0x01, 0x10), (0x02, 0x30)]);
+}
+
+#[test]
+fn songs_past_goattrackers_limits_are_refused() {
+    // 62 instruments fit; the 63rd is left free.
+    let lib: Library = (0..63)
+        .map(|i| (preset(&format!("i{i}")), ins(0x41)))
+        .collect();
+    let voices = |count: usize| {
+        let mut s = subtune("m", vec![]);
+        s.length = NonZeroU32::new(count as u32).unwrap();
+        s.voices = vec![VoiceLine {
+            notes: (0..count as u32)
+                .map(|r| {
+                    let mut n = note(r, 1, "C-4", Attack::Fresh);
+                    n.instrument = Some(preset(&format!("i{r}")));
+                    n
+                })
+                .collect(),
+            ..line(1, "i0", vec![])
+        }];
+        s
+    };
+    assert!(export(&song(vec![voices(62)]), &lib, &[], &header()).is_ok());
+    assert!(matches!(
+        export(&song(vec![voices(63)]), &lib, &[], &header()),
+        Err(ExportError::TooMuch(why)) if why.contains("62 instruments")
+    ));
+    // More than 208 distinct patterns: 210 one-row bars, each a different note or instrument.
+    let mut s = subtune("m", vec![]);
+    s.rows_per_bar = NonZeroU8::new(1).unwrap();
+    s.length = NonZeroU32::new(210).unwrap();
+    let pitches = ["C-3", "D-3", "E-3", "F-3", "G-3"];
+    s.voices = vec![VoiceLine {
+        notes: (0..210u32)
+            .map(|r| {
+                let mut n = note(r, 1, pitches[(r % 5) as usize], Attack::Fresh);
+                n.instrument = Some(preset(&format!("i{}", r / 5)));
+                n
+            })
+            .collect(),
+        ..line(1, "i0", vec![])
+    }];
+    assert!(matches!(
+        export(&song(vec![s]), &lib, &[], &header()),
+        Err(ExportError::TooMuch(why)) if why.contains("208")
+    ));
+    // Tables past 255 rows.
+    let mut big = ins(0x41);
+    big.pulse.rows = vec![(0x88, 0); 200];
+    let lib: Library = [(preset("a"), big.clone()), (preset("b"), big)]
+        .into_iter()
+        .collect();
+    let s = subtune(
+        "m",
+        vec![
+            line(1, "a", vec![note(0, 4, "C-4", Attack::Fresh)]),
+            line(2, "b", vec![note(0, 4, "C-4", Attack::Fresh)]),
+        ],
+    );
+    assert!(matches!(
+        export(&song(vec![s]), &lib, &[], &header()),
+        Err(ExportError::TooMuch(why)) if why.contains("255 rows")
+    ));
+}
+
+#[test]
+fn a_song_with_timing_marks_says_it_needs_them_packed() {
+    let mut s = subtune(
+        "calm",
+        vec![line(1, "lead", vec![note(0, 4, "C-4", Attack::Fresh)])],
+    );
+    s.marks = vec![0, 16];
+    let set = AdaptiveSet::new("score", vec![SubtuneName::new("calm").unwrap()]).unwrap();
+    assert!(
+        export(&song(vec![s.clone()]), &library(), &[set], &header())
+            .unwrap()
+            .timing_marks
+    );
+    assert!(
+        !export(&song(vec![s]), &library(), &[], &header())
+            .unwrap()
+            .timing_marks
+    );
+}
+
+proptest! {
+    /// Any song the validator passes exports, unless it needs more command slots or patterns than GoatTracker has,
+    /// and the result passes GoatTracker's checks and round-trips through its file.
+    #[test]
+    fn every_valid_song_exports((song, ctx) in score64_core::strategies::checked_song()) {
+        let lib: Library = ctx.instruments.keys().map(|p| (p.clone(), ins(0x41))).collect();
+        match export(&song, &lib, &ctx.adaptive, &header()) {
+            Ok(out) => {
+                prop_assert!(out.sng.check().is_ok());
+                let bytes = out.sng.write().unwrap();
+                prop_assert_eq!(Sng::read(&bytes).unwrap(), out.sng);
+            }
+            Err(ExportError::CommandClash { .. } | ExportError::TooMuch(_)) => {}
+            Err(e) => prop_assert!(false, "{e}"),
+        }
+    }
 }

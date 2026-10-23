@@ -17,7 +17,8 @@ use score64_formats::gt2::export::{Header, Library, export};
 use score64_formats::gt2::{Ins, Instrument, Table};
 use score64_formats::psid::Psid;
 
-const FRAMES_PER_ROW: u32 = 6;
+/// Not GoatTracker's default of 6, so a missing tempo command shows.
+const FRAMES_PER_ROW: u32 = 5;
 
 fn note(row: u32, length: u32, pitch: &str, attack: Attack) -> Note {
     Note {
@@ -104,18 +105,18 @@ struct Voices {
     control: [Vec<u8>; 3],
 }
 
-#[test]
-fn an_exported_score_plays_as_written() {
+/// Export `song`, pack it with the real gt2reloc, and play `frames` frames of subtune `subtune` in the helper. `None`
+/// when either tool is missing.
+fn play(song: &Song, subtune: u8, frames: u32) -> Option<Voices> {
     let (Ok(packer), Some(helper)) = (Gt2Reloc::locate("2.73"), Helper::locate()) else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED an_exported_score_plays_as_written: needs gt2reloc on PATH and the score64-emu helper"
-        );
-        return;
+        return None;
     };
     let library: Library = BTreeMap::from([(PresetId("pulse".into()), pulse())]);
-    let exported = export(&score(), &library, &[], &Header::default()).unwrap();
-    let dir = std::env::temp_dir().join(format!("score64-export-{}", std::process::id()));
+    let exported = export(song, &library, &[], &Header::default()).unwrap();
+    // A folder per call: the tests run in parallel.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("score64-export-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let (sng, sid) = (dir.join("score.sng"), dir.join("score.sid"));
     std::fs::write(&sng, exported.sng.write().unwrap()).unwrap();
@@ -132,8 +133,7 @@ fn an_exported_score_plays_as_written() {
     let mut h = Helper::spawn(&helper, 48_000).unwrap();
     h.model(Chip::Mos8580).unwrap();
     let (init, play) = h.load_psid(&psid).unwrap();
-    h.init(init, play, 0).unwrap();
-    let frames = 32 * FRAMES_PER_ROW;
+    h.init(init, play, subtune).unwrap();
     let rendered = h.render(frames, true).unwrap();
 
     // Replay the writes into register state, frame by frame.
@@ -153,13 +153,31 @@ fn an_exported_score_plays_as_written() {
             v.control[k].push(regs[base + 4]);
         }
     }
+    Some(v)
+}
+
+fn skipped(test: &str) {
+    let _ = writeln!(
+        std::io::stderr(),
+        "SKIPPED {test}: needs gt2reloc on PATH and the score64-emu helper"
+    );
+}
+
+#[test]
+fn an_exported_score_plays_as_written() {
+    let frames = 32 * FRAMES_PER_ROW;
+    let Some(v) = play(&score(), 0, frames) else {
+        return skipped("an_exported_score_plays_as_written");
+    };
     // Row 0 starts where the first note does (its first frame sets the test bit, $09): a few frames in, after init
-    // and the player's first row fetch. Rows then follow every 6 frames.
+    // and the player's first row fetch. Rows then follow every FRAMES_PER_ROW frames.
     let start = v.control[0].iter().position(|&c| c != 0).unwrap() as u32;
     assert!(start < 2 * FRAMES_PER_ROW, "row 0 starts at frame {start}");
     let frame = |row: u32, offset: u32| (start + row * FRAMES_PER_ROW + offset) as usize;
     let freq = |k: usize, row: u32, offset: u32| f64::from(v.freq[k][frame(row, offset)]);
-    let gate = |k: usize, row: u32| v.control[k][frame(row, 3)] & 1 == 1;
+    // On a row's second frame: the gate timer closes the gate 2 frames before a key-off's row, which at 5 frames a
+    // row reaches into the row before.
+    let gate = |k: usize, row: u32| v.control[k][frame(row, 1)] & 1 == 1;
     let ratio = |a: f64, b: f64, semitones: f64| {
         let want = 2f64.powf(semitones / 12.0);
         assert!((a / b - want).abs() < 0.01, "{a} / {b} is not {want}");
@@ -175,6 +193,8 @@ fn an_exported_score_plays_as_written() {
     assert_eq!(v.control[0][frame(8, 0) - 2] & 1, 0);
     assert!(!gate(0, 9) && !gate(0, 11));
     assert!(gate(0, 13));
+    // G-4's own key-off before row 14.
+    assert!(!gate(0, 15));
 
     // Voice 2: C-3 alone before the arpeggio, then C-3, E-3 and G-3 a frame each, then C-3 alone again.
     let c3 = freq(1, 2, 0);
@@ -192,5 +212,58 @@ fn an_exported_score_plays_as_written() {
         arp.windows(2).all(|w| w[0] != w[1]),
         "a new step every frame: {arp:?}"
     );
+    // Exactly rows 4 to 11: C-3 up to row 4, then the cycle root, third, fifth from row 4's first frame, one step a
+    // frame, then C-3 alone again from row 12 (no stepping on its following frames).
+    assert_eq!(freq(1, 3, FRAMES_PER_ROW - 1), c3);
+    for f in frame(4, 0)..frame(12, 0) {
+        let step = [0.0, 4.0, 7.0][(f - frame(4, 0)) % 3];
+        ratio(f64::from(v.freq[1][f]), c3, step);
+    }
+    assert!((0..3).all(|o| freq(1, 12, o) == c3));
     assert!((frame(13, 0)..frame(15, 0)).all(|f| f64::from(v.freq[1][f]) == c3));
+}
+
+/// After the jump back to a silent loop row, the last note stops and the loop row's tempo returns.
+#[test]
+fn the_loop_stops_the_last_note_and_restores_the_tempo() {
+    // Loop to row 16, which is silent; C-4 at row 20, E-4 from row 28 to the end; 4 frames a row from row 24.
+    let mut song = score();
+    let s = &mut song.subtunes[0];
+    s.loop_row = 16;
+    s.tempo = vec![score64_core::TempoChange {
+        row: 24,
+        frames_per_row: FramesPerRow::new(4).unwrap(),
+    }];
+    s.voices.truncate(1);
+    s.voices[0].notes = vec![
+        note(20, 4, "C-4", Attack::Fresh),
+        note(28, 4, "E-4", Attack::Fresh),
+    ];
+    let fpr = FRAMES_PER_ROW as usize;
+    let Some(v) = play(&song, 0, 400) else {
+        return skipped("the_loop_stops_the_last_note_and_restores_the_tempo");
+    };
+    // C-4's first frame (the $09 test bit) marks row 20 the first time round.
+    let starts: Vec<usize> = (1..v.control[0].len())
+        .filter(|&f| v.control[0][f] == 0x09 && v.control[0][f - 1] != 0x09)
+        .collect();
+    let row20 = starts[0];
+    // Rows 20-23 at 5 frames, 24-31 at 4, then the jump to row 16: rows 16-19 at 5 again.
+    let jump = row20 + 4 * fpr + 8 * 4;
+    assert!(starts.len() >= 3, "{starts:?}");
+    assert_eq!(
+        starts[1],
+        row20 + 4 * fpr + 4 * 4,
+        "E-4 on row 28, after 4 rows at 5 and 4 at 4"
+    );
+    assert_eq!(
+        starts[2],
+        jump + 4 * fpr,
+        "C-4 again, 4 rows at the loop row's tempo after the jump"
+    );
+    // E-4 stops at the loop row: its key-off closes the gate (2 frames early), and it stays closed until C-4.
+    assert!(
+        (jump..jump + 4 * fpr).all(|f| v.control[0][f] & 1 == 0),
+        "silent after the jump"
+    );
 }

@@ -13,6 +13,7 @@ publish.workspace = true
 score64-core = { workspace = true }
 
 [dev-dependencies]
+score64-core = { workspace = true, features = ["proptest"] }
 insta = { workspace = true }
 proptest = { workspace = true }
 
