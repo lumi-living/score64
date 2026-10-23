@@ -38,7 +38,7 @@ Unknown keys are errors. Instrument facts move to the presets (E7) when those ex
 - **Rule 3** checks each voice against its subtune's profile (§3.1), including the role of every span. A profile name that isn't defined is a problem; the profile checks are skipped for that subtune, but the others still run.
 - **Rule 4** applies each voice's filter permission, and requires explicit pulse widths on expendable voices. An instrument without facts is an error, because it can't be checked. On expendable voices the rule also warns about lead or bass, and about notes longer than `Context::expendable_long_rows` (4 rows, one beat, by default): after an effect the voice is silent until its next note (#119).
 - **Rule 5** applies each declared adaptive set (§3.1): layer order, and a timing mark at every declared switch point.
-- **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere.
+- **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere. It is an **error** for an arpeggio note to pass B-7: the player adds the interval to the note, and its frequency table ends there.
 - **Rule 7** waits for the sound-effect model (E13).
 - **Rule 8** is `check_pack(PackFacts, PackBudget)`, run after packing.
 - **Rule 9** follows GoatTracker's gate timer. Instrument facts state it (0–63), along with whether gate-off and hard restart happen. Frames are counted with the tempo map (`Subtune::frames`), so tempo changes between notes are respected.
@@ -233,7 +233,7 @@ They're unique within the subtune when each voice is monophonised once, with all
 
 ### 3.2.1 Writing a GoatTracker song
 
-`score64_formats::gt2::export(song, library, adaptive, header)` turns a validated score into an `Sng` (#47). The library maps preset ids to GoatTracker instruments with their own tables, in `.ins` form; the presets (#49) will fill it. It refuses, rather than writes wrong, what the validator also catches: notes or tempo changes past the end, overlapping notes, a legato note with nothing to tie to, and a note sounding across the loop row (after the jump back it couldn't be).
+`score64_formats::gt2::export(song, library, adaptive, header)` turns a validated score into an `Sng` (#47). The library maps preset ids to GoatTracker instruments with their own tables, in `.ins` form; the presets (#49) will fill it. It refuses, rather than writes wrong: notes or tempo changes past the end, overlapping notes or arpeggios, a legato note with nothing to tie to (on the loop row, after the jump back too), a note sounding across the loop row (after the jump back it couldn't be), and an arpeggio ending on a tie (that row's command slot holds the tie, so the program couldn't be stopped).
 
 - **Patterns.** Each voice's rows are cut at every bar start and at the loop row, into pieces of at most 128 rows. So all three orderlists stay in step, and the restart position is the pattern that starts at the loop row. Identical patterns are shared across voices and subtunes, up to GoatTracker's 208.
 - **Notes.**

@@ -804,3 +804,71 @@ proptest! {
         }
     }
 }
+
+#[test]
+fn an_arpeggio_ending_on_a_tie_is_refused() {
+    let mut l = line(
+        1,
+        "lead",
+        vec![
+            note(0, 8, "C-3", Attack::Fresh),
+            note(8, 8, "D-3", Attack::Legato),
+        ],
+    );
+    l.arps = vec![arp(0, 8, &[0, 4])];
+    assert!(matches!(
+        one(l),
+        Err(ExportError::CommandClash { voice: Some(_), row: 8, what, .. }) if what.contains("tie")
+    ));
+}
+
+#[test]
+fn a_tie_on_the_loop_row_needs_a_note_sounding_at_the_end() {
+    let looped = |notes: Vec<Note>| {
+        let mut s = subtune("m", vec![line(1, "lead", notes)]);
+        s.loop_row = 16;
+        export(&song(vec![s]), &library(), &[], &header())
+    };
+    // Silence at the end: after the jump the tie has nothing to tie to.
+    assert!(matches!(
+        looped(vec![note(8, 8, "C-3", Attack::Fresh), note(16, 8, "D-3", Attack::Legato)]),
+        Err(ExportError::Invalid(why)) if why.contains("after the jump back")
+    ));
+    // A note running to the end: it ties into the loop row's note both times round.
+    assert!(
+        looped(vec![
+            note(8, 8, "C-3", Attack::Fresh),
+            note(16, 8, "D-3", Attack::Legato),
+            note(28, 4, "E-3", Attack::Fresh),
+        ])
+        .is_ok()
+    );
+}
+
+#[test]
+fn overlapping_arpeggios_are_refused() {
+    let mut l = line(1, "lead", vec![note(0, 16, "C-3", Attack::Fresh)]);
+    l.arps = vec![arp(0, 8, &[0, 4]), arp(4, 8, &[0, 3])];
+    assert!(matches!(
+        one(l),
+        Err(ExportError::Invalid(why)) if why.contains("arpeggios overlap at row 4")
+    ));
+}
+
+#[test]
+fn the_restore_points_at_the_sounding_notes_own_program() {
+    // `bass` is the second instrument, so its own program starts at wavetable row 3.
+    let mut bass = line(2, "bass", vec![note(0, 16, "C-2", Attack::Fresh)]);
+    bass.arps = vec![arp(0, 8, &[0, 7])];
+    let s = subtune(
+        "m",
+        vec![
+            line(1, "lead", vec![note(0, 4, "C-4", Attack::Fresh)]),
+            bass,
+        ],
+    );
+    let out = export(&song(vec![s]), &library(), &[], &header()).unwrap();
+    assert_eq!(out.sng.instruments[1].wave, 3);
+    let rows = rows_of(&out.sng, 0, 1);
+    assert_eq!((rows[8].command, rows[8].data), (SET_WAVE_POINTER, 3));
+}

@@ -357,6 +357,26 @@ fn shape(subtune: &Subtune) -> Result<(), ExportError> {
             }
             sounding_until = Some(end);
         }
+        // A tie on the loop row also ties to whatever sounds at the end, after the jump back.
+        if let Some(tie) = notes
+            .iter()
+            .find(|n| n.row == subtune.loop_row && n.attack == Attack::Legato)
+            && sounding_until != Some(u64::from(length))
+        {
+            return bad(format!(
+                "voice {v}: the legato note on the loop row {} has no note to tie to after the jump back",
+                tie.row
+            ));
+        }
+        // Arpeggios on one voice one after another: each one's end sets the pointer the next would need.
+        let mut arps: Vec<_> = line.arps.iter().collect();
+        arps.sort_by_key(|a| a.row);
+        if let Some(w) = arps
+            .windows(2)
+            .find(|w| w[1].row < w[0].row + w[0].length.get())
+        {
+            return bad(format!("voice {v}: arpeggios overlap at row {}", w[1].row));
+        }
     }
     Ok(())
 }
@@ -566,6 +586,16 @@ fn voice_rows(
             .zip(&playing)
             .find(|(n, _)| (n.row as usize) < to && to < (n.row + n.length.get()) as usize);
         let next_arp = arps.get(k + 1).is_some_and(|a| a.row as usize == to);
+        // A tie where the event ends keeps the arpeggio running, and its row's slot holds the tie, so the program
+        // can't be stopped there.
+        if to < length
+            && !next_arp
+            && notes
+                .iter()
+                .any(|n| n.row as usize == to && n.attack == Attack::Legato)
+        {
+            return Err(clash(to, "an arpeggio's end and a tie"));
+        }
         if let Some((_, (_, instrument))) = sounding
             && to < length
             && !next_arp
