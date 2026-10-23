@@ -108,6 +108,10 @@ pub fn arpeggio(
     if intervals.is_empty() {
         return Err(WaveError::Empty);
     }
+    // A table already past what a song can hold (`Table.rows` is public).
+    if table.rows.len() > 255 {
+        return Err(WaveError::Full);
+    }
     if let Some(&i) = intervals.iter().find(|&&i| i > MAX_INTERVAL) {
         return Err(WaveError::Interval(i));
     }

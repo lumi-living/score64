@@ -99,7 +99,14 @@ fn what_the_wavetable_cannot_hold_is_refused() {
         t.rows.iter().all(|&(l, _)| l != 0x40),
         "nothing written on an error"
     );
-    // 255 rows at most.
+    // 255 rows at most, and a table already past that is refused rather than wrapped.
+    let mut over = Table {
+        rows: vec![(0x81, 0x80); 256],
+    };
+    assert_eq!(
+        arpeggio(&mut over, 0x41, &[0], step(1)),
+        Err(WaveError::Full)
+    );
     let mut t = Table {
         rows: vec![(0x81, 0x80); 250],
     };

@@ -37,7 +37,7 @@ The tables are the instrument's own, so a file of an instrument with no tables i
 
 `score64_formats::gt2::wave::arpeggio`. Sources:
 - the GoatTracker 2 readme v2.72: §3.4.1 (Wavetable) with its examples, the `8XY` command, the gate-bit note under the pattern note keys, and §4's error conditions;
-- the player's stepping, as `src/gplay.c` and `src/player.s` implement it (leafo/goattracker2, checked in the #182 review).
+- the player's stepping, as `src/gplay.c` (lines 438, 513, 522, 695–709) and `src/player.s` (236, 893–951) implement it, in leafo/goattracker2 at commit `a78e7e5273bf`. That mirror doesn't state its version, so it may not be v2.72.
 
 - **The wavetable steps one row per frame.**
   - **Left side:**
