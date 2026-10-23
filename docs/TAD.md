@@ -254,6 +254,13 @@ A decision never changes the song by itself. An engine command (`writes_project`
 | Artifacts: stems, MIDI, `.sng`, renders, `.prg` / `.sid`, metrics | content-addressed cache `.score64/cache/<stage>/<hash>/` |
 | Index for the app: versions, metrics, search | SQLite `.score64/index.db`, rebuildable from manifests and git |
 
+**The stage cache** (`score64_project::Cache`, #26) lives at `.score64/cache/<stage>/<key>/`.
+- **Key.** An entry's key is `Cache::key`: blake3 of canonical JSON (keys sorted at every depth) of the stage, its version, its config and its input hashes. The same work always has the same key, and any change gives another. Numbers are taken as written, so `1` and `1.0` differ; that costs a needless miss, never a wrong hit. `put` computes the key from the run itself, so an entry can't claim inputs it wasn't made from.
+- **Contents.** An entry holds the artifacts and a `manifest.json`: schema, stage, key, the run (stage version, tool version, config, inputs, timings, optional cost) and each artifact's name, blake3 and size.
+- **Writing.** `put` writes an entry whole into a fresh temporary directory, syncs it, and renames it into place. The directory is named by pid, counter and clock, so another process or container can't share it, and a crashed run's leftovers never block one. If two writers race, the first rename wins and the other returns that entry; stages are pure, so either copy is right. Something that isn't a whole entry in the way, damaged or from an older layout, is replaced. If what was moved aside turns out whole, another writer got there first, and it is put back and kept. An entry from a newer Score64 is left alone.
+- **Reading.** `get` checks the manifest and every artifact's hash. A missing, partial or damaged entry is a miss, never a wrong hit.
+- **Names.** Stage and artifact names are plain names, so nothing writes outside the cache. They are also safe on every system: no leading or trailing dot, no Windows device names, and no two artifacts whose names differ only by case.
+
 **`decisions.toml`** (`score64_project::DecisionsFile`, #25) holds a track's decisions: `schema = 1`, then one `[[decision]]` table per decision, in the shape of §3.3. Each one carries `id`, `subtune`, `bar`, `confidence` and `reviewed`, a `[decision.proposal]` table tagged by `change`, and a `[decision.provenance]` table tagged by `by`.
 - **Writing.** Decisions are sorted by subtune and then id. Each one's plain fields come in declaration order, then its tables, so the same decisions always give the same bytes. A file is written to a uniquely named temporary file beside it, synced, then renamed into place.
 - **Reading.** A missing `schema` means 1, and any other version is refused.
