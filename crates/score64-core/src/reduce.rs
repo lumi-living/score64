@@ -18,6 +18,7 @@ use crate::decide::Rank;
 use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, Provenance};
 use crate::score::{Attack, Note, SubtuneName, Voice};
 
+pub use crate::decide::Unapplied;
 mod chords;
 mod lead;
 mod looping;
@@ -26,9 +27,7 @@ mod octave;
 pub use chords::{
     Arpeggio, CHORDS, Chord, ChordQuality, ChordSpan, MIN_SCORE, arpeggiate, detect_chords,
 };
-pub use lead::{
-    Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, Unapplied, choose_lead,
-};
+pub use lead::{Bars, CHOOSE_LEAD, LeadChoice, LeadRules, PartSalience, Salience, choose_lead};
 pub use octave::{FOLD_OCTAVES, fold_octaves};
 mod drums;
 pub use drums::{

@@ -29,8 +29,8 @@ pub enum Unapplied {
     UnknownSubtune,
     /// The row it names isn't in its bar.
     WrongBar,
-    /// A value it proposes can't be played: an octave shift beyond ±7, a chord root above 11, or a chord whose
-    /// intervals don't start at 0 and rise.
+    /// A value it proposes can't be played: an octave shift beyond ±7, a chord root above 11, a chord whose intervals
+    /// don't start at 0 and rise, or one whose top note would be past G#7 even on its lowest root.
     OutOfRange,
     /// The note it names isn't there when the rule runs.
     NoSuchNote,
@@ -41,34 +41,39 @@ pub enum Unapplied {
 /// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.
 pub const MAX_OCTAVE_SHIFT: i8 = 7;
 
-/// Decisions checked against a song: those that can apply, and why the others can't, by id.
+/// Decisions checked against a song: those that can apply, and the others with why they can't. Whole decisions,
+/// since an id is only unique within its subtune.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Checked {
     /// The decisions that can apply, in input order.
     pub valid: Vec<Decision>,
     /// The others, in input order.
-    pub unapplied: Vec<(DecisionId, Unapplied)>,
+    pub unapplied: Vec<(Decision, Unapplied)>,
 }
 
 /// Check `decisions` against `song` before [`resolve`]: each must name a subtune of the song, a bar inside it, rows
-/// inside both, playable values, and, for a lead source, one of `sources` (the parts the lead is chosen from). A
-/// stronger decision that can't apply would otherwise hold its slot and keep a valid weaker one out.
+/// inside both and inside its own bar, playable values, and, for a lead source, one of that subtune's parts in
+/// `sources` (a subtune with no entry has none, so every lead source there is refused). A stronger decision that
+/// can't apply would otherwise hold its slot and keep a valid weaker one out.
 ///
-/// What only a reduction can see is left to it: whether the note a `trim_note`, `drop_note` or `retrigger` names is
+/// The rules make only decisions that pass, about notes that start inside the subtune; parts should be clipped to
+/// the subtune before they are reduced, or a rule's decision about a note past the end comes back `past_end`. What
+/// only a reduction can see is left to it: whether the note a `trim_note`, `drop_note` or `retrigger` names is
 /// there, and whether a trim fits.
 pub fn check(
     decisions: impl IntoIterator<Item = Decision>,
     song: &Song,
-    sources: &[ContentHash],
+    sources: &BTreeMap<SubtuneName, Vec<ContentHash>>,
 ) -> Checked {
     let mut checked = Checked {
         valid: Vec::new(),
         unapplied: Vec::new(),
     };
     for d in decisions {
-        match why_not(&d, song, sources) {
+        let parts = sources.get(&d.subtune).map_or(&[][..], Vec::as_slice);
+        match why_not(&d, song, parts) {
             None => checked.valid.push(d),
-            Some(why) => checked.unapplied.push((d.id, why)),
+            Some(why) => checked.unapplied.push((d, why)),
         }
     }
     checked
@@ -106,7 +111,10 @@ fn why_not(d: &Decision, song: &Song, sources: &[ContentHash]) -> Option<Unappli
             intervals,
         } => in_bar(*row).or_else(|| {
             let rising = intervals.first() == Some(&0) && intervals.windows(2).all(|w| w[0] < w[1]);
-            (*root > 11 || !rising).then_some(Unapplied::OutOfRange)
+            // The lowest root of its pitch class must leave room for the top note, as `arpeggiate` needs.
+            let top = intervals.last().map_or(0, |&t| u16::from(t));
+            let fits = u16::from(*root) + top <= u16::from(Pitch::MAX.semitone());
+            (*root > 11 || !rising || !fits).then_some(Unapplied::OutOfRange)
         }),
         // A loop row may be any row of the subtune; the decision's bar is the one it lands in.
         Proposal::LoopRow { row } => in_bar(*row),
@@ -145,7 +153,8 @@ pub enum Slot {
         /// The voice.
         voice: Voice,
     },
-    /// The chord from a row (rows count from the subtune's start, whatever bar the decision names).
+    /// The chord from a row (rows count from the subtune's start; [`check`] requires the row to be in the decision's
+    /// bar).
     Chord {
         /// The subtune.
         subtune: SubtuneName,
