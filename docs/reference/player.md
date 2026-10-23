@@ -11,17 +11,39 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 | +6 | Play sound effect (only when packed with sound-effect support) | `LDA #<effect` · `LDY #>effect` · `LDX #channel` (0, 7 or 14 for voices 1–3) · `JSR start+6` |
 | +6 or +9 | Set master volume (only with volume-change support; +9 when sound effects are also enabled) | `LDA #volume (0–15)` · `JSR …` |
 
+Each entry is a `JMP abs` (`$4C lo hi`) into the player. Without sound-effect support (`-D0`) and without volume-change support (gt2reloc's default; Score64 never passes `-E1`) there is no entry at +6: the bytes there are the start of the player's code (`B9 76 24`, `LDA $2476,Y`, in the fixture below). Rule 8 refuses a pack whose init or play entry, or with effects configured its effect entry, isn't a `JMP abs` into the tune past the jump table. (With `-E1` and no effects, +6 would be the volume entry, a `JMP` the effect check can't tell apart; Score64 never asks for `-E1`.)
+
+## Output containers
+
+gt2reloc picks the container from the output's extension (`sid`, `prg` or `bin`, lowercase; anything else, `.SID` or no extension included, gives a `.prg`). All three hold the same bytes, which load at the player page (`-W`):
+
+| Container | Layout |
+|---|---|
+| `.prg` | The load address (little-endian), then the bytes |
+| `.bin` | The bytes alone; they load at `-W`, which the file doesn't record |
+| `.sid` | A PSID v2 header of `$7C` bytes. Its load address (+8) is 0, so the load address (little-endian) comes first in the data. Init (+$0A) is the player start and play (+$0C) is start+3. The name, author and copyright fields come from the song |
+
+The size gt2reloc reports is the bytes without any header or load address, so `.prg` is that size plus 2 and `.sid` that size plus `$7C` + 2.
+
+**Evidence.** `fixtures/gt2-original/sixteen-steps.sng` packed by gt2reloc 2.73 with `-W20 -ZFB` (2026-10-23):
+- with `-D1` it reports 2,028 bytes: `.bin` is 2,028 bytes, `.prg` 2,030 and `.sid` 2,154; `.SID`, `.Prg`, `.xyz` or no extension give the 2,030-byte `.prg`;
+- the `.prg` starts `00 20 4C 7D 20 4C B2 20 4C 87 20`;
+- the `.sid` header starts `50 53 49 44 00 02 00 7C 00 00 20 00 20 03`, its name, author and copyright fields are the song's (`Sixteen Steps`, …), and its data starts `00 20 4C 7D 20`;
+- with `-D0` it reports 1,769 bytes, and the `.prg` starts `00 20 4C 7A 20 4C 84 20 B9 76 24`.
+
+`crates/score64-adapters/tests/pack_facts.rs` checks, for every container with and without `-D1`: the same bytes at the player page, each file's length, the `.sid` header's version, data offset, load address 0, init and play, the jump table, and no `JMP` at +6 without `-D1`.
+
 ## gt2reloc options used by Score64
 
 `gt2reloc <song.sng> <out.prg|.sid|.bin> [options]`
 
 | Option | Meaning | Score64 use |
 |---|---|---|
-| `-Dx` | Sound-effect support on/off (implies buffered SID writes) | Always `-D1` for game builds |
+| `-Dx` | Sound-effect support on/off (implies buffered SID writes) | `[pack] sound_effects` (ADR-014); `-D1` when the target plays effects |
 | `-Hx` | Store author info at start+$20…+$3F and enable timing marks | `-H1` for adaptive sets |
-| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | From project config |
-| `-Zxx` | Zero-page location (needs 2 consecutive bytes; default `FC`) | From the game's zero-page map. The default `$FC–$FD` overlaps the common `$FB–$FE` pointer convention used by many C64 programs, so Score64 always passes `-Z` explicitly |
-| `-Axx` | Hard-restart ADSR value (default `0F00`) | From the instrument preset set |
+| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | `[pack] player_page` (ADR-014) |
+| `-Zxx` | Zero-page location (needs 2 consecutive bytes; default `FC`) | `[pack] zero_page` (ADR-014), from the target's zero-page map. The default `$FC–$FD` overlaps the common `$FB–$FE` pointer convention used by many C64 programs, so Score64 always passes `-Z` explicitly |
+| `-Axx` | Hard-restart ADSR value (default `0F00`) | `[pack] hard_restart_adsr` (ADR-014); gt2reloc's default when absent |
 | `-Bx` | Buffered SID writes | Implied by `-D1` |
 | `-Cx` | Zero-page ghost registers | Avoid with sound effects (shared register state can leave a wrong pulse width after an effect) |
 | `-Jx` | Full buffering | Avoid with sound effects (same reason) |

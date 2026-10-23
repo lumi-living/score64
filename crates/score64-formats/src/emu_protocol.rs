@@ -435,6 +435,9 @@ impl Request {
                 watch,
             } => {
                 let (first, last) = outside.unwrap_or((0, 0));
+                // The count is a byte: a longer list is cut here. The helper takes at most MAX_WATCH anyway, and the
+                // client refuses more before sending.
+                debug_assert!(watch.len() <= 255, "{} watched addresses", watch.len());
                 let mut o = Out::new(TRACE);
                 o.u8(u8::from(*zero_page))
                     .u8(u8::from(outside.is_some()))
@@ -608,7 +611,8 @@ impl Reply {
                     let address = r.u16()?;
                     let start = r.u8()?;
                     let m = r.u32()? as usize;
-                    let mut changes = Vec::with_capacity(m.min(1 << 16));
+                    // Each change is 5 bytes: never reserve more than the message can hold.
+                    let mut changes = Vec::with_capacity(m.min((r.b.len() - r.pos) / 5));
                     for _ in 0..m {
                         changes.push((r.u32()?, r.u8()?));
                     }

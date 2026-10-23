@@ -1,8 +1,9 @@
 //! The validator for `docs/TAD.md` §1.3: checks a song against the SID, the player and its subtunes' voice profiles,
 //! and reports every problem with its subtune, bar, voice and a hint for fixing it.
 //!
-//! [`validate`] covers rules 1–6 and 9 from the song plus the instrument facts it needs. Rule 8 (packed size and zero page)
-//! is [`check_pack`], run after packing. Rule 7 (sound-effect data) waits for the sound-effect model (E13).
+//! [`validate`] covers rules 1–6 and 9 from the song plus the instrument facts it needs. Rule 8 (the packed tune's
+//! memory, jump table, zero page and raster time) is [`check_pack`], run after packing on measured facts. Rule 7
+//! (sound-effect data) waits for the sound-effect model (E13).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -36,7 +37,8 @@ pub enum Rule {
     PitchRange,
     /// 7: sound-effect data in the format's rules (checked once effects have a model, E13).
     Effects,
-    /// 8: packed size and zero page within the budget.
+    /// 8: the packed tune inside its memory window, with its jump table, its zero page and (optionally) its raster time
+    /// within the budget.
     Pack,
     /// 9: hard restart: gate timers below every row's tempo, and a gate-off that leaves the previous note sounding.
     HardRestart,
@@ -938,56 +940,245 @@ fn fold_hint(p: Pitch, range: PitchRange) -> String {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PackBudget {
-    /// Most bytes the packed player and data may take.
-    pub max_bytes: u32,
-    /// The zero-page pair the player may use (gt2reloc `-Z`).
+    /// First address of the memory window the target gives the tune. gt2reloc places the player on a page boundary
+    /// (`-W`), so a window that doesn't start on one can only hold a tune packed further up.
+    pub first: u16,
+    /// Last address of that window (inclusive); at least `first`.
+    pub last: u16,
+    /// The zero-page pair the player may use (gt2reloc `-Z`): this address and the next, in `$02`–`$FE` so both are
+    /// clear of the 6510's port at `$00`/`$01`.
     pub zero_page: u8,
+    /// Whether the target calls the sound-effect entry, so the jump table needs it (gt2reloc `-D1`). The check is
+    /// that start+6 is a `JMP` into the tune; a pack with volume-change support (`-E1`) but no effects would also
+    /// have one there, which Score64 never asks gt2reloc for.
+    pub sound_effects: bool,
+    /// The longest play call the target allows, in CPU cycles; unset means unchecked. The VICE harness stays the
+    /// final word on raster time (TAD §7).
+    pub max_play_cycles: Option<u32>,
 }
 
-/// What packing produced (rule 8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// What packing produced, as measured from the packed bytes and a trace of the player (rule 8).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct PackFacts {
-    /// Size of the packed player and data.
-    pub bytes: u32,
-    /// The zero-page pair it uses.
-    pub zero_page: u8,
+    /// Where the tune loads.
+    pub start: u16,
+    /// Bytes of player and data, without a file header.
+    pub size: u32,
+    /// Where each `JMP abs` at start+0 (init), +3 (play) and +6 (sound effect) goes; `None` where there is no `JMP`.
+    pub jump_table: [Option<u16>; 3],
+    /// Every zero-page address the player read or wrote, over init, play and effect calls.
+    pub zero_page_used: std::collections::BTreeSet<u8>,
+    /// The high byte of every address the player wrote outside [`PackFacts::traced_window`], other than zero page,
+    /// the stack page and the SID's registers (`$D400`–`$D418`; a write to a mirror or another SID's address counts).
+    /// A window that doesn't start or end on a page boundary shares that page with addresses outside it; a write to
+    /// those reports that page.
+    pub pages_written_outside: std::collections::BTreeSet<u8>,
+    /// The window (first and last address) the trace measured writes outside of; `None` when nothing was traced,
+    /// which rule 8 refuses, since the zero-page and outside sets would then mean nothing. It must be the budget's
+    /// window.
+    pub traced_window: Option<(u16, u16)>,
+    /// The longest play call measured, in CPU cycles, if it was measured.
+    pub max_play_cycles: Option<u32>,
 }
 
-/// Rule 8: the packed result within its budget.
-pub fn check_pack(facts: PackFacts, budget: PackBudget) -> Vec<Problem> {
+/// `$XXXX`.
+fn addr(a: u64) -> String {
+    format!("${a:04X}")
+}
+
+/// Rule 8: the packed tune inside its window, a jump table into it, zero page only in the configured pair, no writes
+/// outside the window, and (when budgeted) play calls within the raster budget.
+pub fn check_pack(facts: &PackFacts, budget: &PackBudget) -> Vec<Problem> {
     let mut out = Vec::new();
-    let problem = |message: String, hint: &str| Problem {
-        rule: Rule::Pack,
-        severity: Severity::Error,
-        subtune: None,
-        bar: None,
-        row: None,
-        voice: None,
-        message,
-        hint: hint.into(),
+    let mut problem = |message: String, hint: &str| {
+        out.push(Problem {
+            rule: Rule::Pack,
+            severity: Severity::Error,
+            subtune: None,
+            bar: None,
+            row: None,
+            voice: None,
+            message,
+            hint: hint.into(),
+        })
     };
-    if facts.bytes > budget.max_bytes {
-        out.push(problem(
+    let (first, last) = (u64::from(budget.first), u64::from(budget.last));
+    // An inverted window makes every check against it meaningless; those are skipped.
+    let window_ok = first <= last;
+    if !window_ok {
+        problem(
             format!(
-                "packed size {} bytes is over the budget of {}",
-                facts.bytes, budget.max_bytes
+                "the memory window {}–{} ends before it starts",
+                addr(first),
+                addr(last)
             ),
-            "shorten patterns, share instruments or raise the budget",
-        ));
+            "give the window's first address, then its last",
+        );
     }
-    if facts.zero_page != budget.zero_page {
-        out.push(problem(
+    if !(0x02..=0xFE).contains(&budget.zero_page) {
+        problem(
             format!(
-                "the player uses zero page ${:02X}–${:02X}, not the configured ${:02X}–${:02X}",
-                facts.zero_page,
-                facts.zero_page.wrapping_add(1),
+                "the configured zero page ${:02X} isn't a pair in $02–$FF: $00/$01 are the 6510's port",
+                budget.zero_page
+            ),
+            "configure a pair starting in $02–$FE",
+        );
+    }
+    // The tune occupies start..end (exclusive); u64, since the facts may come from anywhere.
+    let start = u64::from(facts.start);
+    let end = start + u64::from(facts.size);
+    // Where the tune itself is wrong, its jump table says nothing more.
+    let placed = facts.size > 0 && end <= 0x10000;
+    if facts.size == 0 {
+        problem(
+            "the packed tune is empty".into(),
+            "check that the packer was given a song",
+        );
+    } else if end > 0x10000 {
+        problem(
+            format!(
+                "the tune at {} is {} bytes, which runs past $FFFF",
+                addr(start),
+                facts.size
+            ),
+            "shorten patterns, share instruments or pack lower in memory",
+        );
+    } else if window_ok && (start < first || end - 1 > last) {
+        problem(
+            format!(
+                "the tune takes {}–{} ({} bytes), outside the window {}–{}",
+                addr(start),
+                addr(end - 1),
+                facts.size,
+                addr(first),
+                addr(last)
+            ),
+            if end - start > last - first + 1 {
+                "shorten patterns, share instruments or give the tune a larger window"
+            } else {
+                "pack with the player page at the window's start"
+            },
+        );
+    }
+    let entries: &[(usize, &str)] = if budget.sound_effects {
+        &[(0, "init"), (1, "play"), (2, "sound-effect")]
+    } else {
+        &[(0, "init"), (1, "play")]
+    };
+    // The jump table needs three bytes per entry inside the tune.
+    let table_end = start + 3 * entries.len() as u64;
+    if placed && table_end > end {
+        problem(
+            format!(
+                "the tune is {} byte{}, too short for its jump table ({} bytes{})",
+                facts.size,
+                if facts.size == 1 { "" } else { "s" },
+                3 * entries.len(),
+                if budget.sound_effects {
+                    " with the sound-effect entry"
+                } else {
+                    ""
+                }
+            ),
+            "check the packer's output format and that it was given a song",
+        );
+    }
+    for &(i, name) in entries.iter().filter(|_| placed && table_end <= end) {
+        let at = addr(start + 3 * i as u64);
+        match facts.jump_table[i].map(u64::from) {
+            None => problem(
+                format!("no JMP at {at}, the {name} entry"),
+                if i == 2 {
+                    "pack with sound-effect support (gt2reloc -D1)"
+                } else {
+                    "check the packer's start address and output format"
+                },
+            ),
+            Some(to) if !(start..end).contains(&to) => problem(
+                format!(
+                    "the {name} entry at {at} jumps to {}, outside the tune",
+                    addr(to)
+                ),
+                "check the packer's start address",
+            ),
+            Some(to) if to < table_end => problem(
+                format!(
+                    "the {name} entry at {at} jumps to {}, inside the jump table",
+                    addr(to)
+                ),
+                "check the packer's start address",
+            ),
+            Some(_) => {}
+        }
+    }
+    // $00/$01 are never part of the pair, even when the configured one wraps onto them.
+    let pair = [budget.zero_page, budget.zero_page.wrapping_add(1)];
+    let pair = pair.map(|z| (z >= 2).then_some(z));
+    let extra: Vec<String> = facts
+        .zero_page_used
+        .iter()
+        .filter(|&&z| !pair.contains(&Some(z)))
+        .map(|z| format!("${z:02X}"))
+        .collect();
+    if !extra.is_empty() {
+        problem(
+            format!(
+                "the player uses zero page {} outside the configured ${:02X}–${:02X}",
+                extra.join(", "),
                 budget.zero_page,
                 budget.zero_page.wrapping_add(1)
             ),
             "pack with gt2reloc -Z set to the configured pair",
-        ));
+        );
+    }
+    match facts.traced_window {
+        None => problem(
+            "the player wasn't traced, so its zero page and its writes outside the window weren't measured".into(),
+            "trace the packed tune with the emulator helper",
+        ),
+        Some((a, b)) if window_ok && (a, b) != (budget.first, budget.last) => problem(
+            format!(
+                "the trace measured writes outside {}–{}, not the window {}–{}",
+                addr(u64::from(a)),
+                addr(u64::from(b)),
+                addr(first),
+                addr(last)
+            ),
+            "trace with the budget's window",
+        ),
+        _ if window_ok && !facts.pages_written_outside.is_empty() => {
+            let pages: Vec<String> = facts
+                .pages_written_outside
+                .iter()
+                .map(|p| format!("${p:02X}xx"))
+                .collect();
+            problem(
+                format!(
+                    "the player writes outside its window {}–{}, in page{} {}",
+                    addr(first),
+                    addr(last),
+                    if pages.len() == 1 { "" } else { "s" },
+                    pages.join(", ")
+                ),
+                "check the packer's start address and the player's variables (gt2reloc -W)",
+            )
+        }
+        _ => {}
+    }
+    if let Some(max) = budget.max_play_cycles {
+        match facts.max_play_cycles {
+            None => problem(
+                format!("the play routine's time wasn't measured, and the budget is {max} cycles"),
+                "trace the packed tune with the emulator helper",
+            ),
+            Some(c) if c > max => problem(
+                format!("the longest play call takes {c} cycles, over the budget of {max}"),
+                "use fewer simultaneous effects or raise the raster budget",
+            ),
+            Some(_) => {}
+        }
     }
     out
 }

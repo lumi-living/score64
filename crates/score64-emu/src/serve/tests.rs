@@ -462,6 +462,11 @@ fn only_the_sids_registers_are_left_out() {
         (0xD438, vec![0xD4]), // a mirror
         (0xD500, vec![0xD5]), // where a second SID often sits
         (0x01F0, vec![]),     // the stack page
+        // The window is inclusive at both ends.
+        (0x1080, vec![]),
+        (0x10FF, vec![]),
+        (0x1100, vec![0x11]),
+        (0x0FFF, vec![0x0F]),
     ] {
         let replies = run(&[
             hello(),
@@ -511,6 +516,7 @@ fn a_trace_starts_at_init_and_has_its_rules() {
         watch((0..17).collect()),
         watch(vec![0x2000, 0x2000]),
         watch(vec![0xD418]),
+        watch(vec![0xD7FF]),
         Request::Trace {
             zero_page: true,
             outside: Some((0x2000, 0x1000)),
@@ -536,18 +542,80 @@ fn a_trace_starts_at_init_and_has_its_rules() {
     ]);
     assert_eq!(code(&replies[2]), ErrorCode::Sequence);
     assert_eq!(code(&replies[4]), ErrorCode::Sequence);
-    for r in &replies[5..9] {
+    for r in &replies[5..10] {
         assert_eq!(code(r), ErrorCode::Limit, "{r:?}");
     }
-    let t = traced(&replies[12]);
+    let t = traced(&replies[13]);
     assert!(t.zero_page.is_empty() && t.pages_written_outside.is_empty());
     assert_eq!(t.watched[0].changes, [(7, 0x41)]);
-    let again = traced(&replies[15]);
+    let again = traced(&replies[16]);
     assert_eq!(
         (again.watched[0].start, &again.watched[0].changes[..]),
         (0x40, &[(7, 0x41)][..])
     );
-    assert_eq!(code(&replies[18]), ErrorCode::Sequence);
+    assert_eq!(code(&replies[19]), ErrorCode::Sequence);
+}
+
+#[test]
+fn the_sid_range_refused_for_watching_is_d400_to_d7ff() {
+    for (address, refused) in [
+        (0xD3FF, false),
+        (0xD400, true),
+        (0xD7FF, true),
+        (0xD800, false),
+    ] {
+        let replies = run(&[
+            hello(),
+            Request::Trace {
+                zero_page: false,
+                outside: None,
+                watch: vec![address],
+            },
+        ]);
+        assert_eq!(replies[1] != Reply::Ok, refused, "${address:04X}");
+    }
+}
+
+#[test]
+fn each_init_starts_afresh_and_a_new_trace_waits_for_one() {
+    let replies = run(&[
+        hello(),
+        Request::Load {
+            address: 0x1000,
+            data: tracer(),
+        },
+        trace_all(),
+        init(),
+        Request::Report,
+        // An Init that runs only an RTS ($104D): nothing from the first is carried over.
+        Request::Init {
+            init: 0x104D,
+            play: 0x104D,
+            subtune: 0,
+        },
+        render(1),
+        Request::Report,
+        // A Trace while a timeline runs changes nothing about it until the next Init.
+        init(),
+        render(8),
+        Request::Trace {
+            zero_page: false,
+            outside: None,
+            watch: vec![],
+        },
+        render(8),
+        Request::Report,
+    ]);
+    assert!(traced(&replies[4]).zero_page.contains(&0xFC));
+    let fresh = traced(&replies[7]);
+    assert!(
+        fresh.zero_page.is_empty() && fresh.pages_written_outside.is_empty(),
+        "{fresh:?}"
+    );
+    assert_eq!(fresh.watched[0].changes, []);
+    let running = traced(&replies[12]);
+    assert_eq!(running.watched[0].changes, [(7, 0x41), (15, 0x42)]);
+    assert!(running.zero_page.contains(&0xFB));
 }
 
 #[test]
@@ -589,4 +657,49 @@ fn a_failed_init_has_no_trace_but_a_failed_play_keeps_its_own() {
     let t = traced(&replies[8]);
     assert_eq!(t.zero_page, [0xFB, 0xFC].into());
     assert_eq!(t.pages_written_outside, [0x20, 0xC2].into());
+}
+
+#[test]
+fn a_failed_init_after_a_good_one_leaves_nothing_and_a_failed_play_keeps_its_changes() {
+    let replies = run(&[
+        hello(),
+        Request::Load {
+            address: 0x1000,
+            data: tracer(),
+        },
+        Request::Load {
+            address: 0x1100,
+            data: vec![0x02], // JAM
+        },
+        trace_all(),
+        init(),
+        Request::Init {
+            init: 0x1100,
+            play: 0x1003,
+            subtune: 0,
+        },
+        Request::Report,
+        // Eight good frames, then the play routine jams.
+        init(),
+        render(8),
+        Request::Poke {
+            address: 0x1030,
+            value: 0x02,
+        },
+        render(1),
+        Request::Report,
+    ]);
+    assert_eq!(code(&replies[5]), ErrorCode::CpuJam);
+    assert_eq!(
+        code(&replies[6]),
+        ErrorCode::Sequence,
+        "the latest Init failed"
+    );
+    assert_eq!(code(&replies[10]), ErrorCode::CpuJam);
+    let t = traced(&replies[11]);
+    assert_eq!(
+        t.watched[0].changes,
+        [(7, 0x41)],
+        "changes before the failed call survive it"
+    );
 }
