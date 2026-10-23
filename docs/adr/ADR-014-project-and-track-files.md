@@ -171,7 +171,7 @@ Option A costs one override rule, plus the need to show resolved values in the a
   - ADR-013's provisional file can go.
 - **Harder:**
   - the override rule must be shown wherever values are displayed;
-  - moving a track between projects carries only its own file, so its new project's game-wide settings apply.
+  - moving a track between projects carries only its own file, so its new project's target-wide settings apply.
 - **Revisit when:**
   - a project needs more than one target, for example two memory maps;
   - a second output format (SID Factory II) needs its own pack settings;
