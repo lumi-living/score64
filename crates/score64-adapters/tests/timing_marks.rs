@@ -59,7 +59,11 @@ fn pulse() -> Ins {
     }
 }
 
-/// A layer: four bars, a note on every bar line, 5 frames a row and then 3 from row 40, looping to bar 2.
+/// Where each layer's notes start: three bar starts and one mid-bar row, so switch points fall on bar starts and
+/// mid-bar, with a note and without.
+const NOTE_ROWS: [u32; 4] = [0, 16, 24, 48];
+
+/// A layer: four bars with notes on [`NOTE_ROWS`], 5 frames a row and then 3 from row 40, looping to bar 2.
 fn layer(name: &str, pitch: &str) -> Subtune {
     Subtune {
         name: SubtuneName::new(name).unwrap(),
@@ -77,16 +81,14 @@ fn layer(name: &str, pitch: &str) -> Subtune {
             voice: Voice::new(1).unwrap(),
             roles: Roles::constant(Role::Lead),
             instrument: PresetId("pulse".into()),
-            notes: (0..ROWS / u32::from(BAR))
-                .map(|bar| note(bar * u32::from(BAR), pitch))
-                .collect(),
+            notes: NOTE_ROWS.iter().map(|&row| note(row, pitch)).collect(),
             arps: vec![],
         }],
     }
 }
 
-/// The frame row 0 starts on: the player's first row fetch after init, the same at every tempo and with or without
-/// `-D1` (measured).
+/// The frame row 0 starts on: the player's first row fetch after init. Checked here at 5 frames a row, with and
+/// without `-D1`; it was also measured at 3, 12, 31 and 127.
 const ROW0: u64 = 7;
 
 /// What start+$3F holds in a freshly loaded `-H1` player: the last byte of the author field, a space for a short one.
@@ -102,16 +104,19 @@ fn a_packed_adaptive_song_marks_exactly_its_switch_points() {
         );
         return;
     };
-    // Every bar (bar starts, with notes), and explicit rows: mid-bar, between notes, and on the tempo change.
+    // Every bar (bar starts, with a note on all but row 32), and explicit rows (mid-bar, with a note on 24 and
+    // none on 40, the tempo change, or 52), each packed without and with sound-effect support.
     for (switch, rows) in [
         (Switch::EveryBar, vec![0, 16, 32, 48]),
         (Switch::Rows(vec![0, 24, 40, 52]), vec![0, 24, 40, 52]),
     ] {
-        check(&packer, &helper, switch, &rows);
+        for effects in [false, true] {
+            check(&packer, &helper, switch.clone(), &rows, effects);
+        }
     }
 }
 
-fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u32]) {
+fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u32], effects: bool) {
     let every_bar = switch == Switch::EveryBar;
     let mut song = Song {
         schema: Schema::default(),
@@ -141,6 +146,7 @@ fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u3
     std::fs::write(&sng, exported.sng.write().unwrap()).unwrap();
     let options = PackOptions {
         timing_marks: true,
+        sound_effects: effects,
         ..PackOptions::new(0x10, ZeroPage::new(0xF8).unwrap())
     };
     let packed = packer.pack(&sng, &sid, &options);
@@ -155,6 +161,7 @@ fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u3
     h.load_psid(&psid).unwrap();
     // Init doesn't reset the byte: the first layer finds the loaded value, the second the first's last mark.
     let mut before = FRESH;
+    let mut pitches = Vec::new();
     for (index, subtune) in song.subtunes.iter().enumerate() {
         let name = subtune.name.as_str();
         let marks = set.timing_marks(subtune).marks;
@@ -208,20 +215,42 @@ fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u3
         assert_eq!(
             want.len(),
             10,
+            "{name}: 4 + 3 + 3 switch points over three passes"
+        );
+        assert!(
+            want.last().unwrap().0 < frames,
             "{name}: every switch point is inside the render"
         );
+        if every_bar {
+            // The tempo map's frames, as player.md states them.
+            let after_row0: Vec<u64> = rows.iter().map(|&r| subtune.frames(0, r)).collect();
+            assert_eq!(after_row0, [0, 80, 160, 224], "{name}");
+        }
         assert_eq!(
             watched.changes, want,
             "{name}: start+$3F changes (frame, value)"
         );
-        if every_bar {
-            // On bar starts every switch point has a note: each one's $09 is on the mark's frame too.
-            let marked: Vec<u64> = want.iter().map(|&(f, _)| u64::from(f)).collect();
-            assert!(
-                marked.iter().all(|f| note_frames.contains(f)),
-                "{name}: notes {note_frames:?}, marks {marked:?}"
-            );
+        // A switch point with a note changes the byte on the note's own first frame, on every pass.
+        for &r in rows.iter().filter(|r| NOTE_ROWS.contains(r)) {
+            for pass in 0..=2 {
+                if pass > 0 && r < LOOP_ROW {
+                    continue;
+                }
+                let f = at(pass, r);
+                assert!(
+                    note_frames.contains(&f),
+                    "{name}: row {r}, pass {pass}: frame {f} has no note start"
+                );
+            }
         }
+        // The subtune is the one asked for: its first note's pitch.
+        pitches.push(
+            rendered
+                .writes
+                .iter()
+                .find(|w| w.register == 0x01 && u64::from(w.frame) >= ROW0)
+                .map(|w| w.value),
+        );
         // Across the loop the value changes: the last mark before the jump differs from the first after it.
         let first_in_loop = *rows.iter().find(|&&r| r >= LOOP_ROW).unwrap();
         assert_ne!(
@@ -231,4 +260,8 @@ fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u3
         );
         before = watched.changes.last().unwrap().1;
     }
+    assert_ne!(
+        pitches[0], pitches[1],
+        "the two layers play their own notes"
+    );
 }
