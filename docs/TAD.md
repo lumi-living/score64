@@ -337,7 +337,16 @@ tracks/<id>/decisions.toml   its decisions
 - **Sources** are found by path and identified by blake3 (`Project::check_sources`), hashed as they are read. A source is *missing* when there's no file, *unreadable* when it's a folder, has no permission, or leads out of the project through a link, and *changed* when its hash differs, which names both hashes. Only sources are checked for links out of the project; the track files are read where they are. Git LFS is optional. `Project::record_hash` records a new hash on purpose, and changes only that value in the file.
 - **Writing.** Every write goes through a synced temporary file beside the target. A rewrite (`Project::record_hash`, `decisions.toml`) renames it over the old file and keeps its permissions. A new file (`Project::create`, `Project::create_track`) is hard-linked into place, so it never replaces a file, even one another writer creates meanwhile. Where hard links fail (FAT, exFAT), it checks and renames instead. A new file is written deterministically and must pass the same checks as reading, the project's included. Existing files are edited in place rather than rewritten through serde, which would drop comments and print numbers in decimal. A track id must be its folder's exact name, and a new track can't differ from an existing folder only in case. Errors give the file, line and column (in characters).
 
-A version is an immutable run, identified by a hash of intent + input hashes + tool version. Restoring creates a new version. Hand-edited `.sng` files import as versions with provenance `manual`.
+**Versions** (`score64_project::version`, #27, ADR-014 §6). A track's version id is the blake3, in the cache's canonical JSON, of its resolved intent, its sources' hashes and the tool version, tagged with the scheme (`version@1`). A test pins the fixture's id, so any change to what goes in forces a new scheme. The intent is:
+- `track.toml` without its `[target]` and `[pack]` overrides, which count only through what they resolve to, and without its sources' paths: a source is its hash, so moving the file is no new version;
+- `decisions.toml` in subtune and id order;
+- the resolved video standard and `[pack]`;
+- the definition of the profile each subtune plays with (its own, else the track's default, else `full`), so a change to a profile no subtune uses leaves it alone;
+- the project's `[validate]` and `[tools]`.
+
+How a file is written (comments, key order, hex or decimal, quoting) doesn't change the id. Everything in the intent that can change the output does, and numbers in `[rules]` must be finite so they can. Approvals, comments and `audio.lock` aren't in it, since they don't change the output; presets join it when they land (#49), with a new scheme. The track's id isn't in it, so two tracks with the same intent share a version, and a track's history keys on the track and the version together.
+
+*Still open (#27):* parent links and provenance. A content-addressed id makes restoring an old intent give its old id back, so the history of runs (which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`) is a separate record. Where it lives is to be decided.
 
 ## 5. Repository layout and dependencies
 
