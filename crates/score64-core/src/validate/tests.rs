@@ -496,7 +496,9 @@ fn rule_5_leaves_marks_past_the_end_to_rule_2() {
     let p = validate(&song, &ctx);
     assert!(p.iter().any(|p| p.rule == Rule::Grid), "{p:?}");
     assert!(!p.iter().any(|p| p.rule == Rule::TimingMarks), "{p:?}");
+}
 
+#[test]
 fn rule_6_arpeggios_stay_at_or_below_b7() {
     // An arpeggio over the theme's first lead note: fine low, an error when its top note passes B-7.
     let arp = |intervals: Vec<u8>| crate::score::ArpEvent {
