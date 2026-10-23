@@ -188,9 +188,9 @@ Option A costs one override rule, plus the need to show resolved values in the a
 
 ## Action items
 
-- [ ] `score64_project::ProjectFile` and `TrackFile` with the shared conventions, plus a `Project` that loads both and resolves overrides (#25).
-- [ ] Build the validator `Context` from the files; remove ADR-013's provisional file (#136 follow-up).
+- [x] `score64_project::ProjectFile` and `TrackFile` with the shared conventions, plus a `Project` that loads both and resolves overrides (#25).
+- [ ] Build the validator `Context` from the files; remove ADR-013's provisional file (#192).
 - [ ] Take the pack options and the `gt2reloc` pin from `[pack]` and `[tools]`, with the reference pack cached per binary in `.score64/tools/` (pack stage, E7).
-- [ ] Source checks: a missing file and a changed hash are errors naming the source (#25).
+- [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [ ] Version identity from the resolved intent (#27).
-- [ ] TAD §4: the layout and both files.
+- [x] TAD §4: the layout and both files (#25).
