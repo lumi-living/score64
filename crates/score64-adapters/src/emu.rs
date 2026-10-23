@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use score64_formats::emu_protocol::{self as proto, ErrorCode, Reply, Request};
 use score64_formats::psid::Psid;
 
-pub use score64_formats::emu_protocol::{Chip, SidWrite};
+pub use score64_formats::emu_protocol::{Chip, SidWrite, Traced, Watched};
 
 /// Why a helper call failed.
 #[derive(Debug)]
@@ -294,6 +294,37 @@ impl<R: Read, W: Write> Helper<R, W> {
         }
     }
 
+    /// Arm a trace for every following [`Self::init`]: the zero-page addresses the player touches, the pages it
+    /// writes outside `outside`, and the frames where each watched address changes. Everything off disarms it. At
+    /// most [`proto::MAX_WATCH`] addresses. A client that pokes a watched address tracks that change itself.
+    pub fn trace(
+        &mut self,
+        zero_page: bool,
+        outside: Option<(u16, u16)>,
+        watch: &[u16],
+    ) -> Result<(), HelperError> {
+        if watch.len() > proto::MAX_WATCH {
+            return Err(HelperError::Protocol(format!(
+                "{} watched addresses; the protocol allows {}",
+                watch.len(),
+                proto::MAX_WATCH
+            )));
+        }
+        self.ok(&Request::Trace {
+            zero_page,
+            outside,
+            watch: watch.to_vec(),
+        })
+    }
+
+    /// What the trace has collected since `init`, and the watched changes since the last report.
+    pub fn report(&mut self) -> Result<Traced, HelperError> {
+        match self.ask(&Request::Report)? {
+            Reply::Traced(t) => Ok(t),
+            other => Err(unexpected("Traced", &other)),
+        }
+    }
+
     /// Write one byte to C64 memory now.
     pub fn poke(&mut self, address: u16, value: u8) -> Result<(), HelperError> {
         self.ok(&Request::Poke { address, value })
@@ -326,6 +357,7 @@ fn unexpected(wanted: &str, got: &Reply) -> HelperError {
         Reply::Ready { .. } => "Ready",
         Reply::Ok => "Ok",
         Reply::Rendered { .. } => "Rendered",
+        Reply::Traced(_) => "Traced",
         Reply::Error { .. } => "Error",
     };
     HelperError::Protocol(format!("expected {wanted}, got {kind}"))
@@ -369,6 +401,52 @@ mod tests {
             helper: "fake 1".into(),
             engine: "none".into(),
         }
+    }
+
+    #[test]
+    fn trace_and_report() {
+        let traced = proto::Traced {
+            zero_page: [0xF8, 0xF9].into(),
+            pages_written_outside: [0x20].into(),
+            watched: vec![Watched {
+                address: 0x103F,
+                start: 0x20,
+                changes: vec![(7, 0x10)],
+            }],
+        };
+        let (r, w, thread) = fake(vec![
+            ready(48_000),
+            Reply::Ok,
+            Reply::Traced(traced.clone()),
+            Reply::Ok,
+        ]);
+        let mut h = Helper::connect(r, w, 48_000).unwrap();
+        h.trace(true, Some((0x1000, 0x1FFF)), &[0x103F]).unwrap();
+        assert_eq!(h.report().unwrap(), traced);
+        // A reply of the wrong kind is a protocol error.
+        assert!(
+            matches!(h.report(), Err(HelperError::Protocol(m)) if m.contains("expected Traced"))
+        );
+        // Too many addresses never reach the helper.
+        let many: Vec<u16> = (0..=proto::MAX_WATCH as u16).collect();
+        assert!(matches!(
+            h.trace(false, None, &many),
+            Err(HelperError::Protocol(_))
+        ));
+        drop(h);
+        let seen = thread.join().unwrap();
+        assert_eq!(
+            seen[1..],
+            [
+                Request::Trace {
+                    zero_page: true,
+                    outside: Some((0x1000, 0x1FFF)),
+                    watch: vec![0x103F],
+                },
+                Request::Report,
+                Request::Report,
+            ]
+        );
     }
 
     #[test]
