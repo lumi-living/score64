@@ -591,10 +591,7 @@ fn voice_rows(
         let (end_row, after) = if to < length {
             (to, next_arp)
         } else {
-            (
-                loop_row,
-                arps.first().is_some_and(|a| a.row as usize == loop_row),
-            )
+            (loop_row, arps.iter().any(|a| a.row as usize == loop_row))
         };
         if !after
             && notes
