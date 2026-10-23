@@ -32,8 +32,8 @@ Score64 targets the packed player that GoatTracker 2's relocator (`gt2reloc`, or
 
 With author info enabled, a master-volume command `DXY` with parameter `$10–$FF` is a **timing mark**: the parameter is copied to start+$3F when playback reaches it. Score64 writes a mark at each switch point an adaptive set declares (every bar by default, every N bars, or explicit rows; TAD §3.1). Successive marks alternate their values so each one registers as a change, and the game switches subtunes when the byte changes.
 
-What a packed song does with them (gt2reloc 2.73, `-H1`; traced in the emulator helper, `crates/score64-adapters/tests/timing_marks.rs`, #52):
-- The byte changes on the first frame of the marked row, the same frame the row's notes start. A row's frame is the tempo map's, so rows 0, 16, 32 and 48 of a layer at 5 frames a row, and 3 from row 40, land 0, 80, 160 and 224 frames after row 0.
+What a packed song does with them (gt2reloc 2.73, `-H1`). This was traced in the emulator helper, whose 6510 core matched VICE cycle for cycle in the #20 spike (`crates/score64-adapters/tests/timing_marks.rs`, #52). The confirmation in x64sc belongs to the VICE harness (#104).
+- The byte changes on the first frame of the marked row, the same frame the row's notes start, at a bar start or mid-bar, on a row with a note or without. A row's frame is the tempo map's, so rows 0, 16, 32 and 48 of a layer at 5 frames a row, and 3 from row 40, land 0, 80, 160 and 224 frames after row 0.
 - A jump back to the loop row runs that row's mark like any other.
 - Init doesn't reset the byte. A fresh load holds the author field's last byte there (`$20`, a space, for a short author), and a subtune started after another keeps the other's last value until its row-0 mark. Row 0 starts on the eighth play call after init (frame 7).
 

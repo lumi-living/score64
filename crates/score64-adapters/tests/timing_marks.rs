@@ -85,6 +85,13 @@ fn layer(name: &str, pitch: &str) -> Subtune {
     }
 }
 
+/// The frame row 0 starts on: the player's first row fetch after init, the same at every tempo and with or without
+/// `-D1` (measured).
+const ROW0: u64 = 7;
+
+/// What start+$3F holds in a freshly loaded `-H1` player: the last byte of the author field, a space for a short one.
+const FRESH: u8 = 0x20;
+
 #[test]
 fn a_packed_adaptive_song_marks_exactly_its_switch_points() {
     let (Ok(packer), Some(helper)) = (Gt2Reloc::locate("2.73"), Helper::locate()) else {
@@ -95,6 +102,17 @@ fn a_packed_adaptive_song_marks_exactly_its_switch_points() {
         );
         return;
     };
+    // Every bar (bar starts, with notes), and explicit rows: mid-bar, between notes, and on the tempo change.
+    for (switch, rows) in [
+        (Switch::EveryBar, vec![0, 16, 32, 48]),
+        (Switch::Rows(vec![0, 24, 40, 52]), vec![0, 24, 40, 52]),
+    ] {
+        check(&packer, &helper, switch, &rows);
+    }
+}
+
+fn check(packer: &Gt2Reloc, helper: &std::path::Path, switch: Switch, rows: &[u32]) {
+    let every_bar = switch == Switch::EveryBar;
     let mut song = Song {
         schema: Schema::default(),
         profile: ProfileName::new("full").unwrap(),
@@ -103,7 +121,7 @@ fn a_packed_adaptive_song_marks_exactly_its_switch_points() {
     let set = AdaptiveSet::with_switch(
         "layers",
         vec![song.subtunes[0].name.clone(), song.subtunes[1].name.clone()],
-        Switch::EveryBar,
+        switch,
     )
     .unwrap();
     set.place_marks(&mut song);
@@ -131,55 +149,86 @@ fn a_packed_adaptive_song_marks_exactly_its_switch_points() {
     packed.unwrap();
     let psid = Psid::parse(&bytes.unwrap()).unwrap();
     let mark = psid.load_address + 0x3F;
+    assert_eq!(psid.data[0x3F], FRESH, "start+$3F as loaded");
 
-    let mut h = Helper::spawn(&helper, 48_000).unwrap();
+    let mut h = Helper::spawn(helper, 48_000).unwrap();
     h.load_psid(&psid).unwrap();
+    // Init doesn't reset the byte: the first layer finds the loaded value, the second the first's last mark.
+    let mut before = FRESH;
     for (index, subtune) in song.subtunes.iter().enumerate() {
+        let name = subtune.name.as_str();
         let marks = set.timing_marks(subtune).marks;
-        let rows: Vec<u32> = set.switch_rows(subtune);
-        assert_eq!(rows, [0, 16, 32, 48]);
+        assert_eq!(set.switch_rows(subtune), rows, "{name}");
+        let value_at = |row: u32| {
+            marks
+                .iter()
+                .find(|m| m.row == row)
+                .unwrap_or_else(|| panic!("{name}: no mark at row {row}"))
+                .value
+        };
         // Three passes: the first, then two from the loop row.
         let first_pass = subtune.frames(0, ROWS);
         let loop_pass = subtune.frames(LOOP_ROW, ROWS);
-        let frames = (first_pass + 2 * loop_pass) as u32;
+        let frames = (ROW0 + first_pass + 2 * loop_pass) as u32;
         h.trace(false, None, &[mark]).unwrap();
         h.init(psid.init_address, psid.play_address, index as u8)
             .unwrap();
         let rendered = h.render(frames, true).unwrap();
         let traced = h.report().unwrap();
-        let changes = &traced.watched[0].changes;
+        let watched = &traced.watched[0];
+        assert_eq!(watched.start, before, "{name}: start+$3F after init");
 
         // Row 0 starts on the first note's first frame, which writes $09 (gate + test bit) to voice 1's control
         // register: an independent clock, from the SID writes rather than the mark.
-        let row0 = rendered
+        let note_frames: Vec<u64> = rendered
             .writes
             .iter()
-            .find(|w| w.register == 0x04 && w.value == 0x09)
+            .filter(|w| w.register == 0x04 && w.value == 0x09)
             .map(|w| u64::from(w.frame))
-            .expect("the first note");
-        let value_at = |row: u32| marks.iter().find(|m| m.row == row).unwrap().value;
+            .collect();
+        assert_eq!(note_frames.first(), Some(&ROW0), "{name}: row 0's frame");
+        let at = |pass: u64, row: u32| {
+            if pass == 0 {
+                ROW0 + subtune.frames(0, row)
+            } else {
+                ROW0 + first_pass + (pass - 1) * loop_pass + subtune.frames(LOOP_ROW, row)
+            }
+        };
         let mut want: Vec<(u32, u8)> = rows
             .iter()
-            .map(|&r| ((row0 + subtune.frames(0, r)) as u32, value_at(r)))
+            .map(|&r| (at(0, r) as u32, value_at(r)))
             .collect();
-        for pass in 0..2 {
-            let base = row0 + first_pass + pass * loop_pass;
+        for pass in 1..=2 {
             want.extend(
                 rows.iter()
                     .filter(|&&r| r >= LOOP_ROW)
-                    .map(|&r| ((base + subtune.frames(LOOP_ROW, r)) as u32, value_at(r))),
+                    .map(|&r| (at(pass, r) as u32, value_at(r))),
             );
         }
-        // Only the frames the render covered.
-        want.retain(|&(f, _)| f < frames);
         assert_eq!(
-            changes,
-            &want,
-            "{}: start+$3F changes (frame, value), row 0 at frame {row0}, start value ${:02X}",
-            subtune.name.as_str(),
-            traced.watched[0].start
+            want.len(),
+            10,
+            "{name}: every switch point is inside the render"
         );
+        assert_eq!(
+            watched.changes, want,
+            "{name}: start+$3F changes (frame, value)"
+        );
+        if every_bar {
+            // On bar starts every switch point has a note: each one's $09 is on the mark's frame too.
+            let marked: Vec<u64> = want.iter().map(|&(f, _)| u64::from(f)).collect();
+            assert!(
+                marked.iter().all(|f| note_frames.contains(f)),
+                "{name}: notes {note_frames:?}, marks {marked:?}"
+            );
+        }
         // Across the loop the value changes: the last mark before the jump differs from the first after it.
-        assert_ne!(value_at(48), value_at(16), "{}", subtune.name.as_str());
+        let first_in_loop = *rows.iter().find(|&&r| r >= LOOP_ROW).unwrap();
+        assert_ne!(
+            value_at(*rows.last().unwrap()),
+            value_at(first_in_loop),
+            "{name}"
+        );
+        before = watched.changes.last().unwrap().1;
     }
 }
