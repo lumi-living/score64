@@ -309,6 +309,26 @@ impl Slot {
     }
 }
 
+/// The order decisions for one slot are tried in: the highest-ranked first, and of one rank the lowest id (ids compare
+/// as text), then the surer, then by the rest of the decision, so the order they come in never matters. [`resolve`]
+/// and the rules that apply decisions in force use it alike.
+pub(crate) fn strength(a: &Decision, b: &Decision) -> std::cmp::Ordering {
+    b.rank()
+        .cmp(&a.rank())
+        .then_with(|| a.id.cmp(&b.id))
+        .then_with(|| b.confidence.get().total_cmp(&a.confidence.get()))
+        .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
+}
+
+/// Why `loser` didn't apply when `winner` took the slot: a weaker decision is overruled, an equal one outranked.
+pub(crate) fn lost_to(loser: &Decision, winner: &Decision) -> Unapplied {
+    if loser.rank() < winner.rank() {
+        Unapplied::Overruled
+    } else {
+        Unapplied::Outranked
+    }
+}
+
 /// Who stands behind a decision, weakest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rank {
@@ -339,13 +359,7 @@ pub struct Resolution {
 /// rules', until the person decides again.
 pub fn resolve(decisions: impl IntoIterator<Item = Decision>) -> Resolution {
     let mut all: Vec<(Slot, Decision)> = decisions.into_iter().map(|d| (d.slot(), d)).collect();
-    all.sort_by(|(sa, a), (sb, b)| {
-        sa.cmp(sb)
-            .then(b.rank().cmp(&a.rank()))
-            .then_with(|| a.id.cmp(&b.id))
-            .then_with(|| b.confidence.get().total_cmp(&a.confidence.get()))
-            .then_with(|| format!("{a:?}").cmp(&format!("{b:?}")))
-    });
+    all.sort_by(|(sa, a), (sb, b)| sa.cmp(sb).then_with(|| strength(a, b)));
     // One pass in slot order. In a slot the strongest comes first and wins. For the kinds that hold from a bar,
     // slots sort by subtune and then bar, so each kind's bars come in order: one record per kind (and voice) of the
     // decision in force so far, which overrules anything weaker after it, so every loser names what actually beat it.

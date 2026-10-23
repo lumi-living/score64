@@ -140,14 +140,16 @@ pub fn monophonise(
 ///   the note is unapplied (`lengthens`). Shorter than `min_rows` is a person's call: an unreviewed model's is
 ///   unapplied (`out_of_range`).
 /// - A `retrigger` gives its note a fresh start.
-/// - A `drop_note` gives way (`overruled`) to a stronger trim or fresh start of the same note: those are separate
-///   slots, so `resolve` keeps all three. It takes the note from its source span when it names one; of identical
-///   notes otherwise, the one the rule would drop.
+/// - A `drop_note` gives way (`overruled`) to a stronger trim or fresh start of the same note, even one that then
+///   can't apply: those are separate slots, so `resolve` keeps all three, and a stronger decision about the note
+///   means it should stay. It takes the note from its source span when it names one; of identical notes otherwise,
+///   the one the rule would drop.
+/// - Of several decisions for one slot (as when `resolve` hasn't run), the strongest that can apply wins and the
+///   others are `overruled` or `outranked`, as `resolve` would choose.
 ///
 /// A note an override names that isn't there (a different note is in its place, or the rule dropped it) is reported
 /// as `no_such_note`. The rule records no decision of its own for what an override did. A note an override changed
-/// records the override's id in place of this rule's (the last override to change it, in slot order); an id from an
-/// earlier rule stays. The order of `overrides` doesn't matter.
+/// records the override's id in place of this rule's; an id from an earlier rule stays. The order of `overrides` doesn't matter.
 pub fn monophonise_with(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
@@ -166,13 +168,14 @@ pub fn monophonise_with(
             _ => false,
         })
         .collect();
-    // In slot order, strongest first, so the order they come in never matters.
+    // In slot order, strongest first, so the order they come in never matters. Of several for one slot, the first
+    // that can apply wins and the rest lose to it, as `resolve` would choose.
     mine.sort_by(|a, b| {
         a.slot()
             .cmp(&b.slot())
-            .then(b.rank().cmp(&a.rank()))
-            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| crate::decide::strength(a, b))
     });
+    let mut won: BTreeMap<crate::decide::Slot, &Decision> = BTreeMap::new();
     let mut notes: Vec<Note> = notes.into_iter().collect();
     notes.sort_by(|a, b| canonical(a, b, rules.skyline));
 
@@ -189,6 +192,10 @@ pub fn monophonise_with(
         else {
             continue;
         };
+        if let Some(w) = won.get(&d.slot()) {
+            unapplied.push((d.id.clone(), crate::decide::lost_to(d, w)));
+            continue;
+        }
         let stronger = mine.iter().any(|o| {
             o.rank() > d.rank()
                 && matches!(o.proposal,
@@ -210,6 +217,7 @@ pub fn monophonise_with(
         match found {
             Some(i) => {
                 notes.remove(i);
+                won.insert(d.slot(), d);
             }
             None => unapplied.push((d.id.clone(), Unapplied::NoSuchNote)),
         }
@@ -320,6 +328,10 @@ pub fn monophonise_with(
             Proposal::TrimNote {
                 row, pitch, length, ..
             } => {
+                if let Some(w) = won.get(&d.slot()) {
+                    unapplied.push((d.id.clone(), crate::decide::lost_to(d, w)));
+                    continue;
+                }
                 let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
                     unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
@@ -335,6 +347,7 @@ pub fn monophonise_with(
                     continue;
                 }
                 trimmed.push((row, pitch));
+                won.insert(d.slot(), d);
                 // The override takes the place of the rule's trim, so the note records it when it changes the
                 // length or when the rule's trim had set it.
                 let rules_trim = n.decision.is_some() && own(&n.decision, &log);
@@ -344,10 +357,15 @@ pub fn monophonise_with(
                 n.length = length;
             }
             Proposal::Retrigger { row, pitch, .. } => {
+                if let Some(w) = won.get(&d.slot()) {
+                    unapplied.push((d.id.clone(), crate::decide::lost_to(d, w)));
+                    continue;
+                }
                 let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
                     unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
                 };
+                won.insert(d.slot(), d);
                 if n.attack != Attack::Fresh {
                     n.attack = Attack::Fresh;
                     if own(&n.decision, &log) {
