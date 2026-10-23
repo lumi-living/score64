@@ -49,9 +49,10 @@ pub struct Candidate {
 /// Where [`find_loop`] would loop, and why.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoopChoice {
-    /// The loop row: a bar start.
+    /// The loop row: a bar start the rule chose, or any row an override in force gave.
     pub row: u32,
-    /// How alike the bars before it and the ending are, 0 to 1; 0 for a loop to the start that no bar earned.
+    /// How alike the bars before it and the ending are, 0 to 1; 0 for a loop to the start that no bar earned, and for
+    /// an override's row that isn't a candidate (mid-bar, or a bar the rule didn't score).
     pub similarity: f32,
     /// Every candidate and its similarity, in bar order, for review.
     pub candidates: Vec<Candidate>,
@@ -80,23 +81,34 @@ pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
 }
 
 /// [`find_loop`] with a model's or a person's resolved `loop_row` decision in force (#167): its row replaces the
-/// rule's choice, and `by` names it. The rule still scores the candidates and makes its own decision, for review. An
-/// override past the subtune's end is unapplied (`past_end`); with more than one for the subtune, the first applies
-/// and the rest are `outranked` (resolve keeps one per subtune, so that only happens when it hasn't run).
+/// rule's choice, and `by` names it. The rule still scores the candidates and makes its own decision, for review.
+///
+/// An override is unapplied past the subtune's end (`past_end`), or on a row inside a note or on a tie
+/// (`inside_note`): after the jump back that note couldn't sound, and the export refuses it. Of several for the
+/// subtune, the strongest that can apply wins (the lowest id on a tie, as `resolve` would); the others are
+/// `overruled` or `outranked`. `unapplied` is sorted by id.
 pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decision]) -> LoopChoice {
     let mut choice = rule_loop(subtune, rules);
-    for d in overrides
+    let candidates: Vec<&Decision> = overrides
         .iter()
         .filter(|d| d.subtune == subtune.name && d.rank() != Rank::Rules)
-    {
+        .filter(|d| matches!(d.proposal, Proposal::LoopRow { .. }))
+        .collect();
+    let mut winner: Option<&Decision> = None;
+    for d in crate::decide::by_strength(candidates) {
         let Proposal::LoopRow { row } = d.proposal else {
             continue;
         };
-        if row >= subtune.length.get() {
+        if let Some(w) = winner {
+            choice
+                .unapplied
+                .push((d.id.clone(), crate::decide::lost_to(d, w)));
+        } else if row >= subtune.length.get() {
             choice.unapplied.push((d.id.clone(), Unapplied::PastEnd));
-        } else if choice.by != choice.decision.id {
-            choice.unapplied.push((d.id.clone(), Unapplied::Outranked));
+        } else if splits_a_note(subtune, row) {
+            choice.unapplied.push((d.id.clone(), Unapplied::InsideNote));
         } else {
+            winner = Some(d);
             choice.row = row;
             choice.similarity = choice
                 .candidates
@@ -106,7 +118,16 @@ pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decisio
             choice.by = d.id.clone();
         }
     }
+    choice.unapplied.sort_by(|a, b| a.0.cmp(&b.0));
     choice
+}
+
+/// Whether looping to `row` would cut a note: one sounds across it, or a tie starts on it.
+fn splits_a_note(subtune: &Subtune, row: u32) -> bool {
+    subtune.voices.iter().flat_map(|v| &v.notes).any(|n| {
+        (n.row < row && row < n.row.saturating_add(n.length.get()))
+            || (n.row == row && n.attack == crate::score::Attack::Legato)
+    })
 }
 
 /// What the rule itself chooses.

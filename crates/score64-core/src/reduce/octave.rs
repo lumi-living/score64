@@ -47,12 +47,13 @@ pub fn fold_octaves(
 
 /// [`fold_octaves`] with a model's or a person's resolved `octave` decisions in force (#167): for this subtune and
 /// voice, each sets its bar's shift in place of the rule's choice, and the next bar carries it on as it would the
-/// rule's. The rule records no decision for that bar, and the bar's folded notes record the override's id (unless
-/// they record an earlier rule's).
+/// rule's. The rule records no decision for that bar, and the bar's folded notes record the override's id unless
+/// they already record a decision. Notes count in the bar they start in.
 ///
 /// An override is unapplied when its bar has no note that folds (`no_such_note`), or when its shift would take one
-/// of them past what GoatTracker can play (`out_of_range`). The rules' own decisions, and any of another kind, are
-/// left alone.
+/// of them past what GoatTracker can play (`out_of_range`). Of several for one bar, the strongest that can apply
+/// wins (the lowest id on a tie, as `resolve` would); the others are `overruled` or `outranked`. The rules' own
+/// decisions, and any of another kind, are left alone. `unapplied` is sorted by id.
 pub fn fold_octaves_with(
     mut notes: Vec<Note>,
     at: &Placement,
@@ -61,17 +62,17 @@ pub fn fold_octaves_with(
     overrides: &[Decision],
 ) -> Reduced {
     let mut unapplied = Vec::new();
-    // Each bar's shift in force, by bar.
-    let mut forced: std::collections::BTreeMap<u32, (i8, &DecisionId)> =
+    // Each bar's overrides, by bar.
+    let mut forced: std::collections::BTreeMap<u32, Vec<&Decision>> =
         std::collections::BTreeMap::new();
     for d in overrides
         .iter()
         .filter(|d| &d.subtune == at.subtune && d.rank() != Rank::Rules)
     {
-        if let Proposal::Octave { voice, shift } = d.proposal
+        if let Proposal::Octave { voice, .. } = d.proposal
             && voice == at.voice
         {
-            forced.insert(d.bar, (shift, &d.id));
+            forced.entry(d.bar).or_default().push(d);
         }
     }
     notes.sort_by_key(|n| n.row);
@@ -94,17 +95,28 @@ pub fn fold_octaves_with(
         let Some(&first) = folded.first() else {
             continue;
         };
-        if let Some((shift, id)) = forced.remove(&bar) {
-            if folded
-                .iter()
-                .any(|&i| shifted(notes[i].pitch, shift).is_none())
-            {
-                unapplied.push((id.clone(), Unapplied::OutOfRange));
-            } else {
+        if let Some(candidates) = forced.remove(&bar) {
+            let playable = |shift: i8| {
+                folded
+                    .iter()
+                    .all(|&i| shifted(notes[i].pitch, shift).is_some())
+            };
+            let mut winner: Option<(&Decision, i8)> = None;
+            for d in crate::decide::by_strength(candidates) {
+                let Proposal::Octave { shift, .. } = d.proposal else {
+                    continue;
+                };
+                match winner {
+                    Some((w, _)) => unapplied.push((d.id.clone(), crate::decide::lost_to(d, w))),
+                    None if playable(shift) => winner = Some((d, shift)),
+                    None => unapplied.push((d.id.clone(), Unapplied::OutOfRange)),
+                }
+            }
+            if let Some((d, shift)) = winner {
                 for &i in &folded {
                     let n = &mut notes[i];
                     n.pitch = shifted(n.pitch, shift).expect("checked playable");
-                    n.decision.get_or_insert_with(|| id.clone());
+                    n.decision.get_or_insert_with(|| d.id.clone());
                 }
                 previous = Some((bar, roles.at(notes[first].row), shift));
                 continue;
@@ -159,7 +171,8 @@ pub fn fold_octaves_with(
     unapplied.extend(
         forced
             .into_values()
-            .map(|(_, id)| (id.clone(), Unapplied::NoSuchNote)),
+            .flatten()
+            .map(|d| (d.id.clone(), Unapplied::NoSuchNote)),
     );
     unapplied.sort_by(|a, b| a.0.cmp(&b.0));
     Reduced {

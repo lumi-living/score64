@@ -36,6 +36,24 @@ pub enum Unapplied {
     NoSuchNote,
     /// The trim it proposes would make the note longer than the rule left it; a trim only shortens.
     Lengthens,
+    /// The loop row it proposes falls inside a note, or on a tie, which can't play after the jump back.
+    InsideNote,
+}
+
+/// Decisions competing for one slot, in the order a rule tries them: the strongest first, then the lowest id, as
+/// [`resolve`] would choose.
+pub(crate) fn by_strength(mut ds: Vec<&Decision>) -> Vec<&Decision> {
+    ds.sort_by(|a, b| b.rank().cmp(&a.rank()).then_with(|| a.id.cmp(&b.id)));
+    ds
+}
+
+/// Why `loser` didn't apply when `winner` took the slot: a weaker decision is overruled, an equal one outranked.
+pub(crate) fn lost_to(loser: &Decision, winner: &Decision) -> Unapplied {
+    if loser.rank() < winner.rank() {
+        Unapplied::Overruled
+    } else {
+        Unapplied::Outranked
+    }
 }
 
 /// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.
