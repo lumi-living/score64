@@ -75,6 +75,7 @@ fn the_report_is_read_and_checked() {
         r,
         Report {
             version: Some("2.73".into()),
+            song_loaded: true,
             player: Some(0x1000),
             zero_page: Some(0xF8),
             size: Some(2062),
@@ -102,8 +103,9 @@ fn the_report_is_read_and_checked() {
 
 /// A stand-in gt2reloc, compiled once. It records its arguments in `args.txt` beside itself, its working directory
 /// and the song it found there in `cwd.txt` and `song.txt`, and behaves as
-/// `mode.txt` beside itself says: `ok`, `lie` (reports the player at $2000), `old` (banner version 2.72), `quiet`
-/// (no output file), `empty` (an empty one), `fail` or `hang`.
+/// `mode.txt` beside itself says: `ok`, `lie` (reports the player at $2000), `old` (banner version 2.72), `suffix`
+/// (2.73b), `blank` (a blank `song file:`, as when it can't load the song), `nosize` (no total size), `quiet` (no
+/// output file), `empty` (an empty one), `fail` or `hang`.
 const FAKE: &str = r#"
 use std::path::Path;
 fn main() {
@@ -123,15 +125,23 @@ fn main() {
         }
         _ => {}
     }
-    let version = if mode.trim() == "old" { "2.72" } else { "2.73" };
+    let version = match mode.trim() {
+        "old" => "2.72",
+        "suffix" => "2.73b",
+        _ => "2.73",
+    };
     println!("GoatTracker v{version} Packer/Relocator");
+    let song = if mode.trim() == "blank" { "" } else { args[0].as_str() };
+    println!("song file:       {song}");
     let opt = |p: &str, d: &str| {
         args.iter().find_map(|a| a.strip_prefix(p)).unwrap_or(d).to_string()
     };
     let page = if mode.trim() == "lie" { "20".to_string() } else { opt("-W", "10") };
     println!("Player address:   ${page}00");
     println!("Zeropage address: $00{}", opt("-Z", "FC"));
-    println!("Total size:      123 bytes");
+    if mode.trim() != "nosize" {
+        println!("Total size:      123 bytes");
+    }
     match mode.trim() {
         "quiet" => {}
         "empty" => std::fs::write(Path::new(&args[1]), b"").unwrap(),
@@ -250,6 +260,9 @@ fn every_failure_leaves_no_output() {
     for (mode, want) in [
         ("lie", "Mismatch"),
         ("old", "Version"),
+        ("suffix", "Version"),
+        ("blank", "Mismatch"),
+        ("nosize", "Mismatch"),
         ("quiet", "Mismatch"),
         ("empty", "Mismatch"),
         ("fail", "Failed"),
@@ -292,7 +305,35 @@ fn nothing_runs_without_a_song_or_with_a_bad_extension() {
         g.pack(&b.song, &b.dir.join("tune.SID"), &options()),
         Err(PackError::Format(_))
     ));
+    // Not a song: gt2reloc would pack an empty tune, or crash.
+    let junk = b.dir.join("junk.sng");
+    for bytes in [&b"\x00\x01junk"[..], b"GTS?", b"GT"] {
+        std::fs::write(&junk, bytes).unwrap();
+        assert!(matches!(
+            g.pack(&junk, &b.dir.join("tune.sid"), &options()),
+            Err(PackError::NotASong(p)) if p == junk
+        ));
+    }
+    let gone = b.dir.join("no-such-dir");
+    assert!(matches!(
+        g.pack(&b.song, &gone.join("tune.sid"), &options()),
+        Err(PackError::NoOutputDir(p)) if p == gone
+    ));
     assert!(!b.dir.join("args.txt").exists(), "gt2reloc was not started");
+    assert!(b.leftovers().is_empty());
+}
+
+#[test]
+fn a_relative_program_path_is_made_absolute() {
+    // It runs in a working directory of its own, so a path relative to ours must not be resolved from there.
+    let g = Gt2Reloc::at("tools/gt2reloc", "2.73");
+    assert!(g.program.is_absolute(), "{:?}", g.program);
+    assert!(g.program.ends_with("tools/gt2reloc"));
+    // A bare name is looked up on PATH, so it stays as it is.
+    assert_eq!(
+        Gt2Reloc::at("gt2reloc", "2.73").program,
+        Path::new("gt2reloc")
+    );
 }
 
 /// The real gt2reloc, if it is installed (CI does not install it): the fixture song packs to the size the #20 spike

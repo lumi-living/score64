@@ -1,7 +1,8 @@
 //! The packer: GoatTracker 2's `gt2reloc`, an external program (#50, `docs/reference/player.md`).
 //!
 //! `gt2reloc` checks little, so the adapter does it:
-//! - it packs an empty tune and exits 0 when the song file is missing, so the song must exist first;
+//! - it packs an empty tune and exits 0 when the song file is missing or isn't a song (or crashes, depending on the
+//!   bytes), so the song must exist and start with a `GTS` magic, and gt2reloc must report having loaded it;
 //! - it ignores a malformed option and uses the default, so options are typed and rendered here, the zero page always
 //!   explicitly, and the player and zero-page addresses it reports must be the ones asked for;
 //! - it picks the format from the output's extension, case-sensitively, and writes a PRG for anything it doesn't
@@ -9,10 +10,9 @@
 //! - it has no version flag, so the version is read from the banner it prints while packing and must be the pinned
 //!   one.
 //!
-//! It also crashes on a song path over 59 bytes or an output path over 255 (fixed-size buffers), and would read a
-//! name starting with `-` as an option. So it runs in a fresh working directory beside the output, on a copy of the
-//! song called `song.sng`, writing `out.<ext>`, which is renamed into place only once every check passes; the
-//! directory is removed either way. It runs with an argument list (never a shell) and a time limit, killed with
+//! It also crashes on a song path over 59 bytes or an output path over 255 (fixed-size buffers). So it runs in a fresh
+//! working directory beside the output, on a copy of the song called `song.sng`, writing `out.<ext>`, which is renamed
+//! into place only once every check passes; the directory is removed either way. It runs with an argument list (never a shell) and a time limit, killed with
 //! everything it started if it overruns (as the sidecar is).
 
 use std::fmt;
@@ -85,7 +85,8 @@ impl PackOptions {
         }
     }
 
-    /// The options as gt2reloc's arguments, after checking that the player is clear of zero page and the stack.
+    /// The options Score64 sets, as gt2reloc's arguments (the rest keep gt2reloc's defaults, fixed by the version
+    /// pin), after checking that the player is clear of zero page and the stack.
     pub fn args(&self) -> Result<Vec<String>, PackError> {
         if self.player_page < 0x02 {
             return Err(PackError::Option(format!(
@@ -163,11 +164,15 @@ pub enum PackError {
     Option(String),
     /// The song file doesn't exist (gt2reloc would pack an empty tune).
     NoSong(PathBuf),
+    /// The song file doesn't start with a GoatTracker song magic (`GTS` and a digit).
+    NotASong(PathBuf),
+    /// The output's directory doesn't exist.
+    NoOutputDir(PathBuf),
     /// The output's extension isn't exactly `sid`, `prg` or `bin`.
     Format(PathBuf),
     /// gt2reloc couldn't be started, or the output couldn't be moved into place.
     Io(std::io::Error),
-    /// gt2reloc exited with an error (it crashes on a file that isn't a song).
+    /// gt2reloc exited with an error.
     Failed {
         /// Exit status.
         status: ExitStatus,
@@ -196,6 +201,10 @@ impl fmt::Display for PackError {
             ),
             PackError::Option(why) => write!(f, "pack options: {why}"),
             PackError::NoSong(p) => write!(f, "song {} does not exist", p.display()),
+            PackError::NotASong(p) => write!(f, "{} is not a GoatTracker song", p.display()),
+            PackError::NoOutputDir(p) => {
+                write!(f, "output directory {} does not exist", p.display())
+            }
             PackError::Format(p) => write!(
                 f,
                 "{}: the output must end in .sid, .prg or .bin (lowercase)",
@@ -286,10 +295,27 @@ impl Gt2Reloc {
         if !song.is_file() {
             return Err(PackError::NoSong(song.to_path_buf()));
         }
+        let mut magic = [0; 4];
+        let is_song = std::fs::File::open(song)
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+            .is_ok()
+            && magic.starts_with(b"GTS")
+            && magic[3].is_ascii_digit();
+        if !is_song {
+            return Err(PackError::NotASong(song.to_path_buf()));
+        }
+        let dir = match out.parent() {
+            Some(d) if d.as_os_str().is_empty() => Path::new("."),
+            Some(d) => d,
+            None => Path::new("."),
+        };
+        if !dir.is_dir() {
+            return Err(PackError::NoOutputDir(dir.to_path_buf()));
+        }
         // A working directory of its own beside the output, with short fixed names: gt2reloc crashes on a song path
-        // over 59 bytes or an output path over 255, and reads a name starting with `-` as an option.
-        let work = work_dir(out);
-        std::fs::create_dir(&work).map_err(PackError::Io)?;
+        // over 59 bytes or an output path over 255. Removed when this returns, panics included.
+        let guard = WorkDir::create(out)?;
+        let work = guard.0.as_path();
         let name = format!("out.{}", format.extension());
         let packed = work.join(&name);
         let result = std::fs::copy(song, work.join("song.sng"))
@@ -313,7 +339,6 @@ impl Gt2Reloc {
                     version: report.version.expect("checked"),
                 })
             });
-        let _ = std::fs::remove_dir_all(&work);
         result
     }
 
@@ -324,6 +349,23 @@ impl Gt2Reloc {
             .args(args)
             .stdin(Stdio::null());
         Ok(run_with_timeout(cmd, self.timeout, true)?)
+    }
+}
+
+/// The working directory, removed when dropped.
+struct WorkDir(PathBuf);
+
+impl WorkDir {
+    fn create(out: &Path) -> Result<Self, PackError> {
+        let path = work_dir(out);
+        std::fs::create_dir(&path).map_err(PackError::Io)?;
+        Ok(WorkDir(path))
+    }
+}
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -345,13 +387,15 @@ fn work_dir(out: &Path) -> PathBuf {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Report {
     version: Option<String>,
+    song_loaded: bool,
     player: Option<u16>,
     zero_page: Option<u16>,
     size: Option<u32>,
 }
 
 impl Report {
-    /// Read the banner (`GoatTracker v2.73 Packer/Relocator`), `Player address:   $1000`,
+    /// Read the banner (`GoatTracker v2.73 Packer/Relocator`), `song file:       song.sng` (blank when it could not
+    /// load the song), `Player address:   $1000`,
     /// `Zeropage address: $00F8` and `Total size:      2062 bytes`.
     fn parse(stdout: &str) -> Self {
         let mut r = Report::default();
@@ -362,6 +406,8 @@ impl Report {
                 && let Some(version) = rest.strip_suffix(" Packer/Relocator")
             {
                 r.version = Some(version.trim().to_string());
+            } else if let Some(v) = line.strip_prefix("song file:") {
+                r.song_loaded = !v.trim().is_empty();
             } else if let Some(v) = line.strip_prefix("Player address:") {
                 r.player = hex(v);
             } else if let Some(v) = line.strip_prefix("Zeropage address:") {
@@ -382,6 +428,11 @@ impl Report {
                 found: self.version.clone(),
                 pinned: pinned.to_string(),
             });
+        }
+        if !self.song_loaded {
+            return Err(PackError::Mismatch(
+                "it did not load the song (blank `song file:`)".into(),
+            ));
         }
         let player = u16::from(options.player_page) << 8;
         if self.player != Some(player) {
