@@ -283,12 +283,35 @@ impl Sidecar {
     }
 }
 
-/// `name` on `PATH`, with `.exe` on Windows.
+/// `name` on `PATH`, with `.exe` on Windows: the first program by that name, as the system would run it.
 pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
+    find_in(&std::env::var_os("PATH")?, name)
+}
+
+/// `name` in the directories of `path` (a `PATH`-style list), skipping files that aren't executable on Unix.
+pub(crate) fn find_in(path: &OsStr, name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ""] } else { &[""] };
-    std::env::split_paths(&std::env::var_os("PATH")?)
+    std::env::split_paths(path)
         .flat_map(|dir| exts.iter().map(move |ext| dir.join(format!("{name}{ext}"))))
-        .find(|p| p.is_file())
+        .find(|p| is_program(p))
+}
+
+fn is_program(p: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        p.metadata()
+            .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        p.is_file()
+    }
+}
+
+/// The blake3 of a file, lowercase hex: for pinning and recording external programs.
+pub(crate) fn file_blake3(path: &Path) -> std::io::Result<String> {
+    Ok(blake3::hash(&std::fs::read(path)?).to_hex().to_string())
 }
 
 /// The sidecar and every process it starts: on Unix a process group of its own, on Windows a Job object, so
