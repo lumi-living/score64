@@ -45,7 +45,7 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
 CLI end to end: transcribe → grid → reduce → .sng → pack → render → score → HTML report.
 
 - **E4 Project & cache** ([#24](https://github.com/lumi-living/score64/issues/24)) — Files are the source of truth (ADR-004): track and decision files, content-addressed stage cache, immutable versions, rebuildable index.
-  - track.toml and decisions.toml schemas with validation [#25](https://github.com/lumi-living/score64/issues/25)
+  - ✓ track.toml and decisions.toml schemas with validation [#25](https://github.com/lumi-living/score64/issues/25)
   - ✓ Content-addressed stage cache with manifests [#26](https://github.com/lumi-living/score64/issues/26)
   - Immutable versions: identity from intent + inputs + tool version [#27](https://github.com/lumi-living/score64/issues/27)
   - SQLite index rebuildable from manifests and git [#28](https://github.com/lumi-living/score64/issues/28)
@@ -64,7 +64,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - ✓ Lead selection by salience, with override [#39](https://github.com/lumi-living/score64/issues/39)
   - ✓ Monophonise, minimum note length, ghost-note removal [#40](https://github.com/lumi-living/score64/issues/40)
   - ✓ Octave folding into role ranges [#41](https://github.com/lumi-living/score64/issues/41)
-  - Chord detection → GoatTracker wavetable arpeggio tables [#42](https://github.com/lumi-living/score64/issues/42)
+  - ✓ Chord detection → GoatTracker wavetable arpeggio tables [#42](https://github.com/lumi-living/score64/issues/42)
   - ✓ Drum folding: dedicated voice or interleaved with bass [#43](https://github.com/lumi-living/score64/issues/43)
   - ✓ Loop finder on downbeats [#44](https://github.com/lumi-living/score64/issues/44)
   - ✓ Rules decider and manual decider (decisions.toml overrides) [#45](https://github.com/lumi-living/score64/issues/45)
@@ -74,7 +74,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - Instrument preset library v1 with hard-restart settings [#49](https://github.com/lumi-living/score64/issues/49)
   - ✓ gt2reloc adapter: -D1 -H1 -W -Z -A, pinned version [#50](https://github.com/lumi-living/score64/issues/50)
   - Budget gate: packed size, zero page, jump table [#51](https://github.com/lumi-living/score64/issues/51)
-  - Timing marks on every bar (alternating values) [#52](https://github.com/lumi-living/score64/issues/52)
+  - ✓ Timing marks on every bar (alternating values) [#52](https://github.com/lumi-living/score64/issues/52)
   - ✓ docs: player.md - after a sound effect the voice stays silent until the music's next note [#119](https://github.com/lumi-living/score64/issues/119)
 - **E8 Render & score** ([#53](https://github.com/lumi-living/score64/issues/53)) — Render packed players on both chip models through the helper and score fidelity.
   - ✓ Default SID engine: reSIDfp (libresidfp) via FFI behind a SidEngine trait (ADR-011) [#116](https://github.com/lumi-living/score64/issues/116)
