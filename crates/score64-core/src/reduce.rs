@@ -131,13 +131,18 @@ pub fn monophonise(
 ///
 /// - A `drop_note` takes its note (same row, pitch and length) out before the rule starts, as if it had never been
 ///   there, so the rule's other choices follow from the line without it.
-/// - A `trim_note` sets its note's length once the line is built. It can make the note shorter, or as long as the gap
-///   to the next note; longer would overlap it, and the override is unapplied (`overlaps`).
+/// - A `trim_note` sets its note's length once the line is built. It only shortens: one longer than the rule left
+///   the note is unapplied (`lengthens`). Shorter than `min_rows` is a person's call: an unreviewed model's is
+///   unapplied (`out_of_range`).
 /// - A `retrigger` gives its note a fresh start.
+/// - A `drop_note` gives way (`overruled`) to a stronger trim or fresh start of the same note: those are separate
+///   slots, so `resolve` keeps all three. It takes the note from its source span when it names one; of identical
+///   notes otherwise, the one the rule would drop.
 ///
 /// A note an override names that isn't there (a different note is in its place, or the rule dropped it) is reported
-/// as `no_such_note`. The rule records no decision of its own for what an override did, and a note an override
-/// changed records the override's id instead of the rule's.
+/// as `no_such_note`. The rule records no decision of its own for what an override did. A note an override changed
+/// records the override's id in place of this rule's (the last override to change it, in slot order); an id from an
+/// earlier rule stays. The order of `overrides` doesn't matter.
 pub fn monophonise_with(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
@@ -146,7 +151,7 @@ pub fn monophonise_with(
 ) -> Reduced {
     let mut log = Log::new(at, MONOPHONISE, "mono");
     let mut unapplied = Vec::new();
-    let mine: Vec<&Decision> = overrides
+    let mut mine: Vec<&Decision> = overrides
         .iter()
         .filter(|d| &d.subtune == at.subtune && d.rank() != Rank::Rules)
         .filter(|d| match d.proposal {
@@ -156,24 +161,52 @@ pub fn monophonise_with(
             _ => false,
         })
         .collect();
+    // In slot order, strongest first, so the order they come in never matters.
+    mine.sort_by(|a, b| {
+        a.slot()
+            .cmp(&b.slot())
+            .then(b.rank().cmp(&a.rank()))
+            .then_with(|| a.id.cmp(&b.id))
+    });
     let mut notes: Vec<Note> = notes.into_iter().collect();
     notes.sort_by(|a, b| canonical(a, b, rules.skyline));
 
-    // 0. Drops in force: each takes out one note of its row, pitch and length, the first in canonical order.
+    // 0. Drops in force. A drop, a trim and a fresh start of one note are separate slots, so `resolve` keeps all
+    // three; a drop gives way when a stronger decision trims or restarts the note instead.
     for d in &mine {
-        if let Proposal::DropNote {
-            row, pitch, length, ..
+        let Proposal::DropNote {
+            row,
+            pitch,
+            length,
+            source,
+            ..
         } = d.proposal
-        {
-            match notes
-                .iter()
-                .position(|n| n.row == row && n.pitch == pitch && n.length == length)
-            {
-                Some(i) => {
-                    notes.remove(i);
-                }
-                None => unapplied.push((d.id.clone(), Unapplied::NoSuchNote)),
+        else {
+            continue;
+        };
+        let stronger = mine.iter().any(|o| {
+            o.rank() > d.rank()
+                && matches!(o.proposal,
+                    Proposal::TrimNote { row: r, pitch: p, .. } | Proposal::Retrigger { row: r, pitch: p, .. }
+                    if r == row && p == pitch)
+        });
+        if stronger {
+            unapplied.push((d.id.clone(), Unapplied::Overruled));
+            continue;
+        }
+        // Its note: the one from its source span when it names one; otherwise the last of its row, pitch and
+        // length in canonical order, which is the one the rule would drop of identical twins.
+        let found = notes.iter().rposition(|n| {
+            n.row == row
+                && n.pitch == pitch
+                && n.length == length
+                && (source.is_none() || n.source == source)
+        });
+        match found {
+            Some(i) => {
+                notes.remove(i);
             }
+            None => unapplied.push((d.id.clone(), Unapplied::NoSuchNote)),
         }
     }
 
@@ -272,52 +305,60 @@ pub fn monophonise_with(
         }
     }
 
-    // Trims and fresh starts in force, on the line as built. A note keeps an earlier rule's decision id, but one
-    // this rule gave it gives way to the override's.
+    // Trims and fresh starts in force, on the line as built. A note an override changes records its id in place of
+    // one this rule gave it; an earlier rule's id stays.
     let own =
         |id: &Option<DecisionId>, log: &Log| id.as_ref().is_none_or(|id| log.ids.contains(id));
+    let mut trimmed = Vec::new();
     for d in &mine {
         match d.proposal {
             Proposal::TrimNote {
                 row, pitch, length, ..
             } => {
-                let Some(i) = line.iter().position(|n| n.row == row && n.pitch == pitch) else {
+                let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
                     unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
                 };
-                let room = line.get(i + 1).map_or(u32::MAX, |next| next.row - row);
-                if length.get() > room {
-                    unapplied.push((d.id.clone(), Unapplied::Overlaps));
+                // A trim only shortens: the rule has already ended the note where the next starts, if not before.
+                if length > n.length {
+                    unapplied.push((d.id.clone(), Unapplied::Lengthens));
                     continue;
                 }
-                let n = &mut line[i];
-                n.length = length;
-                if own(&n.decision, &log) {
+                // Shorter than the rule allows is a person's call, not a model's.
+                if length < rules.min_rows && d.rank() < Rank::Person {
+                    unapplied.push((d.id.clone(), Unapplied::OutOfRange));
+                    continue;
+                }
+                trimmed.push((row, pitch));
+                // The override takes the place of the rule's trim, so the note records it when it changes the
+                // length or when the rule's trim had set it.
+                let rules_trim = n.decision.is_some() && own(&n.decision, &log);
+                if (n.length != length || rules_trim) && own(&n.decision, &log) {
                     n.decision = Some(d.id.clone());
                 }
+                n.length = length;
             }
             Proposal::Retrigger { row, pitch, .. } => {
                 let Some(n) = line.iter_mut().find(|n| n.row == row && n.pitch == pitch) else {
                     unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
                 };
-                n.attack = Attack::Fresh;
-                if own(&n.decision, &log) {
-                    n.decision = Some(d.id.clone());
+                if n.attack != Attack::Fresh {
+                    n.attack = Attack::Fresh;
+                    if own(&n.decision, &log) {
+                        n.decision = Some(d.id.clone());
+                    }
                 }
             }
             _ => {}
         }
     }
-    // A trim in force replaces the rule's own trim of that note: the line's lengths are the overrides' now.
+    // A trim in force replaces the rule's own trim of that note. A note whose override didn't apply keeps the rule's
+    // trim, and its id.
     log.decisions.retain(|r| match r.proposal {
-        Proposal::TrimNote { row, pitch, .. } => !mine.iter().any(|d| {
-            matches!(d.proposal, Proposal::TrimNote { row: r2, pitch: p2, .. } if r2 == row && p2 == pitch)
-                && !unapplied.iter().any(|(id, _)| id == &d.id)
-        }),
+        Proposal::TrimNote { row, pitch, .. } => !trimmed.contains(&(row, pitch)),
         _ => true,
     });
-
     // 4. Ties that lost the note they were tied to.
     let mut end = None;
     for note in &mut line {

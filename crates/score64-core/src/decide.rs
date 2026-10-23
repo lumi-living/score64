@@ -34,8 +34,8 @@ pub enum Unapplied {
     OutOfRange,
     /// The note it names isn't there when the rule runs.
     NoSuchNote,
-    /// The trim it proposes would run the note into the next one on its voice.
-    Overlaps,
+    /// The trim it proposes would make the note longer than the rule left it; a trim only shortens.
+    Lengthens,
 }
 
 /// The largest octave shift a decision may propose, either way: enough to cross GoatTracker's whole range.
