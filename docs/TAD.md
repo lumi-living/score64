@@ -56,7 +56,7 @@ Stages and ports:
 | instruments | — | preset library (`presets/*.toml` + `.ins`) |
 | render | `Renderer` | `score64-emu` helper over a pipe (GPL, separate process; reSIDfp engine, ADR-011) |
 | score | — | `score64-analysis` |
-| pack | `Packer` | gt2reloc (external program) |
+| pack | `Packer` | gt2reloc (external program; `score64_adapters::gt2reloc`, #50) |
 | report | — | static HTML |
 
 ## 3. Score model (`score64-core`)
