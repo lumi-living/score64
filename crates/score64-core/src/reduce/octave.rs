@@ -9,8 +9,8 @@ use super::{Placement, Reduced};
 /// The rule name and version [`fold_octaves`] records in its decisions.
 pub const FOLD_OCTAVES: &str = "fold-octaves@1";
 
-/// The largest shift tried, in octaves either way: enough to cross GoatTracker's whole range (C-0 to G#7).
-const MAX_SHIFT: i8 = 7;
+/// The largest shift tried, in octaves either way: the largest a decision may propose.
+const MAX_SHIFT: i8 = crate::decide::MAX_OCTAVE_SHIFT;
 
 /// Whether notes in `role` are folded: those whose range is narrower than everything GoatTracker can play. With the
 /// default ranges, drums and texture (noise and pitch sweeps) may use it all, so their pitches stay where they are.

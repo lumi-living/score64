@@ -97,7 +97,7 @@ pub struct PartSalience {
     pub bars: Vec<Salience>,
 }
 
-pub use crate::decide::Unapplied;
+use crate::decide::Unapplied;
 
 /// What [`choose_lead`] chose.
 #[derive(Clone, Debug, PartialEq)]
