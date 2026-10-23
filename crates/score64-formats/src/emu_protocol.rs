@@ -1,4 +1,4 @@
-//! The emulator helper's stdin/stdout protocol, version 0 (`docs/reference/emu-protocol.md`).
+//! The emulator helper's stdin/stdout protocol, version 1 (`docs/reference/emu-protocol.md`).
 //!
 //! Shared by the GPL helper (`score64-emu`, server) and its MIT clients (`score64-adapters`), so both sides encode and
 //! decode the same way; they still only meet across a process boundary (ADR-002). Pure: encoding and decoding work
@@ -8,10 +8,11 @@
 //! first of which is the message kind. All integers are little-endian. Strings are `u16 length` + UTF-8; byte blobs
 //! are `u32 length` + bytes. The client sends one request and reads exactly one reply before the next.
 
+use std::collections::BTreeSet;
 use std::io::{self, Read, Write};
 
 /// The protocol version this code speaks.
-pub const VERSION: u16 = 0;
+pub const VERSION: u16 = 1;
 
 /// The largest message either side accepts (the length field's value).
 pub const MAX_MESSAGE: u32 = 64 << 20;
@@ -64,6 +65,15 @@ pub fn max_render_frames(sample_rate: u32, writes: bool) -> u32 {
         if fits(mid) { lo = mid } else { hi = mid - 1 }
     }
     lo
+}
+
+/// The most addresses one [`Request::Trace`] may watch.
+pub const MAX_WATCH: usize = 16;
+
+/// The length field of a [`Reply::Traced`] for `watch` watched addresses and `changes` changes in all.
+pub fn traced_size(watch: usize, changes: u64) -> u64 {
+    // kind, two bitmaps, watch count, per address (address, start value, change count), changes
+    1 + 32 + 32 + 1 + 7 * watch as u64 + 5 * changes
 }
 
 /// SID model.
@@ -122,6 +132,40 @@ pub enum Request {
     },
     /// End the session. The helper answers [`Reply::Ok`] and exits.
     Quit,
+    /// Arm a trace for the next [`Request::Init`], replacing any earlier one; everything off disarms it.
+    Trace {
+        /// Collect the zero-page addresses the 6510 reads or writes.
+        zero_page: bool,
+        /// Collect the pages written outside this window (first and last address, inclusive).
+        outside: Option<(u16, u16)>,
+        /// RAM addresses whose changes to report: at most [`MAX_WATCH`], distinct, outside `$D400`–`$D7FF`.
+        watch: Vec<u16>,
+    },
+    /// Hand over what the trace has collected since `Init`, and the watched changes since the last `Report`.
+    Report,
+}
+
+/// What a trace collected, as reported by [`Reply::Traced`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Traced {
+    /// Every zero-page address the 6510 read or wrote since `Init` (empty unless asked for).
+    pub zero_page: BTreeSet<u8>,
+    /// The high byte of every address written since `Init` outside the window, other than zero page, the stack
+    /// page and the SID's registers `$D400`–`$D418` (empty unless asked for).
+    pub pages_written_outside: BTreeSet<u8>,
+    /// Each watched address, in the order asked for.
+    pub watched: Vec<Watched>,
+}
+
+/// One watched address's changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Watched {
+    /// The address.
+    pub address: u16,
+    /// Its value when this span began: after `Init` for the first `Report`, at the previous `Report` after that.
+    pub start: u8,
+    /// Each frame (since `Init`, 0 = the first play call) whose play call left a new value, with that value.
+    pub changes: Vec<(u32, u8)>,
 }
 
 /// One SID register write, as reported by [`Reply::Rendered`].
@@ -151,7 +195,7 @@ pub enum Reply {
         /// SID engine, for logs (for example `"residfp 1.2.3"`).
         engine: String,
     },
-    /// Answer to `Load`, `Init`, `Poke`, `Model` and `Quit`.
+    /// Answer to `Load`, `Init`, `Poke`, `Model`, `Trace` and `Quit`.
     Ok,
     /// Answer to `Render`.
     Rendered {
@@ -164,6 +208,8 @@ pub enum Reply {
         /// SID writes in these frames, in order (empty unless asked for).
         writes: Vec<SidWrite>,
     },
+    /// Answer to `Report`.
+    Traced(Traced),
     /// A request failed. After [`ErrorCode::Malformed`] the helper exits; after any other code the session goes on.
     Error {
         /// What went wrong.
@@ -242,9 +288,12 @@ const RENDER: u8 = 0x04;
 const POKE: u8 = 0x05;
 const MODEL: u8 = 0x06;
 const QUIT: u8 = 0x07;
+const TRACE: u8 = 0x08;
+const REPORT: u8 = 0x09;
 const READY: u8 = 0x81;
 const OK: u8 = 0x82;
 const RENDERED: u8 = 0x83;
+const TRACED: u8 = 0x84;
 const ERROR: u8 = 0xFF;
 
 struct Out(Vec<u8>);
@@ -275,6 +324,15 @@ impl Out {
     fn blob(&mut self, b: &[u8]) -> &mut Self {
         self.u32(b.len() as u32);
         self.0.extend_from_slice(b);
+        self
+    }
+    /// A set of bytes as a 256-bit map: bit `n % 8` of byte `n / 8`.
+    fn bitmap(&mut self, set: &BTreeSet<u8>) -> &mut Self {
+        let mut map = [0u8; 32];
+        for &n in set {
+            map[usize::from(n / 8)] |= 1 << (n % 8);
+        }
+        self.0.extend_from_slice(&map);
         self
     }
     /// The body with its length prefix.
@@ -328,6 +386,12 @@ impl<'a> In<'a> {
             v => Err(DecodeError(format!("flag must be 0 or 1, not {v}"))),
         }
     }
+    fn bitmap(&mut self) -> Result<BTreeSet<u8>, DecodeError> {
+        let map = self.take(32)?;
+        Ok((0..=255u8)
+            .filter(|&n| map[usize::from(n / 8)] & (1 << (n % 8)) != 0)
+            .collect())
+    }
     fn done(&self) -> Result<(), DecodeError> {
         if self.pos == self.b.len() {
             Ok(())
@@ -365,6 +429,24 @@ impl Request {
                 })
                 .frame(),
             Request::Quit => Out::new(QUIT).frame(),
+            Request::Trace {
+                zero_page,
+                outside,
+                watch,
+            } => {
+                let (first, last) = outside.unwrap_or((0, 0));
+                let mut o = Out::new(TRACE);
+                o.u8(u8::from(*zero_page))
+                    .u8(u8::from(outside.is_some()))
+                    .u16(first)
+                    .u16(last)
+                    .u8(watch.len().min(255) as u8);
+                for &a in watch.iter().take(255) {
+                    o.u16(a);
+                }
+                o.frame()
+            }
+            Request::Report => Out::new(REPORT).frame(),
         }
     }
 
@@ -401,6 +483,19 @@ impl Request {
                 },
             },
             QUIT => Request::Quit,
+            TRACE => {
+                let zero_page = r.bool()?;
+                let has_window = r.bool()?;
+                let (first, last) = (r.u16()?, r.u16()?);
+                let n = r.u8()?;
+                let watch = (0..n).map(|_| r.u16()).collect::<Result<_, _>>()?;
+                Request::Trace {
+                    zero_page,
+                    outside: has_window.then_some((first, last)),
+                    watch,
+                }
+            }
+            REPORT => Request::Report,
             k => return Err(DecodeError(format!("unknown request kind ${k:02X}"))),
         };
         r.done()?;
@@ -440,6 +535,19 @@ impl Reply {
                 o.u32(writes.len() as u32);
                 for w in writes {
                     o.u32(w.frame).u16(w.cycle).u8(w.register).u8(w.value);
+                }
+                o.frame()
+            }
+            Reply::Traced(t) => {
+                let mut o = Out::new(TRACED);
+                o.bitmap(&t.zero_page)
+                    .bitmap(&t.pages_written_outside)
+                    .u8(t.watched.len().min(255) as u8);
+                for w in t.watched.iter().take(255) {
+                    o.u16(w.address).u8(w.start).u32(w.changes.len() as u32);
+                    for &(frame, value) in &w.changes {
+                        o.u32(frame).u8(value);
+                    }
                 }
                 o.frame()
             }
@@ -490,6 +598,31 @@ impl Reply {
                     samples,
                     writes,
                 }
+            }
+            TRACED => {
+                let zero_page = r.bitmap()?;
+                let pages_written_outside = r.bitmap()?;
+                let n = r.u8()?;
+                let mut watched = Vec::with_capacity(usize::from(n));
+                for _ in 0..n {
+                    let address = r.u16()?;
+                    let start = r.u8()?;
+                    let m = r.u32()? as usize;
+                    let mut changes = Vec::with_capacity(m.min(1 << 16));
+                    for _ in 0..m {
+                        changes.push((r.u32()?, r.u8()?));
+                    }
+                    watched.push(Watched {
+                        address,
+                        start,
+                        changes,
+                    });
+                }
+                Reply::Traced(Traced {
+                    zero_page,
+                    pages_written_outside,
+                    watched,
+                })
             }
             ERROR => Reply::Error {
                 code: ErrorCode::from_u16(r.u16()?),
@@ -576,6 +709,17 @@ mod tests {
                 chip: Chip::Mos8580,
             },
             Request::Quit,
+            Request::Trace {
+                zero_page: true,
+                outside: Some((0x1000, 0x1FFF)),
+                watch: vec![0x103F, 0x0340],
+            },
+            Request::Trace {
+                zero_page: false,
+                outside: None,
+                watch: vec![],
+            },
+            Request::Report,
         ] {
             let f = req.encode();
             assert_eq!(Request::decode(body(&f)).unwrap(), req);
@@ -611,6 +755,23 @@ mod tests {
                 code: ErrorCode::Unknown(99),
                 message: String::new(),
             },
+            Reply::Traced(Traced {
+                zero_page: [0x00, 0x07, 0x08, 0xF8, 0xF9, 0xFF].into(),
+                pages_written_outside: [0x03, 0xC0].into(),
+                watched: vec![
+                    Watched {
+                        address: 0x103F,
+                        start: 0x00,
+                        changes: vec![(7, 0x01), (71, 0x02)],
+                    },
+                    Watched {
+                        address: 0x0340,
+                        start: 0x55,
+                        changes: vec![],
+                    },
+                ],
+            }),
+            Reply::Traced(Traced::default()),
         ] {
             let f = reply.encode();
             assert_eq!(Reply::decode(body(&f)).unwrap(), reply);
@@ -622,11 +783,11 @@ mod tests {
     fn golden_bytes() {
         assert_eq!(
             Request::Hello {
-                version: 0,
+                version: 1,
                 sample_rate: 48_000
             }
             .encode(),
-            [0x07, 0, 0, 0, 0x01, 0x00, 0x00, 0x80, 0xBB, 0x00, 0x00]
+            [0x07, 0, 0, 0, 0x01, 0x01, 0x00, 0x80, 0xBB, 0x00, 0x00]
         );
         assert_eq!(
             Request::Init {
@@ -646,6 +807,35 @@ mod tests {
             [0x06, 0, 0, 0, 0x04, 0x32, 0, 0, 0, 0x00]
         );
         assert_eq!(Request::Quit.encode(), [0x01, 0, 0, 0, 0x07]);
+        assert_eq!(
+            Request::Trace {
+                zero_page: true,
+                outside: Some((0x1000, 0x1FFF)),
+                watch: vec![0x103F]
+            }
+            .encode(),
+            [
+                0x0A, 0, 0, 0, 0x08, 0x01, 0x01, 0x00, 0x10, 0xFF, 0x1F, 0x01, 0x3F, 0x10
+            ]
+        );
+        assert_eq!(Request::Report.encode(), [0x01, 0, 0, 0, 0x09]);
+        let traced = Reply::Traced(Traced {
+            zero_page: [0xF8, 0xF9].into(),
+            pages_written_outside: [].into(),
+            watched: vec![Watched {
+                address: 0x103F,
+                start: 0,
+                changes: vec![(7, 1)],
+            }],
+        })
+        .encode();
+        let mut want = vec![0x4E, 0, 0, 0, 0x84];
+        want.extend_from_slice(&[0; 32]);
+        want[5 + 31] = 0x03; // $F8 and $F9: bits 0 and 1 of byte 31
+        want.extend_from_slice(&[0; 32]);
+        want.extend_from_slice(&[0x01, 0x3F, 0x10, 0x00, 0x01, 0, 0, 0, 0x07, 0, 0, 0, 0x01]);
+        assert_eq!(traced, want);
+        assert_eq!(traced.len() as u64 - 4, traced_size(1, 1));
         assert_eq!(Reply::Ok.encode(), [0x01, 0, 0, 0, 0x82]);
         assert_eq!(
             Reply::Error {
@@ -667,6 +857,15 @@ mod tests {
             "flag not 0/1"
         );
         assert!(Request::decode(&[0x06, 2]).is_err(), "unknown model");
+        assert!(
+            Request::decode(&[0x08, 1, 0, 0, 0, 0, 0, 1, 0x3F]).is_err(),
+            "watch list truncated"
+        );
+        assert!(
+            Request::decode(&[0x08, 2, 0, 0, 0, 0, 0, 0]).is_err(),
+            "flag not 0/1"
+        );
+        assert!(Reply::decode(&[0x84; 10]).is_err(), "bitmaps truncated");
         assert!(
             Reply::decode(&[0x83, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0x7F]).is_err(),
             "sample count past the end"

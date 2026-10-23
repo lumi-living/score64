@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use score64_formats::emu_protocol::{self as proto, ErrorCode, Reply, Request};
 use score64_formats::psid::Psid;
 
-pub use score64_formats::emu_protocol::{Chip, SidWrite};
+pub use score64_formats::emu_protocol::{Chip, SidWrite, Traced, Watched};
 
 /// Why a helper call failed.
 #[derive(Debug)]
@@ -294,6 +294,29 @@ impl<R: Read, W: Write> Helper<R, W> {
         }
     }
 
+    /// Arm a trace for the next [`Self::init`]: the zero-page addresses the player touches, the pages it writes
+    /// outside `outside`, and the frames where each watched address changes. Everything off disarms it.
+    pub fn trace(
+        &mut self,
+        zero_page: bool,
+        outside: Option<(u16, u16)>,
+        watch: &[u16],
+    ) -> Result<(), HelperError> {
+        self.ok(&Request::Trace {
+            zero_page,
+            outside,
+            watch: watch.to_vec(),
+        })
+    }
+
+    /// What the trace has collected since `init`, and the watched changes since the last report.
+    pub fn report(&mut self) -> Result<Traced, HelperError> {
+        match self.ask(&Request::Report)? {
+            Reply::Traced(t) => Ok(t),
+            other => Err(unexpected("Traced", &other)),
+        }
+    }
+
     /// Write one byte to C64 memory now.
     pub fn poke(&mut self, address: u16, value: u8) -> Result<(), HelperError> {
         self.ok(&Request::Poke { address, value })
@@ -326,6 +349,7 @@ fn unexpected(wanted: &str, got: &Reply) -> HelperError {
         Reply::Ready { .. } => "Ready",
         Reply::Ok => "Ok",
         Reply::Rendered { .. } => "Rendered",
+        Reply::Traced(_) => "Traced",
         Reply::Error { .. } => "Error",
     };
     HelperError::Protocol(format!("expected {wanted}, got {kind}"))
