@@ -32,3 +32,19 @@ The tables are the instrument's own, so a file of an instrument with no tables i
 - **The table layout is supported by GoatTracker's own `ins2snd2`.** It read the three fixture instrument files, including their wave and pulse tables, and produced the sound-effect data in `sfx-*.bin`. Those effects play as designed.
 - **A consistency check:** `score64_formats::annotate::ins` was written in this project from the same readme, so it is not independent evidence. It decodes the same layout and accounts for every byte.
 - **The files' origin:** they were written by the project's own `make_song.py`, not saved from GoatTracker's editor. A file saved by GoatTracker 2.77 would add a further check.
+
+## Wavetable arpeggios
+
+`score64_formats::gt2::wave::arpeggio`. Source: the GoatTracker 2 readme v2.72, §3.4.1 (Wavetable), the `8XY` command, and §4's list of error conditions.
+
+- **The wavetable runs one row per frame.**
+  - Left side: `$00` leaves the waveform unchanged, `$01`–`$0F` delays, `$10`–`$DF` sets the waveform register, `$E0`–`$EF` sets an inaudible waveform, `$F0`–`$FE` runs a pattern command, and `$FF` jumps to the row on the right (`$00` stops).
+  - Right side: `$00`–`$5F` plays that many semitones above the pattern's note, `$60`–`$7F` below, `$80` keeps the frequency, and `$81`–`$DF` are absolute notes.
+- **Command `8XY`** sets a voice's wavetable pointer (`$00` stops the wavetable).
+- **Rules the readme gives:**
+  - Never jump straight onto a jump row, from an instrument pointer or `8XY`.
+  - An instrument's first wavetable step should not be a delay or a no-change row.
+  - Commands `0XY`, `8XY` and `EXY` must not run from the wavetable.
+- **Score64's arpeggio program** is one `(waveform, interval)` row per frame of each step, then `($FF, first row)`. Its first row always sets an audible waveform, it never jumps onto a jump, and it runs no commands. An identical program already in the table is reused.
+
+**Evidence:** the readme, as above. Playing a packed arpeggio in the emulator, and in VICE, comes with the `.sng` writer (#47). Until then this layout is unverified in playback.
