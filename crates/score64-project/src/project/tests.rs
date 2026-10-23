@@ -174,6 +174,13 @@ fn track_checks_point_at_the_item() {
     let (at, m) = error(TrackFile::parse(&text, p("x")));
     assert!(m.contains("`tension` is made from `stems`"), "{m}");
     assert_eq!(at.unwrap().0, line_of(&text, "name = \"tension\"") - 1);
+    // With no start, the range starts at the source's start, so an end at 0:00 is empty too.
+    let text = track_text("").replace("start = \"0:12.500\"\nend = \"1:14\"", "end = \"0:00\"");
+    assert!(
+        error(TrackFile::parse(&text, p("x")))
+            .1
+            .contains("not after its start 0:00")
+    );
     let text = track_text("").replace("end = \"1:14\"", "end = \"0:12.500\"");
     assert!(
         error(TrackFile::parse(&text, p("x")))
@@ -228,6 +235,21 @@ fn values_out_of_range_are_refused() {
         let (_, m) = error(ProjectFile::parse(&PROJECT.replace(from, to), p("x")));
         assert!(m.contains(why), "{m}");
     }
+    // A repeated profile is reported at its own header, not the first.
+    let text = format!(
+        "{PROJECT}\n[[profile]]\nname = \"calm\"\nv1 = {{ usage = \"music\" }}\nv2 = {{ usage = \"music\" }}\nv3 = {{ usage = \"music\" }}\n"
+    );
+    let (at, m) = error(ProjectFile::parse(&text, p("x")));
+    assert_eq!(
+        at.unwrap().0,
+        text.lines()
+            .collect::<Vec<_>>()
+            .iter()
+            .rposition(|l| *l == "[[profile]]")
+            .unwrap()
+            + 1,
+        "{m}"
+    );
     // A profile redefining a built-in.
     let text = PROJECT.replace("name = \"calm\"", "name = \"full\"");
     assert!(
@@ -264,6 +286,16 @@ fn paths_stay_inside_the_project() {
         "a\\u0000b.wav",
         "a\\tb.wav",
         "a\\u202Eb.wav",
+        "a?.wav",
+        "a*.wav",
+        "a<b.wav",
+        "a>b.wav",
+        "a|b.wav",
+        "a\\\"b.wav",
+        "audio/conin$",
+        "CONOUT$.txt",
+        "COM¹.wav",
+        "lpt³",
     ] {
         let text = track_text("").replace("audio/main-theme.wav", bad);
         let (_, m) = error(TrackFile::parse(&text, p("x")));
@@ -519,7 +551,7 @@ fn sources_are_checked_against_their_hashes() {
     // Recording the new hash, on purpose, changes only that value: comments and hex stay.
     let path = root.join("tracks/main/track.toml");
     let before = format!(
-        "# Main theme, from the April mix.\n{}\n[pack]\nzero_page = 0xFB # the game's pair\n",
+        "# Main theme, from the April mix.\n{}\n[pack]\nzero_page = 0xFB # the target's pair\n",
         track_text("")
     );
     std::fs::write(&path, &before).unwrap();
@@ -535,6 +567,31 @@ fn sources_are_checked_against_their_hashes() {
         !pr.record_hash(&mut t, &id("stems"), Blake3::of(b""))
             .unwrap()
     );
+    // Two sources, the hash written as a literal and as a multi-line string: only the named one changes.
+    let other = HASH.replace("ab12", "cd34");
+    for (written, quoted) in [
+        (format!("'{other}'"), format!("'{other}'")),
+        (
+            format!("\"\"\"{other}\"\"\""),
+            format!("\"\"\"{other}\"\"\""),
+        ),
+    ] {
+        let before = format!(
+            "{}\n[[source]]\nid = \"stem\"\npath = \"audio/stem.wav\"   # bass\nblake3 = {written}\nkind = \"stem\"\n",
+            track_text("")
+        );
+        std::fs::write(&path, &before).unwrap();
+        let mut t = pr.track(&id("main")).unwrap();
+        assert!(pr.record_hash(&mut t, &id("stem"), found.clone()).unwrap());
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after,
+            before.replace(&quoted, &format!("\"{}\"", found.as_str())),
+            "{written}"
+        );
+        assert!(after.contains(HASH), "the first source is untouched");
+        assert_eq!(t.file.sources[1].blake3, found);
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -591,7 +648,25 @@ fn new_files_are_written_deterministically_and_never_over_old_ones() {
     bad.sources.push(bad.sources[0].clone());
     assert!(error(bad.to_toml()).1.contains("declared twice"));
     assert!(pr.create_track(&id("other"), &bad).is_err());
-    assert!(!root.join("tracks/other/track.toml").exists());
+    assert!(
+        !root.join("tracks/other").exists(),
+        "nothing is left behind"
+    );
+    // Checked against the project too: an unknown profile is refused before anything is written.
+    let mut unknown = track.clone();
+    unknown.subtunes[0].profile = Some(ProfileName::new("busy").unwrap());
+    assert!(
+        error(pr.create_track(&id("other"), &unknown))
+            .1
+            .contains("profile `busy`")
+    );
+    assert!(!root.join("tracks/other").exists());
+    // And never beside a track whose id differs only in case.
+    assert!(
+        error(pr.create_track(&id("Main"), &track))
+            .1
+            .contains("only in case")
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -612,6 +687,21 @@ fn track_folders_must_be_track_ids() {
         m.contains("\"notes and drafts\" isn't a valid track id"),
         "{m}"
     );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn track_ids_that_differ_only_in_case_are_an_error() {
+    let root = project("case", &track_text(""));
+    let pr = Project::open(&root).unwrap();
+    std::fs::create_dir(root.join("tracks/Main")).ok();
+    if std::fs::read_dir(root.join("tracks")).unwrap().count() < 2 {
+        // A case-insensitive file system: there can't be two such folders.
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    }
+    std::fs::write(root.join("tracks/Main/track.toml"), track_text("")).unwrap();
+    assert!(error(pr.track_ids()).1.contains("differ only in case"));
     let _ = std::fs::remove_dir_all(&root);
 }
 

@@ -107,8 +107,8 @@ impl From<Blake3> for String {
 }
 
 /// A path inside the project, relative to its root, with `/` between parts: never absolute, never `..`, never empty,
-/// and with parts every system can store (no Windows device names, no part ending in `.` or a space, no control or
-/// bidirectional-override characters). Paths are compared as written, byte for byte; they are not Unicode-normalised.
+/// and with parts every system can store (no Windows device names, none of `< > " | ? *`, no part ending in `.` or a
+/// space, no control or bidirectional-override characters). Paths are compared as written, byte for byte; they are not Unicode-normalised.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ProjectPath(String);
@@ -136,6 +136,12 @@ impl TryFrom<String> for ProjectPath {
         }
         if s.starts_with('/') || s.contains('\\') || s.contains(':') {
             return bad("must be relative to the project root, with `/` between parts");
+        }
+        if let Some(c) = s
+            .chars()
+            .find(|c| matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
+        {
+            return bad(&format!("has {c:?}, which Windows can't store in a name"));
         }
         if s.split('/')
             .any(|part| part.is_empty() || part == "." || part == "..")
@@ -579,9 +585,14 @@ impl ProjectFile {
             pack.check()
                 .map_err(|m| invalid(path, line_of(text, "[pack]"), m))?;
         }
-        let lines = headers(text, "[[profile]]");
-        file.profiles()
-            .map_err(|m| invalid(path, lines.first().copied(), m))?;
+        if let Err(m) = file.profiles() {
+            // Point at the first profile that makes the list invalid.
+            let lines = headers(text, "[[profile]]");
+            let bad = (1..=file.profile.len())
+                .find(|&n| Profiles::with(file.profile[..n].iter().cloned()).is_err())
+                .map_or(0, |n| n - 1);
+            return Err(invalid(path, lines.get(bad).copied(), m));
+        }
         Ok(file)
     }
 
@@ -642,7 +653,8 @@ impl TrackFile {
                     ),
                 ));
             }
-            if let (Some(a), Some(b)) = (s.start, s.end)
+            let a = s.start.unwrap_or(Timestamp(0));
+            if let Some(b) = s.end
                 && b <= a
             {
                 return Err(invalid(
@@ -876,15 +888,39 @@ impl Project {
         let path = dir.join(TRACK_FILE);
         let text = read(&path)?;
         let file = TrackFile::parse(&text, &path)?;
+        let (video, pack) = self.resolve(&file, &text, &path)?;
+        let decisions_path = dir.join("decisions.toml");
+        let decisions = if decisions_path.is_file() {
+            DecisionsFile::read(&decisions_path).map_err(Error::Decisions)?
+        } else {
+            DecisionsFile::default()
+        };
+        Ok(Track {
+            id: id.clone(),
+            file,
+            decisions,
+            video,
+            pack,
+        })
+    }
+
+    /// What a track can only check against the project: its profiles exist, and its `[pack]` merged over the
+    /// project's is complete and in range. Gives the resolved video standard and pack.
+    fn resolve(
+        &self,
+        file: &TrackFile,
+        text: &str,
+        path: &Path,
+    ) -> Result<(VideoStandard, Option<Pack>), Error> {
         let profiles = self
             .file
             .profiles()
             .map_err(|m| invalid(&self.root.join(PROJECT_FILE), None, m))?;
-        let subtune_lines = headers(&text, "[[subtune]]");
+        let subtune_lines = headers(text, "[[subtune]]");
         let named = file
             .profile
             .iter()
-            .map(|p| (p, line_of(&text, "profile")))
+            .map(|p| (p, line_of(text, "profile")))
             .chain(file.subtunes.iter().enumerate().filter_map(|(i, s)| {
                 s.profile
                     .as_ref()
@@ -893,32 +929,20 @@ impl Project {
         for (p, line) in named {
             if profiles.get(p).is_none() {
                 return Err(invalid(
-                    &path,
+                    path,
                     line,
                     format!("profile `{p}` isn't built in or defined in {PROJECT_FILE}"),
                 ));
             }
         }
-        let decisions_path = dir.join("decisions.toml");
-        let decisions = if decisions_path.is_file() {
-            DecisionsFile::read(&decisions_path).map_err(Error::Decisions)?
-        } else {
-            DecisionsFile::default()
-        };
         let video = file
             .target
             .as_ref()
             .and_then(|t| t.video)
             .unwrap_or(self.file.target.video);
         let pack = resolve_pack(self.file.pack.as_ref(), file.pack.as_ref())
-            .map_err(|m| invalid(&path, line_of(&text, "[pack]"), m))?;
-        Ok(Track {
-            id: id.clone(),
-            file,
-            decisions,
-            video,
-            pack,
-        })
+            .map_err(|m| invalid(path, line_of(text, "[pack]"), m))?;
+        Ok((video, pack))
     }
 
     /// `tracks/<id>/`.
@@ -979,8 +1003,9 @@ impl Project {
             return Ok(false);
         };
         let file = TrackFile::parse(&new, &path)?;
+        self.resolve(&file, &new, &path)?;
         write(&path, &new)?;
-        track.file = file;
+        *track = self.track(&track.id)?;
         Ok(true)
     }
 
@@ -994,24 +1019,38 @@ impl Project {
         })
     }
 
-    /// Create track `id` with `file` as its `track.toml`; an error if it exists already.
+    /// Create track `id` with `file` as its `track.toml`, checked as [`Project::track`] would read it; an error if
+    /// it exists already, or if another track's id differs from it only in case.
     pub fn create_track(&self, id: &Id, file: &TrackFile) -> Result<Track, Error> {
         let dir = self.track_dir(id);
+        let path = dir.join(TRACK_FILE);
+        let text = file.to_toml()?;
+        self.resolve(file, &text, &path)?;
+        let folded = id.as_str().to_ascii_lowercase();
+        if let Some(other) = self
+            .track_ids()?
+            .into_iter()
+            .find(|t| t != id && t.as_str().to_ascii_lowercase() == folded)
+        {
+            return Err(invalid(
+                &dir,
+                None,
+                format!(
+                    "track `{}` differs from `{}` only in case, which some systems can't tell apart",
+                    id.as_str(),
+                    other.as_str()
+                ),
+            ));
+        }
         std::fs::create_dir_all(&dir).map_err(io(&dir))?;
-        create_new(&dir.join(TRACK_FILE), &file.to_toml()?)?;
+        create_new(&path, &text)?;
         self.track(id)
     }
 }
 
-/// Write `text` at `path`, which must not exist yet.
+/// Write `text` at `path`, which must not exist yet: never over a file, even one another writer creates meanwhile.
 fn create_new(path: &Path, text: &str) -> Result<(), Error> {
-    if path.exists() {
-        return Err(io(path)(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "already exists",
-        )));
-    }
-    write(path, text)
+    crate::textfile::create_atomic(path, text).map_err(|(path, error)| Error::Io { path, error })
 }
 
 /// The project's `[pack]` with a track's overrides: none if neither has one; an error if the track overrides keys
