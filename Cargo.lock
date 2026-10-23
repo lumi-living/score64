@@ -3062,6 +3062,7 @@ dependencies = [
  "blake3",
  "ort",
  "process-wrap",
+ "score64-core",
  "score64-formats",
  "serde_json",
 ]
@@ -3133,6 +3134,7 @@ version = "0.0.0"
 dependencies = [
  "insta",
  "proptest",
+ "score64-core",
 ]
 
 [[package]]

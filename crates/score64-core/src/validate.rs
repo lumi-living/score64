@@ -743,9 +743,34 @@ impl Checker<'_> {
                     "shorten the arpeggio",
                 );
             }
+            // Rule 6, a hard limit: the player adds the interval to the note and its frequency table ends at B-7.
+            let highest = arp.intervals.iter().copied().max().map_or(0, u16::from);
+            let end = arp.row.saturating_add(arp.length.get());
+            for note in line
+                .notes
+                .iter()
+                .filter(|n| n.row < end && arp.row < n.row.saturating_add(n.length.get()))
+            {
+                if u16::from(note.pitch.semitone()) + highest > ARP_HIGHEST {
+                    self.report(
+                        Rule::PitchRange,
+                        Some(note.row.max(arp.row)),
+                        voice,
+                        format!(
+                            "{} plus the arpeggio's {highest} semitones passes B-7, the player's highest note",
+                            note.pitch
+                        ),
+                        "lower the note or narrow the chord",
+                    );
+                }
+            }
         }
     }
 }
+
+/// The highest note an arpeggio may reach, B-7: the player's frequency table ends there, and it adds intervals modulo
+/// 128 (`docs/reference/goattracker-files.md`).
+const ARP_HIGHEST: u16 = 95;
 
 /// Rule 5: one declared adaptive set.
 ///

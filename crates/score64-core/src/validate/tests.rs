@@ -499,6 +499,40 @@ fn rule_5_leaves_marks_past_the_end_to_rule_2() {
 }
 
 #[test]
+fn rule_6_arpeggios_stay_at_or_below_b7() {
+    // An arpeggio over the theme's first lead note: fine low, an error when its top note passes B-7.
+    let arp = |intervals: Vec<u8>| crate::score::ArpEvent {
+        row: 0,
+        length: NonZeroU32::new(2).unwrap(),
+        intervals,
+        decision: None,
+    };
+    let mut s = theme();
+    lines(&mut s)[0].arps = vec![arp(vec![0, 4, 7])];
+    assert!(
+        validate(&s, &ctx())
+            .iter()
+            .all(|p| p.severity != Severity::Error)
+    );
+    let pitch = lines(&mut s)[0].notes[0].pitch.semitone();
+    lines(&mut s)[0].arps = vec![arp(vec![0, 95 - pitch + 1])];
+    let p = validate(&s, &ctx());
+    assert!(
+        p.iter().any(|p| p.rule == Rule::PitchRange
+            && p.severity == Severity::Error
+            && p.message.contains("passes B-7")),
+        "{p:?}"
+    );
+    lines(&mut s)[0].arps = vec![arp(vec![0, 95 - pitch])];
+    assert!(
+        validate(&s, &ctx())
+            .iter()
+            .all(|p| p.severity != Severity::Error),
+        "B-7 itself is fine"
+    );
+}
+
+#[test]
 fn rule_6_pitch_ranges_with_fold_hints() {
     let mut s = theme();
     lines(&mut s)[1].notes[0].pitch = "A-4".parse().unwrap(); // bass two octaves too high
