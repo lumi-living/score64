@@ -1,8 +1,10 @@
 //! The packer: GoatTracker 2's `gt2reloc`, an external program (#50, `docs/reference/player.md`).
 //!
 //! `gt2reloc` checks little, so the adapter does it:
-//! - it packs an empty tune and exits 0 when the song file is missing or isn't a song (or crashes, depending on the
-//!   bytes), so the song must exist and start with a `GTS` magic, and gt2reloc must report having loaded it;
+//! - it packs an empty tune and exits 0 when the song file is missing or isn't a song, so the song must exist, start
+//!   with a `GTS` magic, and show in gt2reloc's report (`song file:` is blank when the magic is wrong). A damaged song
+//!   with a good magic still packs, empty or partial: only the `.sng` reader (#47) can catch that, and the pack stage
+//!   should read the song with it first;
 //! - it ignores a malformed option and uses the default, so options are typed and rendered here, the zero page always
 //!   explicitly, and the player and zero-page addresses it reports must be the ones asked for;
 //! - it picks the format from the output's extension, case-sensitively, and writes a PRG for anything it doesn't
@@ -12,8 +14,8 @@
 //!
 //! It also crashes on a song path over 59 bytes or an output path over 255 (fixed-size buffers). So it runs in a fresh
 //! working directory beside the output, on a copy of the song called `song.sng`, writing `out.<ext>`, which is renamed
-//! into place only once every check passes; the directory is removed either way. It runs with an argument list (never a shell) and a time limit, killed with
-//! everything it started if it overruns (as the sidecar is).
+//! into place only once every check passes; the directory is removed either way. It runs with an argument list (never
+//! a shell) and a time limit, killed with everything it started if it overruns (as the sidecar is).
 
 use std::fmt;
 use std::path::{Path, PathBuf};
