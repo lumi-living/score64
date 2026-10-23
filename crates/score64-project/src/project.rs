@@ -885,10 +885,24 @@ impl Project {
     /// Its profiles must be the project's or built-in.
     pub fn track(&self, id: &Id) -> Result<Track, Error> {
         let dir = self.track_dir(id);
+        // On a case-insensitive file system `tracks/MAIN` opens `tracks/main`; the id must be the folder's own name.
+        if dir.is_dir() && !self.folder_names()?.iter().any(|n| n == id.as_str()) {
+            return Err(invalid(
+                &dir,
+                None,
+                format!("no track `{}`; track ids are case-sensitive", id.as_str()),
+            ));
+        }
         let path = dir.join(TRACK_FILE);
-        let text = read(&path)?;
-        let file = TrackFile::parse(&text, &path)?;
-        let (video, pack) = self.resolve(&file, &text, &path)?;
+        self.load(id, &read(&path)?)
+    }
+
+    /// Track `id` from `text`, its `track.toml`'s content: parsed, checked against the project, with its decisions.
+    fn load(&self, id: &Id, text: &str) -> Result<Track, Error> {
+        let dir = self.track_dir(id);
+        let path = dir.join(TRACK_FILE);
+        let file = TrackFile::parse(text, &path)?;
+        let (video, pack) = self.resolve(&file, text, &path)?;
         let decisions_path = dir.join("decisions.toml");
         let decisions = if decisions_path.is_file() {
             DecisionsFile::read(&decisions_path).map_err(Error::Decisions)?
@@ -902,6 +916,24 @@ impl Project {
             video,
             pack,
         })
+    }
+
+    /// The names of the folders under `tracks/`, whatever they hold.
+    fn folder_names(&self) -> Result<Vec<String>, Error> {
+        let dir = self.root.join("tracks");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(error) => return Err(Error::Io { path: dir, error }),
+        };
+        let mut names = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(io(&dir))?;
+            if entry.path().is_dir() {
+                names.push(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+        Ok(names)
     }
 
     /// What a track can only check against the project: its profiles exist, and its `[pack]` merged over the
@@ -1002,10 +1034,10 @@ impl Project {
         let Some(new) = replace_hash(&text, &path, id, &hash)? else {
             return Ok(false);
         };
-        let file = TrackFile::parse(&new, &path)?;
-        self.resolve(&file, &new, &path)?;
+        // Everything is checked before the file changes.
+        let updated = self.load(&track.id, &new)?;
         write(&path, &new)?;
-        *track = self.track(&track.id)?;
+        *track = updated;
         Ok(true)
     }
 
@@ -1028,22 +1060,27 @@ impl Project {
         self.resolve(file, &text, &path)?;
         let folded = id.as_str().to_ascii_lowercase();
         if let Some(other) = self
-            .track_ids()?
+            .folder_names()?
             .into_iter()
-            .find(|t| t != id && t.as_str().to_ascii_lowercase() == folded)
+            .find(|n| n != id.as_str() && n.to_ascii_lowercase() == folded)
         {
             return Err(invalid(
                 &dir,
                 None,
                 format!(
-                    "track `{}` differs from `{}` only in case, which some systems can't tell apart",
-                    id.as_str(),
-                    other.as_str()
+                    "track `{}` differs from the folder `{other}` only in case, which some systems can't tell apart",
+                    id.as_str()
                 ),
             ));
         }
+        let made = !dir.exists();
         std::fs::create_dir_all(&dir).map_err(io(&dir))?;
-        create_new(&path, &text)?;
+        if let Err(e) = create_new(&path, &text) {
+            if made {
+                let _ = std::fs::remove_dir(&dir);
+            }
+            return Err(e);
+        }
         self.track(id)
     }
 }

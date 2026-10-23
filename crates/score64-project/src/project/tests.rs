@@ -624,7 +624,7 @@ fn new_files_are_written_deterministically_and_never_over_old_ones() {
     let pr = Project::create(&root, file.clone()).unwrap();
     assert!(matches!(
         Project::create(&root, file),
-        Err(Error::Io { .. })
+        Err(Error::Io { error, .. }) if error.kind() == std::io::ErrorKind::AlreadyExists
     ));
     let track = TrackFile::parse(&track_text(""), p("x")).unwrap();
     let t = pr.create_track(&id("main"), &track).unwrap();
@@ -661,6 +661,13 @@ fn new_files_are_written_deterministically_and_never_over_old_ones() {
             .contains("profile `busy`")
     );
     assert!(!root.join("tracks/other").exists());
+    // Nor beside a folder whose name differs only in case, even an empty one.
+    std::fs::create_dir(root.join("tracks/Drafts")).unwrap();
+    assert!(
+        error(pr.create_track(&id("drafts"), &track))
+            .1
+            .contains("only in case")
+    );
     // And never beside a track whose id differs only in case.
     assert!(
         error(pr.create_track(&id("Main"), &track))
@@ -802,3 +809,36 @@ every_bars = 2
 [rules.reduce]
 min_note_rows = 1
 "#;
+
+#[test]
+fn a_track_id_is_its_folders_exact_name() {
+    let root = project("exact", &track_text(""));
+    let pr = Project::open(&root).unwrap();
+    // On a case-insensitive file system this would open tracks/main; it must not.
+    assert!(pr.track(&id("MAIN")).is_err());
+    assert!(pr.track(&id("main")).is_ok());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_refused_hash_change_leaves_the_file_alone() {
+    let root = project("rehash", &track_text(""));
+    let pr = Project::open(&root).unwrap();
+    let mut t = pr.track(&id("main")).unwrap();
+    // The project changes under the track so that it no longer resolves: its profile goes.
+    std::fs::write(
+        root.join("score64.toml"),
+        PROJECT.replace("name = \"calm\"", "name = \"still\""),
+    )
+    .unwrap();
+    let pr = Project::open(&root).unwrap();
+    let path = root.join("tracks/main/track.toml");
+    let before = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        error(pr.record_hash(&mut t, &id("mix"), Blake3::of(b"new")))
+            .1
+            .contains("profile `calm`")
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+    let _ = std::fs::remove_dir_all(&root);
+}

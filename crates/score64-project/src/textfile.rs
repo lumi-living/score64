@@ -36,7 +36,13 @@ impl From<Schema> for u32 {
 /// `lpt0`–`lpt9`, and `com`/`lpt` with `¹`, `²` or `³`), in any case and with any extension (`nul.json`): Windows
 /// can't create a file or folder of that name.
 pub(crate) fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or("").to_ascii_lowercase();
+    // Windows ignores spaces before the extension: `nul .txt` is `nul`.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_lowercase();
     let numbered = |prefix: &str| {
         stem.strip_prefix(prefix).is_some_and(|n| {
             let mut c = n.chars();
@@ -98,14 +104,18 @@ fn write_part(path: &Path, text: &str) -> Result<PathBuf, (PathBuf, std::io::Err
         Ok(()) => Ok(part),
         Err(e) => {
             let _ = std::fs::remove_file(&part);
-            Err((part, e))
+            Err((path.to_path_buf(), e))
         }
     }
 }
 
-/// Sync `path`'s folder, so a rename or link into it survives a power loss (Unix; elsewhere a no-op).
+/// Sync `path`'s folder (Unix; elsewhere a no-op).
+#[cfg(not(unix))]
+fn sync_parent(_: &Path) {}
+
+/// Sync `path`'s folder, so a rename or link into it survives a power loss.
+#[cfg(unix)]
 fn sync_parent(path: &Path) {
-    #[cfg(unix)]
     if let Some(dir) = path.parent() {
         let dir = if dir.as_os_str().is_empty() {
             Path::new(".")
@@ -126,7 +136,8 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), (PathBuf, std:
     let part = write_part(path, text)?;
     let done = (|| {
         if let Ok(old) = std::fs::metadata(path) {
-            std::fs::set_permissions(&part, old.permissions()).map_err(|e| (part.clone(), e))?;
+            std::fs::set_permissions(&part, old.permissions())
+                .map_err(|e| (path.to_path_buf(), e))?;
         }
         std::fs::rename(&part, path).map_err(|e| (path.to_path_buf(), e))
     })();
@@ -140,24 +151,30 @@ pub(crate) fn write_atomic(path: &Path, text: &str) -> Result<(), (PathBuf, std:
 
 /// Create `path` holding `text`, atomically like [`write_atomic`], but only if nothing is there: the temporary file
 /// is hard-linked into place, which fails with `AlreadyExists` even when another writer creates the file meanwhile.
-/// Where hard links aren't supported, it falls back to checking first.
+/// Where the link fails for any other reason (FAT and exFAT have no hard links, and report it variously), it falls
+/// back to checking for the file and renaming, which a concurrent writer can race.
 pub(crate) fn create_atomic(path: &Path, text: &str) -> Result<(), (PathBuf, std::io::Error)> {
+    create_with(path, text, |from, to| std::fs::hard_link(from, to))
+}
+
+/// [`create_atomic`] with the link step given, so the fallback can be tested.
+fn create_with(
+    path: &Path,
+    text: &str,
+    link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<(), (PathBuf, std::io::Error)> {
     let part = write_part(path, text)?;
-    let linked = match std::fs::hard_link(&part, path) {
-        Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {
-            if path.exists() {
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    "already exists",
-                ))
-            } else {
-                std::fs::rename(&part, path)
-            }
-        }
-        other => other,
+    let created = match link(&part, path) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        Err(_) if path.symlink_metadata().is_ok() => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "already exists",
+        )),
+        Err(_) => std::fs::rename(&part, path),
+        Ok(()) => Ok(()),
     };
     let _ = std::fs::remove_file(&part);
-    linked.map_err(|e| (path.to_path_buf(), e))?;
+    created.map_err(|e| (path.to_path_buf(), e))?;
     sync_parent(path);
     Ok(())
 }
@@ -218,6 +235,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn without_hard_links_creating_falls_back_to_check_and_rename() {
+        let dir = std::env::temp_dir().join(format!("score64-nolink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("track.toml");
+        let left = || std::fs::read_dir(&dir).unwrap().count();
+        // How FAT and exFAT refuse a link: "not supported" on macOS, "permission denied" on Linux, or anything else.
+        for (n, refuse) in [
+            std::io::ErrorKind::Unsupported,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let _ = std::fs::remove_file(&file);
+            let no_link = |_: &Path, _: &Path| Err(std::io::Error::from(refuse));
+            create_with(&file, &format!("{n}\n"), no_link).unwrap();
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{n}\n"));
+            let (_, e) = create_with(&file, "again\n", no_link).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::AlreadyExists, "{refuse:?}");
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), format!("{n}\n"));
+            assert_eq!(left(), 1, "no .part file left");
+        }
+        // A link that finds the file there is final, whatever is on disk.
+        let _ = std::fs::remove_file(&file);
+        let exists =
+            |_: &Path, _: &Path| Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists));
+        assert_eq!(
+            create_with(&file, "x\n", exists).unwrap_err().1.kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+        assert!(!file.exists());
+        assert_eq!(left(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_errors_name_the_target_not_the_temporary_file() {
+        let missing = std::env::temp_dir()
+            .join(format!("score64-missing-{}", std::process::id()))
+            .join("a.toml");
+        assert_eq!(write_atomic(&missing, "x").unwrap_err().0, missing);
+        assert_eq!(create_atomic(&missing, "x").unwrap_err().0, missing);
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_rewrite_keeps_the_files_permissions() {
@@ -250,6 +314,8 @@ mod tests {
             "CONOUT$.log",
             "com¹",
             "lpt³.txt",
+            "nul .txt",
+            "COM1  .wav",
         ] {
             assert!(is_device_name(name), "{name}");
         }
