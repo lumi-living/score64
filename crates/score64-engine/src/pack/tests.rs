@@ -149,10 +149,13 @@ fn effects_fire_on_every_voice_in_turn_while_the_subtune_plays() {
     // Too short for one every 100: still one on each voice, inside the subtune.
     let f = fires(30, &[v(1), v(2), v(3)]);
     assert_eq!(f, [(5, v(1)), (15, v(2)), (25, v(3))]);
-    for frames in [1, 2, 3, 99, 100, 101, 12_345] {
+    for frames in [3, 4, 5, 99, 100, 101, 12_345] {
         let f = fires(frames, &[v(1), v(2), v(3)]);
         assert!(f.len() >= 3, "{frames}");
-        assert!(f.windows(2).all(|w| w[0].0 <= w[1].0), "{frames}: in order");
+        assert!(
+            f.windows(2).all(|w| w[0].0 < w[1].0),
+            "{frames}: in order, one a frame at most"
+        );
         assert!(f.iter().all(|&(at, _)| at < frames), "{frames}: inside");
         for voice in 1..=3 {
             assert!(
@@ -161,6 +164,9 @@ fn effects_fire_on_every_voice_in_turn_while_the_subtune_plays() {
             );
         }
     }
+    // An effect frame calls one effect, so fewer frames than voices fire on the first voices, one in every frame.
+    assert_eq!(fires(1, &[v(1), v(2), v(3)]), [(0, v(1))]);
+    assert_eq!(fires(2, &[v(1), v(2), v(3)]), [(0, v(1)), (1, v(2))]);
 }
 
 #[test]
@@ -253,7 +259,8 @@ fn the_driver_goes_outside_the_window_the_tune_and_the_io_area() {
 }
 
 /// The driver against the real gt2reloc and helper: pointed at play, it plays the tune as calling play directly
-/// would, and firing through it really starts the effect on the voice asked for. Skips visibly without them.
+/// would; firing through it really starts the effect on the voice asked for, keeps the music in step, and times
+/// the frame as the effect call and the play call together. Skips visibly without them.
 #[test]
 fn the_driver_plays_the_tune_and_fires_the_effect() {
     use score64_adapters::emu::Helper;
@@ -315,30 +322,56 @@ fn the_driver_plays_the_tune_and_fires_the_effect() {
         "the driver plays as play does, 3 cycles later"
     );
     let v3 = Voice::new(3).unwrap();
-    // A fire takes one frame, in which the effect call runs in place of play: after it the music is one frame
-    // behind, so it compares with the music unfired, a frame earlier.
-    let fired = writes(driver, &mut |h| fire(h, driver, payload.load, v3).unwrap());
-    let voice = |ws: &[score64_adapters::emu::SidWrite], v: u8, shift: u32| {
+    // A fire takes one frame, in which the effect call runs and then play: after it the music is where it would be
+    // unfired, frame for frame.
+    let fired = writes(driver, &mut |h| {
+        fire(h, driver, payload.load, v3).unwrap();
+    });
+    let voice = |ws: &[score64_adapters::emu::SidWrite], v: u8| {
         ws.iter()
-            .filter(|w| (7 * (v - 1)..7 * v).contains(&w.register) && w.frame >= shift)
-            .filter(|w| w.frame - shift < 49)
-            .map(|w| (w.frame - shift, w.register, w.value))
+            .filter(|w| (7 * (v - 1)..7 * v).contains(&w.register) && (1..50).contains(&w.frame))
+            .map(|w| (w.frame, w.register, w.value))
             .collect::<Vec<_>>()
     };
-    assert!(!voice(&driven, 3, 0).is_empty());
+    assert!(!voice(&driven, 3).is_empty());
     assert_ne!(
-        voice(&fired, 3, 1),
-        voice(&driven, 3, 0),
+        voice(&fired, 3),
+        voice(&driven, 3),
         "the effect changed voice 3"
     );
-    assert_eq!(
-        voice(&fired, 1, 1),
-        voice(&driven, 1, 0),
-        "and only voice 3"
+    assert_eq!(voice(&fired, 1), voice(&driven, 1), "and only voice 3");
+    assert_eq!(voice(&fired, 2), voice(&driven, 2), "and only voice 3");
+
+    // An effect frame's time is the effect call's and the play call's: measured apart, with the effect call in a
+    // frame of its own (a stub that loads the registers and jumps to the entry), and play alone in the next.
+    const BEFORE: u32 = 10;
+    let fresh = |h: &mut DynHelper| {
+        h.load(payload.load, &payload.data).unwrap();
+        h.load(driver, &driver_code(payload.load, fx)).unwrap();
+        h.load(fx, &effect).unwrap();
+        h.init(payload.load, driver, 1).unwrap();
+        h.render(BEFORE, false).unwrap();
+    };
+    fresh(&mut h);
+    let together = fire(&mut h, driver, payload.load, v3).unwrap();
+    fresh(&mut h);
+    let stub = fx + effect.len() as u16;
+    let [fx_lo, fx_hi] = fx.to_le_bytes();
+    let [entry_lo, entry_hi] = (payload.load + 6).to_le_bytes();
+    let code = [0xA9, fx_lo, 0xA0, fx_hi, 0xA2, 14, 0x4C, entry_lo, entry_hi];
+    h.load(stub, &code).unwrap();
+    let [stub_lo, stub_hi] = stub.to_le_bytes();
+    h.poke(driver + 1, stub_lo).unwrap();
+    h.poke(driver + 2, stub_hi).unwrap();
+    // The driver's JMP, the stub's loads and its JMP: 3 + 6 + 3.
+    let effect_alone = h.render(1, false).unwrap().max_play_cycles - 12;
+    let [play_lo, play_hi] = (payload.load + 3).to_le_bytes();
+    h.poke(driver + 1, play_lo).unwrap();
+    h.poke(driver + 2, play_hi).unwrap();
+    let play_alone = h.render(1, false).unwrap().max_play_cycles - DRIVER_CYCLES;
+    assert!(
+        effect_alone > 20,
+        "{effect_alone} cycles for the effect call"
     );
-    assert_eq!(
-        voice(&fired, 2, 1),
-        voice(&driven, 2, 0),
-        "and only voice 3"
-    );
+    assert_eq!(together, effect_alone + play_alone);
 }

@@ -14,21 +14,27 @@
 //!
 //! **How a subtune is traced.** The packed bytes are loaded fresh, with a trace armed for the budget's window, and
 //! init is called with the subtune number. Play is then called once a frame for the plan's frames. The helper calls
-//! a three-byte driver, `JMP start+3`, rather than play itself, so that the driver can be pointed
-//! at an effect call between two play calls. On such a frame the driver calls the sound-effect entry (start+6) with
-//! the effect's address in A/Y and the voice's channel offset in X, as a game's main loop would, *in place of* play.
-//! The trace sees everything either call reads or writes. Each play call's time is the helper's measurement less the
-//! driver's `JMP abs`, 3 cycles. The effect calls themselves aren't play calls, so their time doesn't count. The
-//! driver and the effect data are only read, never written, and the host's own writes (`Load`, `Poke`) aren't traced,
-//! so none of them shows up as a write outside the window.
+//! a three-byte driver, `JMP start+3`, rather than play itself, so that the driver can be pointed at an effect call
+//! for one frame. On such a frame the driver calls the sound-effect entry (start+6) with the effect's address in A/Y
+//! and the voice's channel offset in X, and then play: the game's interrupt does the same when its mailbox holds a
+//! request (`docs/reference/player.md`, Integration rules). The trace sees everything either call reads or writes.
+//! Each frame is one play call, and its time counts against the raster budget: the helper's measurement less the
+//! driver's own instructions, 3 cycles for the `JMP abs` to play, and on an effect frame 18 for the jump, the
+//! register loads, the `JSR` to the effect entry and the `JMP` to play. So an effect frame's time is the effect
+//! call's and the play call's together, as the interrupt spends them. The driver and the effect data are only read,
+//! never written, and the host's own writes (`Load`, `Poke`) aren't traced, so none of them shows up as a write
+//! outside the window.
 //!
-//! The driver and the effect data go outside the window when there is room, and otherwise inside it, past the
-//! tune's end: GoatTracker's packed player keeps its variables in its own bytes, so it doesn't write there. Then the
-//! trace watches the driver, and a player that writes over it anyway gets a problem saying so.
+//! The driver and the effect data go outside the window and the tune, clear of the I/O area and the vectors. For a
+//! window from `[pack]`, which can't overlap the I/O area or reach the vectors (`docs/reference/player.md`, Memory
+//! the tune may use), there is always room there. Only a budget built in code, whose window may cover all of RAM,
+//! can leave none: then they go inside the window, past the tune's end, where GoatTracker's packed player doesn't
+//! write, since it keeps its variables in its own bytes. The trace then watches the driver, and a player that writes
+//! over it anyway gets a problem saying so.
 //!
 //! A tune whose init or play entry doesn't jump into it, past the jump table, isn't traced, and the effect entry is
 //! only called when it does: rule 8 then reports the jump table, where the helper would only report a CPU jam or a
-//! timeout. A call that fails while the trace runs (a CPU jam, or a call that doesn't return in time) stops that
+//! timeout. Nor is a tune whose budget's window ends before it starts: rule 8 reports the window. A call that fails while the trace runs (a CPU jam, or a call that doesn't return in time) stops that
 //! subtune's trace, but what was measured up to it is kept: the facts hold it, and the report adds a problem naming
 //! the call. So when a relocation bug makes the player write over the driver and crash, that write is still reported.
 //!
@@ -70,11 +76,15 @@ pub const START_FRAMES: u64 = 8;
 const CHUNK_FRAMES: u32 = 50;
 
 /// How often an effect is fired while a subtune plays, in play calls: every two PAL seconds, cycling through the
-/// voices that take effects. A subtune too short for one on each voice gets them closer together.
+/// voices that take effects. A subtune too short for one on each voice gets them closer together, one a frame at
+/// most.
 pub const EFFECT_EVERY: u32 = 100;
 
 /// The driver's `JMP abs` to play, which the helper counts as part of each play call.
 const DRIVER_CYCLES: u32 = 3;
+/// On an effect frame, the driver's `JMP abs` to the effect call, `LDA #`, `LDY #` and `LDX #` (2 each), the
+/// `JSR` to the effect entry (6) and the `JMP abs` to play (3), which the helper counts as part of the frame's call.
+const FIRE_CYCLES: u32 = 3 + 3 * 2 + 6 + 3;
 
 /// The gt2reloc options for a resolved `[pack]`, for a target on `video`: the player at the window's start page
 /// (`-W`), its zero-page pair (`-Z`), sound effects (`-D`), the hard-restart ADSR (`-A`, gt2reloc's `$0F00` when
@@ -252,7 +262,7 @@ pub fn gate(
     // Only a tune whose init and play entries jump into it, past the jump table, can run, and the effect entry is
     // called only where it does too; otherwise the trace is skipped (or fires nothing) and rule 8 reports the jump
     // table instead of the helper refusing a CPU jam or a call that never returns. An inverted window is rule 8's to
-    // report too; there is nothing to trace writes outside of.
+    // report too: there is nothing to trace writes outside of, so nothing is traced.
     let load = u32::from(payload.load);
     let tune = load..load + payload.data.len() as u32;
     let table_end = load + 3 * if budget.sound_effects { 3 } else { 2 };
@@ -264,7 +274,7 @@ pub fn gate(
     let (mut zero_page_used, mut pages_written_outside) = (BTreeSet::new(), BTreeSet::new());
     let mut max_play_cycles: Option<u32> = None;
     let mut stopped = Vec::new();
-    let traced = into_tune(0) && into_tune(1);
+    let traced = window.is_some() && into_tune(0) && into_tune(1);
     if traced {
         let effects = budget.sound_effects
             && into_tune(2)
@@ -298,8 +308,8 @@ pub fn gate(
                 fires,
             };
             // Real time, a frame every 20 ms, on top of the usual timeout: the helper runs far faster.
-            let timeout = engine.helper.timeout()
-                + Duration::from_millis(20 * (u64::from(sub.frames) + job.fires.len() as u64));
+            let timeout =
+                engine.helper.timeout() + Duration::from_millis(20 * u64::from(sub.frames));
             let measured = engine.helper.call_for(timeout, move |h| job.run(h))?;
             zero_page_used.extend(measured.zero_page);
             pages_written_outside.extend(measured.outside);
@@ -398,11 +408,11 @@ fn check_plan(packed: &Packed, budget: &PackBudget, plan: &TracePlan) -> Result<
     Ok(())
 }
 
-/// The driver: `JMP` (3 bytes), then the effect call (`LDA #`, `LDY #`, `LDX #`, `JMP`: 9 bytes), then 4 spare, then
-/// the effect data.
+/// The driver: `JMP` (3 bytes), then the effect call (`LDA #`, `LDY #`, `LDX #`, `JSR`, `JMP`: 12 bytes), then 1
+/// spare, then the effect data.
 const DRIVER_BYTES: usize = 16;
-/// The driver's code: the `JMP` and the effect call.
-const DRIVER_CODE: usize = 12;
+/// The driver's code: the `JMP` and the effect call. At most 16 bytes, the helper's limit on watched addresses.
+const DRIVER_CODE: usize = 15;
 /// Where in the driver the effect call starts, and where its `LDX #` operand is.
 const FIRE: u16 = 3;
 const FIRE_CHANNEL: u16 = FIRE + 5;
@@ -418,7 +428,9 @@ struct Scratch {
 /// of the tune, zero page, the stack, the I/O area (`$D000`–`$DFFF`) and the CPU's vectors. Outside the window when
 /// there is room, page-aligned: `$C000` first, as a game's free RAM usually is, then the lowest page that fits.
 /// Otherwise inside the window, past the tune's end, where GoatTracker's player doesn't write: the first address
-/// after the tune, else the lowest page above it.
+/// after the tune, else the lowest page above it. A window from `[pack]` always leaves room outside, since it
+/// can't overlap the I/O area or reach the vectors (`score64_project::project::Window`), and the driver only needs
+/// one free page; the inside fallback is for budgets built in code, whose window may cover all of RAM.
 fn scratch(payload: &Payload, window: Option<(u16, u16)>, len: usize) -> Option<Scratch> {
     let len = len as u32;
     let tune = (
@@ -455,13 +467,17 @@ fn scratch(payload: &Payload, window: Option<(u16, u16)>, len: usize) -> Option<
 }
 
 /// When to fire an effect while `frames` play calls run, and on which voice: every [`EFFECT_EVERY`] play calls,
-/// cycling through `voices`, and closer together where that gives fewer than one per voice. Each is the number of
-/// play calls before it, in order.
+/// cycling through `voices`, and closer together where that gives fewer than one per voice, but never two in one
+/// frame. Each is the number of play calls before its frame, in order.
 fn fires(frames: u32, voices: &[Voice]) -> Vec<(u32, Voice)> {
     if voices.is_empty() {
         return vec![];
     }
-    let k = voices.len().max((frames / EFFECT_EVERY) as usize) as u64;
+    // At most one a frame: with k ≤ frames, successive ones are frames / k ≥ 1 apart.
+    let k = voices
+        .len()
+        .max((frames / EFFECT_EVERY) as usize)
+        .min(frames as usize) as u64;
     (0..k)
         .map(|i| {
             let at = (2 * i + 1) * u64::from(frames) / (2 * k);
@@ -494,7 +510,7 @@ struct Measured {
 }
 
 /// The driver for a tune at `start` whose effect data is at `fx`: `JMP play`, then the effect call that [`fire`]
-/// points it at.
+/// points it at, which calls the effect entry and then goes on to play.
 fn driver_code(start: u16, fx: u16) -> [u8; DRIVER_CODE] {
     let [play_lo, play_hi] = start.wrapping_add(3).to_le_bytes();
     let [fx_lo, fx_hi] = fx.to_le_bytes();
@@ -504,21 +520,24 @@ fn driver_code(start: u16, fx: u16) -> [u8; DRIVER_CODE] {
         0xA9, fx_lo, // fire: LDA #<effect
         0xA0, fx_hi, // LDY #>effect
         0xA2, 0x00, // LDX #channel
-        0x4C, entry_lo, entry_hi, // JMP start+6
+        0x20, entry_lo, entry_hi, // JSR start+6
+        0x4C, play_lo, play_hi, // JMP play
     ]
 }
 
 /// Fire the effect on `voice` through the driver at `driver`, for a tune at `start`: one frame in which the driver
-/// calls the sound-effect entry with the voice's channel offset in place of play, then back to play.
-fn fire(h: &mut DynHelper, driver: u16, start: u16, voice: Voice) -> Result<(), HelperError> {
+/// calls the sound-effect entry with the voice's channel offset, then play, and then back to play alone. Gives the
+/// frame's time less the driver's own, [`FIRE_CYCLES`].
+fn fire(h: &mut DynHelper, driver: u16, start: u16, voice: Voice) -> Result<u32, HelperError> {
     let [fire_lo, fire_hi] = (driver + FIRE).to_le_bytes();
     let [play_lo, play_hi] = start.wrapping_add(3).to_le_bytes();
     h.poke(driver + FIRE_CHANNEL, 7 * (voice.get() - 1))?;
     h.poke(driver + 1, fire_lo)?;
     h.poke(driver + 2, fire_hi)?;
-    h.render(1, false)?;
+    let r = h.render(1, false)?;
     h.poke(driver + 1, play_lo)?;
-    h.poke(driver + 2, play_hi)
+    h.poke(driver + 2, play_hi)?;
+    Ok(r.max_play_cycles.saturating_sub(FIRE_CYCLES))
 }
 
 /// The helper's reason when `e` is the tune's own failure (a CPU jam, or a call that didn't return within its
@@ -561,6 +580,24 @@ impl Job {
         let mut played = 0;
         let mut fires = self.fires.iter().peekable();
         'trace: while played < self.frames {
+            // An effect frame is a play call too: the effect call, then play.
+            if let Some(&&(_, voice)) = fires.peek().filter(|(at, _)| *at <= played) {
+                fires.next();
+                match fire(h, driver, start, voice) {
+                    Ok(cycles) => m.max_play_cycles = m.max_play_cycles.max(Some(cycles)),
+                    Err(e) => {
+                        let call = format!(
+                            "the sound-effect call on voice {} with play call {}",
+                            voice.get(),
+                            played + 1
+                        );
+                        m.failure = Some((call, tune_failure(e)?));
+                        break 'trace;
+                    }
+                }
+                played += 1;
+                continue;
+            }
             let until = fires
                 .peek()
                 .map_or(self.frames, |(at, _)| *at)
@@ -583,17 +620,6 @@ impl Job {
                     }
                 }
                 played += n;
-            }
-            while let Some(&&(_, voice)) = fires.peek().filter(|(at, _)| *at <= played) {
-                fires.next();
-                if let Err(e) = fire(h, driver, start, voice) {
-                    let call = format!(
-                        "the sound-effect call on voice {} after play call {played}",
-                        voice.get()
-                    );
-                    m.failure = Some((call, tune_failure(e)?));
-                    break 'trace;
-                }
             }
         }
         // What was collected up to a failed play call can still be reported (emu-protocol.md, `Report`).

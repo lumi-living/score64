@@ -5,9 +5,9 @@
 //! zero page each fail with the matching problem. An exported score is gated with the plan `TracePlan::for_song`
 //! gives it. These run when gt2reloc and the helper are available; otherwise they skip visibly (CI has no gt2reloc).
 //!
-//! Hand-made tunes cover what gt2reloc never makes: a broken jump table isn't traced (no helper needed, so these run
-//! in CI), and a player that jams mid-trace, or writes over the trace's driver, is reported with what was measured
-//! (helper needed).
+//! Hand-made tunes cover what gt2reloc never makes. A broken jump table or an inverted window isn't traced (no
+//! helper needed, so these run in CI). A play call that jams or never returns, an effect call that jams, and an init
+//! or play call that writes over the trace's driver are each reported with what was measured (helper needed).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
@@ -28,6 +28,7 @@ use score64_engine::pack::{
 };
 use score64_engine::{Engine, EngineConfig, ErrorKind};
 use score64_formats::gt2::export::{Header, Library, export};
+use score64_formats::gt2::sng::{Orderlist, Sng};
 use score64_formats::gt2::{Ins, Instrument, Table};
 use score64_formats::psid::Psid;
 use score64_project::ProjectFile;
@@ -357,23 +358,62 @@ fn gate_of(packed: &Packed, budget: &PackBudget, plan: &TracePlan) -> GateReport
 
 #[test]
 fn the_fixtures_frames_are_its_plans() {
-    // A score of the fixture's shape (two subtunes of 128 rows at 6 frames, each looping to the start; `main` plays
-    // `full`, `combat` `sfx-shares-v3`) gets the plan these tests use. Needs no tools.
-    let subtune = |name: &str, profile: &str| Subtune {
-        name: SubtuneName::new(name).unwrap(),
-        profile: Some(ProfileName::new(profile).unwrap()),
-        frames_per_row: FramesPerRow::new(6).unwrap(),
-        tempo: vec![],
-        rows_per_bar: NonZeroU8::new(16).unwrap(),
-        length: NonZeroU32::new(128).unwrap(),
-        loop_row: 0,
-        marks: vec![],
-        voices: vec![],
+    // The fixture's own song, read with the formats crate: each subtune's rows and loop row from its order lists,
+    // and its tempo from the `F` command on its first row. Its subtunes as a score (`main` plays `full`, `combat`
+    // `sfx-shares-v3`, README) get the plan these tests use. Needs no tools.
+    let sng = Sng::read(&std::fs::read(fixtures().join("sixteen-steps.sng")).unwrap()).unwrap();
+    assert_eq!(sng.subtunes.len(), 2);
+    let shape = |voices: &[Orderlist; 3]| {
+        let rows = |entries: &[u8]| -> u32 {
+            entries
+                .iter()
+                .map(|&e| {
+                    // Pattern numbers only: the fixture has no repeats or transposes.
+                    assert!(usize::from(e) < sng.patterns.len(), "entry ${e:02X}");
+                    sng.patterns[usize::from(e)].rows.len() as u32
+                })
+                .sum()
+        };
+        let (length, loop_row) = (
+            rows(&voices[0].entries),
+            rows(&voices[0].entries[..usize::from(voices[0].restart)]),
+        );
+        for v in voices {
+            assert_eq!(
+                (rows(&v.entries), rows(&v.entries[..usize::from(v.restart)])),
+                (length, loop_row),
+                "every voice in step"
+            );
+        }
+        let tempo = voices
+            .iter()
+            .map(|v| sng.patterns[usize::from(v.entries[0])].rows[0])
+            .find(|r| r.command == 0xF)
+            .expect("a tempo on the first row")
+            .data;
+        (length, loop_row, tempo)
+    };
+    let subtune = |n: usize, name: &str, profile: &str| {
+        let (length, loop_row, tempo) = shape(&sng.subtunes[n]);
+        Subtune {
+            name: SubtuneName::new(name).unwrap(),
+            profile: Some(ProfileName::new(profile).unwrap()),
+            frames_per_row: FramesPerRow::new(tempo).unwrap(),
+            tempo: vec![],
+            rows_per_bar: NonZeroU8::new(16).unwrap(),
+            length: NonZeroU32::new(length).unwrap(),
+            loop_row,
+            marks: vec![],
+            voices: vec![],
+        }
     };
     let song = Song {
         schema: Schema::default(),
         profile: ProfileName::new("full").unwrap(),
-        subtunes: vec![subtune("main", "full"), subtune("combat", "sfx-shares-v3")],
+        subtunes: vec![
+            subtune(0, "main", "full"),
+            subtune(1, "combat", "sfx-shares-v3"),
+        ],
     };
     let effect = std::fs::read(fixtures().join("sfx-gunshot.bin")).unwrap();
     assert_eq!(
@@ -643,9 +683,10 @@ fn a_window_over_all_ram_gets_the_driver_after_the_tune() {
     if helper("a_window_over_all_ram_gets_the_driver_after_the_tune").is_none() {
         return;
     }
-    // The window leaves no room outside, so the driver goes right after the tune, inside the window. A player that
-    // writes over it there (here the effect call's JMP, which play doesn't use) is reported, though the write is
-    // inside its window.
+    // The window leaves no room outside, so the driver goes right after the tune, inside the window: only a budget
+    // built in code can do this, since a `[pack]` window can't cover the I/O area. A player that writes over the
+    // driver there (here the effect call's JSR, which a frame without an effect doesn't run) is reported, though
+    // the write is inside its window.
     let dir = scratch("all-ram");
     let mut tune = vec![
         0x4C, 0x06, 0x02, // init
@@ -864,4 +905,184 @@ fn an_exported_score_gates_with_the_plan_for_its_song() {
             subtune.name.as_str()
         );
     }
+}
+
+#[test]
+fn an_effect_frame_counts_the_effect_call_and_the_play_call() {
+    let Some(packer) = tools("an_effect_frame_counts_the_effect_call_and_the_play_call") else {
+        return;
+    };
+    // One frame, the first play call, with the gunshot fired on voice 3 just before it, as the game's interrupt
+    // does: its time is the effect call's and the play call's. A budget between play alone and the two together
+    // passes the music and fails the effect frame.
+    let dir = scratch("effect-frame");
+    let pack = generous(4000);
+    let packed = pack_prg(&packer, &dir, &pack);
+    let v3 = [Voice::new(3).unwrap()];
+    let play = gate_of(&packed, &pack.budget(), &plan_of(&[(1, &[])]));
+    let both = gate_of(&packed, &pack.budget(), &plan_of(&[(1, &v3)]));
+    let (p, b) = (
+        play.facts.max_play_cycles.unwrap(),
+        both.facts.max_play_cycles.unwrap(),
+    );
+    // The gunshot's effect call takes 45 cycles here (`pack::tests`, measured apart).
+    assert!(
+        (30..80).contains(&(b - p)),
+        "{p} cycles alone, {b} with the effect"
+    );
+    let budget = PackBudget {
+        max_play_cycles: Some(p + (b - p) / 2),
+        ..pack.budget()
+    };
+    let play = gate_of(&packed, &budget, &plan_of(&[(1, &[])]));
+    let both = gate_of(&packed, &budget, &plan_of(&[(1, &v3)]));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(play.passes(), "{:?}", messages(&play));
+    assert_eq!(
+        messages(&both),
+        [format!(
+            "the longest play call takes {b} cycles, over the budget of {}",
+            p + (b - p) / 2
+        )]
+    );
+}
+
+#[test]
+fn a_play_call_that_never_returns_is_a_problem_not_an_error() {
+    if helper("a_play_call_that_never_returns_is_a_problem_not_an_error").is_none() {
+        return;
+    }
+    // Play is `JMP *`: the helper times the call out after a frame's budget, and the gate reports it.
+    let dir = scratch("timeout");
+    let hangs = hand_packed(
+        &dir,
+        Format::Prg,
+        0x1000,
+        &[
+            0x4C, 0x09, 0x10, // init
+            0x4C, 0x06, 0x10, // play
+            0x4C, 0x06, 0x10, // play: JMP *
+            0x60, // init: RTS
+        ],
+        1,
+    );
+    let report = gate_of(&hangs, &hand_budget(), &plan_of(&[(100, &[])]));
+    let _ = std::fs::remove_dir_all(&dir);
+    let m = messages(&report);
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert!(
+        m[0].starts_with("subtune 1's trace stopped: one of play calls 1–50 failed: ")
+            && m[0].contains("did not return"),
+        "{m:?}"
+    );
+    assert_eq!(report.facts.traced_window, Some((0x1000, 0x10FF)));
+}
+
+#[test]
+fn an_effect_call_that_fails_is_a_problem() {
+    if helper("an_effect_call_that_fails_is_a_problem").is_none() {
+        return;
+    }
+    // The effect entry jams. Effects fire on voice 3 once in 100 play calls, before play call 51.
+    let dir = scratch("effect-jams");
+    let jams = hand_packed(
+        &dir,
+        Format::Prg,
+        0x1000,
+        &[
+            0x4C, 0x09, 0x10, // init
+            0x4C, 0x09, 0x10, // play
+            0x4C, 0x0A, 0x10, // sound effect
+            0x60, // init and play: RTS
+            0x02, // sound effect: JAM
+        ],
+        1,
+    );
+    let effects = PackBudget {
+        sound_effects: true,
+        ..hand_budget()
+    };
+    let report = gate_of(
+        &jams,
+        &effects,
+        &plan_of(&[(100, &[Voice::new(3).unwrap()])]),
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let m = messages(&report);
+    assert_eq!(m.len(), 1, "{m:?}");
+    assert!(
+        m[0].starts_with(
+            "subtune 1's trace stopped: the sound-effect call on voice 3 with play call 51 failed: "
+        ),
+        "{m:?}"
+    );
+    // The 50 play calls before it were measured.
+    assert!(report.facts.max_play_cycles.is_some());
+}
+
+#[test]
+fn an_init_that_writes_over_the_driver_is_reported() {
+    if helper("an_init_that_writes_over_the_driver_is_reported").is_none() {
+        return;
+    }
+    // As in the window over all RAM, but init writes over the driver (the JMP to play after an effect), and play
+    // leaves it alone.
+    let dir = scratch("init-overwrites");
+    let mut tune = vec![
+        0x4C, 0x06, 0x02, // init
+        0x4C, 0x0C, 0x02, // play
+        0xA9, 0x00, // init: LDA #0
+        0x8D, 0x00, 0x00, // STA driver+13, patched below
+        0x60, // RTS
+        0x60, // play: RTS
+    ];
+    let driver = 0x0200 + tune.len() as u16;
+    tune[9..11].copy_from_slice(&(driver + 13).to_le_bytes());
+    let budget = PackBudget {
+        first: 0x0200,
+        last: 0xFFFF,
+        ..hand_budget()
+    };
+    let overwrites = hand_packed(&dir, Format::Prg, 0x0200, &tune, 1);
+    let report = gate_of(&overwrites, &budget, &plan_of(&[(10, &[])]));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        messages(&report),
+        [format!(
+            "subtune 1 wrote over the trace's driver at ${:04X}, inside the window past the tune's end, where it \
+             went for want of room outside the window; what was measured after that can't be trusted",
+            driver + 13
+        )]
+    );
+}
+
+#[test]
+fn an_inverted_window_is_reported_not_traced() {
+    // No helper needed: a budget whose window ends before it starts has nothing to trace writes outside of, so
+    // the gate traces nothing and rule 8 reports the window.
+    let dir = scratch("inverted");
+    let tune = hand_packed(
+        &dir,
+        Format::Prg,
+        0x1000,
+        &[0x4C, 0x06, 0x10, 0x4C, 0x06, 0x10, 0x60],
+        1,
+    );
+    let inverted = PackBudget {
+        first: 0x10FF,
+        last: 0x1000,
+        ..hand_budget()
+    };
+    let report = gate_of(&tune, &inverted, &plan_of(&[(100, &[])]));
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(
+        messages(&report),
+        [
+            "the memory window $10FF–$1000 ends before it starts",
+            "the player wasn't traced, so its zero page and its writes outside the window weren't measured"
+        ]
+    );
+    assert_eq!(report.facts.traced_window, None);
+    assert_eq!(report.facts.zero_page_used, BTreeSet::new());
+    assert_eq!(report.facts.max_play_cycles, None);
 }

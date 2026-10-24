@@ -87,6 +87,14 @@ What this means when arranging, for any voice a profile marks expendable (for ex
 
 An effect at a higher memory address is never interrupted by one at a lower address. Effect data is therefore laid out lowest priority first.
 
+## Memory the tune may use
+
+The memory a target gives the tune (`[pack] window`, ADR-014) is RAM the player can be read from while it plays. `score64_project::project::Window` applies these facts:
+
+- **Not the I/O area, `$D000`–`$DFFF`.** I/O must be banked in whenever play runs, because the player stores to the SID's registers directly: for example `sta SIDBASE+$00,x` in `mt_loadregs` (GoatTracker 2.72 source, `player.s` line 1345), where gt2reloc defines `SIDBASE` as the SID's address (`greloc.c` line 1059), `$D400` unless changed (`goattrk2.c` line 52). With I/O banked in, the CPU reads `$D000`–`$DFFF` as I/O, so a tune stored in the RAM underneath can't be read. The packed fixture shows the same: its play routine writes `$D400`–`$D418` every frame (34,681 writes per subtune, matched against x64sc; `fixtures/gt2-original/README.md`, Verification).
+- **Not the CPU's vectors, `$FFFA`–`$FFFF`** (NMI, reset, IRQ/BRK). With KERNAL banked out, the game's interrupt handler is reached through `$FFFE/$FFFF` (Integration rules, below), so the tune can't own them. A window reaching them is refused.
+- **BASIC and KERNAL ROM aren't checked.** Under the default banking, `$A000`–`$BFFF` and `$E000`–`$FFFF` read as ROM. Whether a tune there can be read depends on the target's banking (most games bank the ROMs out), which Score64 doesn't model, so a window over them is accepted.
+
 ## Integration rules
 
 - Call play from a raster interrupt that saves and restores A, X and Y and acknowledges `$D019`. With KERNAL banked out (common in games), the interrupt vector is `$FFFE/$FFFF`, not `$0314/$0315`.

@@ -104,7 +104,7 @@ switch = { every_bars = 2 }   # optional; every bar by default
 - **`[pack] window`** (amended 2026-10-24, #198) replaces `player_page`. It's the target's memory for the tune, `start` to `end` inclusive.
   - `start` must be page-aligned, since gt2reloc places the player on a page boundary (`-W`), and the player is packed there.
   - `end` must be at least `start`.
-  - The window must stay clear of the I/O area, `$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it plays, and a tune under it can't be read. It must also stay clear of the CPU's vectors, `$FFFA`–`$FFFF`, which the game's interrupts need.
+  - The window must stay clear of the I/O area, `$D000`–`$DFFF`, and of the CPU's vectors, `$FFFA`–`$FFFF`. This check applies the reference facts in `docs/reference/player.md`, Memory the tune may use: the player writes the SID directly, so I/O is banked in while it plays and a tune under it can't be read, and the game's interrupts need the vectors. The ROMs aren't checked, since that depends on the target's banking.
   - The budget gate (rule 8, #51) checks that the packed player, its data and everything it writes outside the zero page stay inside the window.
   - **`max_play_cycles`**, when set, is the raster budget: the longest play call measured by the helper's trace must not exceed it. The VICE harness stays the final word on raster time (TAD §7).
 - **Overrides:** a track may override `[target] video` and any `[pack]` key under its own `[target]` and `[pack]` tables. An overridden `window` replaces the whole window. The project's values apply otherwise. Nothing else in `score64.toml` can be overridden per track, so the voice plan is one per target.
