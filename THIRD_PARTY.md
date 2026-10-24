@@ -108,7 +108,7 @@ SOFTWARE.
 
 ## libresidfp (vendored)
 
-- **What:** `crates/residfp-sys/vendor/libresidfp/`: reSIDfp, the SID emulation of libsidplayfp, as its standalone library, version **1.2.3** (tag `v1.2.3`, commit `32c8525418a643eaed8dfafa3d7039e250050cfa`, release tarball SHA-256 `e9b53a984ca708c3e8d9139eb6aad6141f73ffc22d70a020f7966803f4e2f76d`). It is the default SID engine of `score64-emu` (ADR-011). Only the library sources are kept, plus one patch: a platform-independent dither table in `src/FilterModelConfig.h`, described in `crates/residfp-sys/vendor/SCORE64-PATCHES.md`. The headers in `crates/residfp-sys/generated/` are derived from its `.in` templates.
+- **What:** `crates/residfp-sys/vendor/libresidfp/`: reSIDfp, the SID emulation of libsidplayfp, as its standalone library, version **1.2.3** (tag `v1.2.3`, commit `32c8525418a643eaed8dfafa3d7039e250050cfa`, release tarball SHA-256 `e9b53a984ca708c3e8d9139eb6aad6141f73ffc22d70a020f7966803f4e2f76d`). It is the default SID engine of `score64-emu` (ADR-011). Only the library sources are kept, plus two patches, described in `crates/residfp-sys/vendor/SCORE64-PATCHES.md`: a platform-independent dither table in `src/FilterModelConfig.h`, and each caller of that table given its own counter, so renders are byte-identical across processes (#207). The headers in `crates/residfp-sys/generated/` are derived from its `.in` templates.
 - **Source:** <https://github.com/libsidplayfp/libresidfp>
 - **Licence:** GPL-2.0-or-later; full text in `crates/residfp-sys/vendor/libresidfp/COPYING`. Copyright (c) 2000–2011 Dag Lem, (c) 2007–2010 Antti Lankila, (c) 2010–2026 Leandro Nini. `residfp-sys` carries the same licence, and only the GPL-3.0-or-later `score64-emu` may depend on it (ADR-002; CI job `licence-boundary`).
 
