@@ -388,7 +388,34 @@ fn the_pack_report_names_the_goattracker_player_and_its_terms() {
         p.terms
     );
     assert!(p.evidence.contains("src/player.s"), "{}", p.evidence);
-    // It is part of the report's JSON, so every front-end shows it.
-    let json = serde_json::to_value(&p).unwrap();
-    assert_eq!(json["licence"], "LicenseRef-goattracker2-playroutine");
+    // The report's JSON carries it as `player`, next to the gate's flattened facts.
+    let report = PackReport {
+        path: "tune.sid".into(),
+        start: 0x1000,
+        size: 3000,
+        packer_version: "2.73".into(),
+        packer_blake3: "00".repeat(32),
+        player: p,
+        gate: GateReport {
+            facts: PackFacts {
+                start: 0x1000,
+                size: 3000,
+                jump_table: [Some(0x1009), Some(0x1040), None],
+                zero_page_used: [0xF8, 0xF9].into(),
+                pages_written_outside: [].into(),
+                traced_window: Some((0x1000, 0x1FFF)),
+                max_play_cycles: Some(1500),
+            },
+            problems: vec![],
+        },
+    };
+    let json = serde_json::to_value(&report).unwrap();
+    assert_eq!(json["player"]["name"], "GoatTracker 2 playroutine");
+    assert_eq!(
+        json["player"]["licence"],
+        "LicenseRef-goattracker2-playroutine"
+    );
+    assert!(json["facts"].is_object(), "{json}");
+    let back: PackReport = serde_json::from_value(json).unwrap();
+    assert_eq!(back, report);
 }

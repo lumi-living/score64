@@ -83,5 +83,5 @@ In Driver 11.03 and later, a channel is filtered only if **both** the instrument
   - The source for this is `src/player.s` in GoatTracker 2.77, lines 4–6. `src/altplayer.s` carries the same notice.
   - The notice goes on to allow free use of the routine, and of tunes built with it, for any purpose, commercial or not.
   - So packed GoatTracker tunes carry no GPL obligation from the player, while a packed SF2 tune carries the drivers' GPL obligations.
-  - Debian's copyright file for GoatTracker doesn't record the player's exception. ADR-016 has the evidence.
+  - Debian's copyright file for GoatTracker doesn't record the player's exception. The evidence is in `docs/reference/player.md`, "The player's licence", and in ADR-016 (proposed in #210).
 - **The demo songs:** their licences aren't stated, so don't use them as committed fixtures.

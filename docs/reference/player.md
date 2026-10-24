@@ -100,8 +100,9 @@ The memory a target gives the tune (`[pack] window`, ADR-014) is RAM the player 
 
 The packed player is GoatTracker 2's playroutine (`src/player.s`; `src/altplayer.s` for the alternative player), which gt2reloc assembles into every pack.
 - **Its terms:** GoatTracker 2 is GPL-2.0-or-later, but the playroutine's source states that it doesn't fall under the GPL. It allows free use of the routine and of tunes built with it, commercial or not. So packed tunes carry no distribution obligation from the player.
-- **Evidence:** GoatTracker 2.77 `src/player.s`, lines 4–6, and the same notice in `src/altplayer.s` and the 2.72 tree. Debian's copyright file for GoatTracker doesn't record this exception.
-- **Where Score64 states it:** every pack report names the player and these terms (`score64_engine::pack::EmbeddedPlayer`). ADR-016 has the quote.
+- **Evidence:** GoatTracker 2.77 `src/player.s`, lines 4–6, which begin "This playroutine source code does not fall under the GPL license!". The same notice is in `src/altplayer.s` and in the 2.72 tree. The archive checked was `GoatTracker_2.77.zip` from the project's SourceForge page (1,489,033 bytes, SHA-256 `96c2bd6a6ab3aca2f5bb18b1c764ac6ea69ac245cae14002a72cd87c554561ef`). It was read only, not built.
+- **Debian's copyright file** for GoatTracker ([stable_copyright](https://metadata.ftp-master.debian.org/changelogs/main/g/goattracker/stable_copyright)) lists every file as GPL-2-or-later and doesn't record this exception. So the source notice is the evidence, not Debian's file.
+- **Where Score64 states it:** every pack report names the player and these terms (`score64_engine::pack::EmbeddedPlayer`). ADR-016 (proposed in #210) has the same quote.
 - **When the gt2reloc pin moves,** check the notice again.
 
 ## Integration rules

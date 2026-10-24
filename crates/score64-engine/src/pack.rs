@@ -191,7 +191,7 @@ impl GateReport {
     }
 }
 
-/// The player routine a packed file embeds, and the terms it is under (ADR-016). Every pack report names it, so
+/// The player routine a packed file embeds, and the terms it is under (ADR-016, proposed in #210). Every pack report names it, so
 /// whoever ships the file knows what code is in it and what, if anything, distributing it carries.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EmbeddedPlayer {
@@ -199,7 +199,7 @@ pub struct EmbeddedPlayer {
     pub name: String,
     /// The gt2reloc version that assembled it into the file.
     pub assembled_by: String,
-    /// Its licence, in a source's form (ADR-016): `LicenseRef-goattracker2-playroutine`.
+    /// Its licence, in a source's form: `LicenseRef-goattracker2-playroutine`.
     pub licence: String,
     /// The terms, in a sentence a report can show as it is.
     pub terms: String,
@@ -211,7 +211,7 @@ impl EmbeddedPlayer {
     /// The GoatTracker 2 playroutine that gt2reloc `version` assembles into every pack. Its source states that it
     /// doesn't fall under the GPL that covers the rest of GoatTracker, and allows any use, commercial or not, of the
     /// routine and of tunes built with it, so it carries no distribution obligation. Debian's copyright file for
-    /// GoatTracker doesn't record that exception (ADR-016).
+    /// GoatTracker doesn't record that exception. The evidence is in `docs/reference/player.md`, "The player's licence".
     pub fn goattracker2(version: &str) -> Self {
         EmbeddedPlayer {
             name: "GoatTracker 2 playroutine".into(),
@@ -220,7 +220,7 @@ impl EmbeddedPlayer {
             terms: "outside the GPL by its source's own notice: free for any use, commercial or not, with no \
                     distribution obligation"
                 .into(),
-            evidence: "GoatTracker 2.77 src/player.s, lines 4-6 (also src/altplayer.s); see ADR-016".into(),
+            evidence: "GoatTracker 2.77 src/player.s, lines 4-6 (also src/altplayer.s); see docs/reference/player.md".into(),
         }
     }
 }

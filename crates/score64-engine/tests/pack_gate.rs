@@ -150,7 +150,7 @@ fn a_pack_inside_a_generous_window_passes() {
     let cycles = facts.max_play_cycles.unwrap();
     assert!((100..=1100).contains(&cycles), "{cycles} cycles");
     assert_eq!(report.packer_version, "2.73");
-    // The report names the player it embeds and its terms (ADR-016).
+    // The report names the player it embeds and its terms (docs/reference/player.md).
     assert_eq!(
         report.player,
         score64_engine::pack::EmbeddedPlayer::goattracker2("2.73")
