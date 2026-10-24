@@ -303,11 +303,12 @@ uint16_t* FilterModelConfig6581::getDAC(double adjustment) const
     const double new_dac_zero = getDacZero(adjustment);
 
     uint16_t* f0_dac = new uint16_t[1 << DAC_BITS];
+    int noise = 0; // Score64 patch 2: this table's own dither counter
 
     for (unsigned int i = 0; i < (1 << DAC_BITS); i++)
     {
         const double fcd = dac.getOutput(i);
-        f0_dac[i] = getNormalizedValue(new_dac_zero + fcd * dac_scale);
+        f0_dac[i] = getNormalizedValue(new_dac_zero + fcd * dac_scale, noise);
     }
 
     return f0_dac;

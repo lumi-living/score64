@@ -36,6 +36,7 @@ Unknown keys are errors. Instrument facts move to the presets (E7) when those ex
 - **Rule 1** also covers one line per voice, and legato notes that don't start exactly where the previous note ends.
 - **Rule 2:** rows are integers, so "off the grid" means outside the subtune or out of order: notes, arpeggios, tempo changes, loop row, marks and role spans.
 - **Rule 3** checks each voice against its subtune's profile (§3.1), including the role of every span. A profile name that isn't defined is a problem; the profile checks are skipped for that subtune, but the others still run.
+- **Song-level filter events** (ADR-015, accepted; #187). A subtune's `filter` events route voices through a filter program preset from their row on. The score owns the routing; the export writes it into the program's copy and restates the event in force on the loop row. Rule 4 makes an instrument's filter program an error on an event's row and a warning elsewhere while an event is in force (last pointer wins). Not built yet.
 - **Rule 4** applies each voice's filter permission, and requires explicit pulse widths on expendable voices. An instrument without facts is an error, because it can't be checked. On expendable voices the rule also warns about lead or bass, and about notes longer than `Context::expendable_long_rows` (4 rows, one beat, by default): after an effect the voice is silent until its next note (#119).
 - **Rule 5** applies each declared adaptive set (§3.1): layer order, and a timing mark at every declared switch point. A mark at a row where no set with that layer switches is a warning: it gets no `DXY` and does nothing. A subtune may be a layer of several sets only if they switch at the same rows, since otherwise it would need two sets of timing-mark values (an error).
 - **Rule 6** warns when a note is outside its role's range, with the octave fold that would bring it in. The default ranges are a starting point to tune against real material: lead C-3–C-6, bass C-1–G-3, arpeggio root C-3–C-6, harmony C-2–C-5, drone C-1–C-4, ostinato C-2–C-5, bed C-1–C-6, and drums and texture anywhere. It is an **error** for an arpeggio note to pass B-7: the player adds the interval to the note, and its frequency table ends there.
@@ -347,10 +348,11 @@ score64.toml                 what every track of the target shares
 presets/                     the target's instrument presets (E7)
 tracks/<id>/track.toml       one track's intent
 tracks/<id>/decisions.toml   its decisions
+tracks/<id>/history/         its recorded runs (ADR-014 §7; #27, not built yet)
 .score64/                    cache and index, not committed
 ```
 
-- **`score64.toml`** (`ProjectFile`): `[target] video` (PAL by default), `[[profile]]` entries added to the built-in profiles (§3.1; redefining a built-in is an error), `[pack]` (`player_page`, `zero_page`, `sound_effects`, optional `hard_restart_adsr`; no defaults, since they come from the target's memory map), `[tools] gt2reloc = { version, reference }` (the banner version and the blake3 of packing the reference fixture with the reference options), and `[validate]` (`expendable_long_rows`, `ranges`).
+- **`score64.toml`** (`ProjectFile`): `[target] video` (PAL by default), `[[profile]]` entries added to the built-in profiles (§3.1; redefining a built-in is an error), `[pack]` (`player_page`, `zero_page`, `sound_effects`, optional `hard_restart_adsr`; no defaults, since they come from the target's memory map. ADR-014's amendment replaces `player_page` with a page-aligned `window = { start, end }` and adds an optional `max_play_cycles`, #198), `[tools] gt2reloc = { version, reference }` (the banner version and the blake3 of packing the reference fixture with the reference options), and `[validate]` (`expendable_long_rows`, `ranges`).
 - **`track.toml`** (`TrackFile`): an optional `title` and default `profile`, `[[source]]` (`id`, `path`, `blake3`, `kind` = `mix`, `stem` or `midi`), `[[subtune]]` (`name`, optional `profile`, `from` a source, optional `start` and `end`), `[[adaptive]]` sets (§3.1), and `[rules.<stage>]` tables that each stage checks for itself.
 - **Checks** on reading:
   - source ids, subtune names and adaptive set names are unique;
@@ -373,7 +375,7 @@ tracks/<id>/decisions.toml   its decisions
 
 How a file is written (comments, key order, hex or decimal, quoting) doesn't change the id. Everything in the intent that can change the output does, and numbers in `[rules]` must be finite so they can. Approvals, comments and `audio.lock` aren't in it, since they don't change the output; presets join it when they land (#49), with a new scheme. The track's id isn't in it, so two tracks with the same intent share a version, and a track's history keys on the track and the version together.
 
-*Still open (#27):* parent links and provenance. A content-addressed id makes restoring an old intent give its old id back, so the history of runs (which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`) is a separate record. Where it lives is to be decided.
+**Run history** (ADR-014 §7, #27, not built yet). A content-addressed id makes restoring an old intent give its old id back. So the history of runs is a separate record: which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`. It is one file per recorded run in `tracks/<id>/history/`, holding the version, its parent, the provenance and the UTC time. A run is recorded only when the version changes, or on a restore.
 
 ## 5. Repository layout and dependencies
 

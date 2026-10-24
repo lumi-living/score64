@@ -91,7 +91,7 @@ public:
 
         // Vg - Vth, normalized so that translated values can be subtracted:
         // Vgt - x = (Vgt - t) - (x - t)
-        nVgt = fmc.getNormalizedValue(Vgt);
+        nVgt = fmc.getNormalizedValueAt(Vgt, 0); // Score64 patch 2
     }
 
     int32_t solve(int32_t vi) const override;
