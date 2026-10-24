@@ -165,6 +165,10 @@ fn a_note_sounding_into_a_weak_beat_ends_there_and_a_broken_tie_restarts() {
     );
     assert_eq!(arps, [(4, 4), (12, 4)]);
     assert_eq!(a.notes[3].attack, Attack::Fresh);
+    // The trimmed and the restarted notes name the decisions that changed them.
+    let named = |i: usize| a.notes[i].decision.as_ref().map(|d| d.as_str().to_string());
+    assert_eq!(named(0).as_deref(), Some("bassarp-trim-v2-r0"));
+    assert_eq!(named(3).as_deref(), Some("bassarp-tie-v2-r16"));
     assert_eq!(
         ids(&a),
         [
@@ -221,6 +225,29 @@ fn the_cuts_are_as_sure_as_the_chord_and_a_tie_broken_already_is_certain() {
             ("bassarp-tie-v2-r40", 1.0),
         ]
     );
+}
+
+#[test]
+fn a_root_with_no_bass_before_it_and_a_tie_between_two_roots() {
+    let n = name();
+    let roots = |bass: Vec<Note>| {
+        let a = arpeggiate_on_bass(
+            bass,
+            &[span(0, 16, 0, ChordQuality::Major)],
+            &at(&n),
+            &BassArpRules::default(),
+            bass_range(),
+        );
+        a.notes
+            .iter()
+            .filter(|x| x.decision.as_ref().is_some_and(|d| d.as_str().starts_with("bassarp-chord")))
+            .map(|x| x.pitch.to_string())
+            .collect::<Vec<_>>()
+    };
+    // No bass note before the beat: the C nearest the middle of the bass range (C-1 to G-3, middle D#-2) is C-2.
+    assert_eq!(roots(vec![]), ["C-2", "C-2"]);
+    // After an F#-2, C-2 and C-3 are both six semitones away: the lower one.
+    assert_eq!(roots(vec![note(0, 4, "F#2")]), ["C-2", "C-2"]);
 }
 
 #[test]
