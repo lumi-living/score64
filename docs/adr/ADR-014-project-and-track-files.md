@@ -138,29 +138,37 @@ ADR-013's provisional context file goes once this lands. The packer's options an
 
 A change to `score64.toml` therefore makes a new version of every track that uses the changed values.
 
-**7. Run history** (amended 2026-10-24, #27) is a separate record from the version id, because a content-addressed id gives a restored intent its old id back.
-- **Where.** One file per recorded run, in `tracks/<track>/history/`, committed with the track. The name is the run's UTC time, then the first 12 hex digits of its version, for example `2026-10-24T091502Z-1a2b3c4d5e6f.toml`. It sorts by time and holds no characters Windows refuses. A second run in the same second gets `-2`, `-3`, and so on.
+**7. Run history** (amended 2026-10-24, #27; parent, time, `uses` and branches amended again in #211) is a separate record from the version id, because a content-addressed id gives a restored intent its old id back.
+- **Where.** One file per recorded run, in `tracks/<track>/history/`, committed with the track. The name is the run's UTC time, then the first 12 hex digits of its version, for example `2026-10-24T091502Z-1a2b3c4d5e6f.toml`. It sorts by time and holds no characters Windows refuses. Further runs in the same second, whatever their versions, get `-2`, `-3`, … up to `-9999`.
 - **What it holds:**
 
   ```toml
   schema = 1
   version = "…"                 # the full version id (§6)
-  parent = "…"                  # the version recorded before it on this track; absent for the first
-  time = 2026-10-24T09:15:02Z   # UTC
+  parent = "…"                  # the version that was latest when it was recorded; absent for the first
+  time = 2026-10-24T09:15:02Z   # UTC, whole seconds: when it ran, or the latest entry's time if that was later
   restore = true                # only on a restore
   [provenance]                  # who made the change, tagged by `by`, as decisions' provenance is
   by = "manual"                 # "rules", "llm" or "manual"
   # model = "…"                 # for "llm": the model id
   # name = "…"                  # for "manual": the person's git user.name
+  [[uses]]                      # optional: the cache entries the version was made from and into
+  stage = "transcribe"          # sorted by stage and key, no repeats
+  key = "…"
   ```
 
-- **When.** A run is recorded only when its version differs from the track's latest recorded version, or when it restores an earlier intent. A restore is recorded even though its version was seen before, with `restore = true` and the current version as its parent. A re-run that gives the same version writes nothing, so the history only grows when the output can change.
-- **Branches and races** (clarified with #27's review). Two machines or two git branches can each add runs after the same version, and git merges the files without conflict. So a history is a graph rather than one chain:
-  - an entry's parent may be any version recorded in the folder;
-  - entries order by time, then their number in that second (numbered across versions), then name;
-  - the latest is the last.
+  Run provenance has its own fields (`model` and `name`), unlike a decision's (`rule`, `prompt`), because it says who started a run rather than who proposed a change.
 
-  Recording reads the folder again first. A run's recorded time is never earlier than the latest entry's, so a clock behind another machine's never makes a new run look older.
+- **When.** A run is recorded only when its version differs from the track's latest recorded version, or when it restores an earlier intent. A restore is recorded even though its version was seen before, with `restore = true` and the current version as its parent. A re-run that gives the same version writes nothing, so the history only grows when the output can change.
+- **Branches and races.** Two machines or two git branches can each add runs after the same version. Git merges the new files, which have different names, without conflict. So a history is a graph rather than one chain:
+  - an entry's parent may be any version recorded in the folder;
+  - versions repeat with restores, so following parents can come back to a version;
+  - entries order by time, then their number in that second, then name, and the latest is the last;
+  - recording reads the folder again first, and again if another writer takes its name.
+
+  Two branches recording the same version in the same second can still clash on a name, which git reports as a conflict.
+- **Clocks.** A run's recorded time is never earlier than the latest entry's, so a clock a little behind another machine's never makes a new run look older. If the latest entry is more than a day ahead of the run, a clock was wrong, and recording refuses, naming the entry, rather than pin every later run to its time.
+- **`uses`** links a version to the cache entries it was made from and into. The link is in committed files, so the index (#28) can be rebuilt with it and GC (#29) keeps what it names.
 - **Provenance** says what started the change. A person who edited the track or its decisions is `manual`, with their git `user.name`. A model decider is `llm`, with the model id. A re-run that only picks up new tool or rule versions is `rules`.
 - **The index** (#28) is rebuilt from these files, and GC (#29) keeps whatever a recorded version refers to.
 
@@ -238,6 +246,6 @@ Option A costs one override rule, plus the need to show resolved values in the a
 - [ ] `[pack] window` and `max_play_cycles` in `ProjectFile`, replacing `player_page`, and the budget gate fed from them (#198, #51).
 - [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [x] Version identity from the resolved intent (#27).
-- [x] Run history in `tracks/<id>/history/` (#27).
+- [x] Run history in `tracks/<id>/history/` (#27, #211).
 - [ ] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
 - [x] TAD §4: the layout and both files (#25).

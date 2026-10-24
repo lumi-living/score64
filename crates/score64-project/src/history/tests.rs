@@ -496,3 +496,171 @@ fn reading_checks_the_graph() {
     assert_eq!(order, want);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn a_clock_far_behind_is_refused_rather_than_pinned() {
+    // An entry dated over a day after the run: a wrong clock somewhere. Recording names it rather than pinning.
+    let dir = folder("ahead");
+    let mut h = History::read(&dir).unwrap();
+    h.record(run(1, T + MAX_AHEAD + 1)).unwrap();
+    match h.record(run(2, T)) {
+        Err(Error::Ahead { time, run, .. }) => {
+            assert_eq!((time, run), (at(T + MAX_AHEAD + 1), at(T)))
+        }
+        other => panic!("{other:?}"),
+    }
+    // Exactly a day is still clamped.
+    let dir2 = folder("ahead-day");
+    let mut h = History::read(&dir2).unwrap();
+    h.record(run(1, T + MAX_AHEAD)).unwrap();
+    h.record(run(2, T)).unwrap().unwrap();
+    assert_eq!(h.latest().unwrap().time, at(T + MAX_AHEAD));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+#[test]
+fn civil_dates_check_their_days() {
+    assert!(UtcTime::from_civil(2000, 2, 29, 0, 0, 0).is_some());
+    assert!(UtcTime::from_civil(2024, 2, 29, 0, 0, 0).is_some());
+    assert!(UtcTime::from_civil(2100, 2, 29, 0, 0, 0).is_none());
+    assert!(UtcTime::from_civil(2023, 2, 29, 0, 0, 0).is_none());
+    assert!(UtcTime::from_civil(2026, 4, 31, 0, 0, 0).is_none());
+    assert!(UtcTime::from_civil(2026, 12, 31, 23, 59, 59).is_some());
+    for (h, m, s) in [(24, 0, 0), (0, 60, 0), (0, 0, 60)] {
+        assert!(
+            UtcTime::from_civil(2026, 1, 1, h, m, s).is_none(),
+            "{h}:{m}:{s}"
+        );
+    }
+    assert!(UtcTime::from_civil(1969, 12, 31, 23, 59, 59).is_none());
+}
+
+#[test]
+fn names_number_within_their_second_only() {
+    let dir = folder("seconds");
+    let mut h = History::read(&dir).unwrap();
+    h.record(run(1, T)).unwrap();
+    h.record(run(2, T)).unwrap();
+    // The next second starts again without a number.
+    let path = h.record(run(3, T + 1)).unwrap().unwrap();
+    assert!(
+        path.to_string_lossy()
+            .ends_with("T091503Z-030303030303.toml"),
+        "{path:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_full_second_is_crowded() {
+    let dir = folder("crowded");
+    let mut h = History::read(&dir).unwrap();
+    h.record(run(1, T)).unwrap();
+    // A hand-made entry takes the last number in that second.
+    let text = format!(
+        "schema = 1\nversion = \"{}\"\nparent = \"{}\"\ntime = 2026-10-24T09:15:02Z\n\n[provenance]\nby = \"rules\"\n",
+        version(2),
+        version(1)
+    );
+    std::fs::write(dir.join("2026-10-24T091502Z-020202020202-9999.toml"), text).unwrap();
+    assert!(matches!(h.record(run(3, T)), Err(Error::Crowded(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn more_names_and_lists_that_arent_entries() {
+    for bad in [
+        "2026-10-24T091502Z-010101010101-02.toml",
+        "2026-10-24X091502Z-010101010101.toml",
+        "2026-10-24T09150aZ-010101010101.toml",
+        "2026-10-24T091502Z_010101010101.toml",
+    ] {
+        let (dir, path) = one_entry("badname2");
+        std::fs::copy(&path, dir.join(bad)).unwrap();
+        assert!(read_error(&dir).contains("not a history entry"), "{bad}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    // macOS's AppleDouble files start with a dot and are skipped.
+    let (dir, path) = one_entry("appledouble");
+    std::fs::write(
+        dir.join(format!("._{}", path.file_name().unwrap().to_string_lossy())),
+        "x",
+    )
+    .unwrap();
+    assert_eq!(History::read(&dir).unwrap().entries().count(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+    // A repeated or unholdable `uses` stage on disk.
+    for (uses, says) in [
+        (
+            "[[uses]]\nstage = \"song\"\nkey = \"{k}\"\n\n[[uses]]\nstage = \"song\"\nkey = \"{k}\"\n",
+            "sorted",
+        ),
+        (
+            "[[uses]]\nstage = \"../out\"\nkey = \"{k}\"\n",
+            "can't hold",
+        ),
+    ] {
+        let (dir, path) = one_entry("uses2");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let k = version(7).to_string();
+        std::fs::write(&path, format!("{text}\n{}", uses.replace("{k}", &k))).unwrap();
+        assert!(read_error(&dir).contains(says), "{says}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_named_like_an_entry_is_refused() {
+    let (dir, path) = one_entry("symlink");
+    let outside = folder("symlink-outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("x.toml");
+    std::fs::copy(&path, &target).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(read_error(&dir).contains("symbolic link"));
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
+#[test]
+fn writers_on_threads_all_record_and_read_back() {
+    let dir = folder("threads");
+    std::thread::scope(|s| {
+        for t in 0..4u8 {
+            let dir = dir.clone();
+            s.spawn(move || {
+                let mut h = History::read(&dir).unwrap();
+                for k in 0..5u8 {
+                    // Distinct versions, all in one second, so names clash and writers retry.
+                    h.record(run(1 + t * 5 + k, T)).unwrap();
+                }
+            });
+        }
+    });
+    let back = History::read(&dir).unwrap();
+    assert_eq!(back.entries().count(), 20);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+proptest! {
+    /// Whatever `record` writes reads back equal, through any mix of versions, restores and clock steps.
+    #[test]
+    fn what_record_writes_reads_back(steps in proptest::collection::vec((0u8..5, -3i64..4, any::<bool>()), 1..20)) {
+        let dir = folder("prop");
+        let mut h = History::read(&dir).unwrap();
+        let mut time = T;
+        for (v, step, restore) in steps {
+            time += step;
+            let r = Run { restore, ..run(v, time) };
+            match h.record(r) {
+                Ok(_) | Err(Error::NotRecorded(_)) => {}
+                Err(e) => prop_assert!(false, "{e}"),
+            }
+            prop_assert_eq!(&History::read(&dir).unwrap(), &h);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
