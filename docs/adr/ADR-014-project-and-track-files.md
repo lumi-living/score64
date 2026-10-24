@@ -229,7 +229,7 @@ Option A costs one override rule, plus the need to show resolved values in the a
 - [x] `score64_project::ProjectFile` and `TrackFile` with the shared conventions, plus a `Project` that loads both and resolves overrides (#25).
 - [ ] Build the validator `Context` from the files; remove ADR-013's provisional file (#192).
 - [ ] Take the pack options and the `gt2reloc` pin from `[pack]` and `[tools]`, with the reference pack cached per binary in `.score64/tools/` (pack stage, E7).
-- [ ] `[pack] window` and `max_play_cycles` in `ProjectFile`, replacing `player_page`, and the budget gate fed from them (#198, #51).
+- [x] `[pack] window` and `max_play_cycles` in `ProjectFile`, replacing `player_page`, and the budget gate fed from them (#198, #51): `score64_engine::pack`, which the pack stage's command will run.
 - [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [x] Version identity from the resolved intent (#27).
 - [ ] Run history in `tracks/<id>/history/` (#27).

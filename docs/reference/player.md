@@ -41,14 +41,14 @@ The size gt2reloc reports is the bytes without any header or load address, so `.
 |---|---|---|
 | `-Dx` | Sound-effect support on/off (implies buffered SID writes) | `[pack] sound_effects` (ADR-014); `-D1` when the target plays effects |
 | `-Hx` | Store author info at start+$20…+$3F and enable timing marks | `-H1` for adaptive sets |
-| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | `[pack] player_page` (ADR-014) |
+| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | The start page of `[pack] window` (ADR-014): `window = { start = 0x2000, … }` packs with `-W20` (`score64_engine::pack::options`; `crates/score64-engine/tests/pack_gate.rs` packs the fixture at the window's start and finds it there) |
 | `-Zxx` | Zero-page location (needs 2 consecutive bytes; default `FC`) | `[pack] zero_page` (ADR-014), from the target's zero-page map. The default `$FC–$FD` overlaps the common `$FB–$FE` pointer convention used by many C64 programs, so Score64 always passes `-Z` explicitly |
 | `-Axx` | Hard-restart ADSR value (default `0F00`) | `[pack] hard_restart_adsr` (ADR-014); gt2reloc's default when absent |
 | `-Bx` | Buffered SID writes | Implied by `-D1` |
 | `-Cx` | Zero-page ghost registers | Avoid with sound effects (shared register state can leave a wrong pulse width after an effect) |
 | `-Jx` | Full buffering | Avoid with sound effects (same reason) |
 | `-Ex` | Volume-change support | Not used (master volume would also silence effects) |
-| `-P` / `-N` | PAL (default) / NTSC timing | PAL |
+| `-P` / `-N` | PAL (default) / NTSC timing | From `[target] video` (ADR-014): `-P` for PAL, `-N` for NTSC (`score64_engine::pack::options`, unit-tested for the arguments only). No NTSC pack has been checked in VICE yet, and the helper is PAL-only (#139) |
 
 ## Timing marks
 
