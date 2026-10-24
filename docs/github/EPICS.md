@@ -23,7 +23,7 @@ Workspace, CI, score model and validator, fixtures, and the de-risking spike (em
   - ✓ score64-app boots an empty eframe window (light/dark, Material Symbols) [#6](https://github.com/lumi-living/score64/issues/6)
   - ✓ Command engine skeleton shared by CLI, MCP and app (ADR-005) [#7](https://github.com/lumi-living/score64/issues/7)
   - ✓ score64-emu helper skeleton and versioned stdin/stdout protocol [#8](https://github.com/lumi-living/score64/issues/8)
-  - Release tooling: cargo-dist configuration [#9](https://github.com/lumi-living/score64/issues/9)
+  - ✓ Release tooling: cargo-dist configuration [#9](https://github.com/lumi-living/score64/issues/9)
   - Supply-chain checks with cargo-deny: licences, advisories, bans [#148](https://github.com/lumi-living/score64/issues/148)
 - **E2 Score model & validator** ([#10](https://github.com/lumi-living/score64/issues/10)) — The tracker-grid score model (ADR-006), voice profiles, tempo grid and the validator for TAD §1.3, with property tests.
   - ✓ Score model types: Note, VoiceLine, Role, Subtune, Song, Decision [#11](https://github.com/lumi-living/score64/issues/11)
@@ -91,7 +91,7 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
   - HTML report: synced A/B players, piano roll, metrics [#63](https://github.com/lumi-living/score64/issues/63)
   - Example project with a Makefile [#64](https://github.com/lumi-living/score64/issues/64)
   - CLI reference document [#65](https://github.com/lumi-living/score64/issues/65)
-  - validate command: every problem with its severity, non-zero exit only on errors, --json [#136](https://github.com/lumi-living/score64/issues/136)
+  - ✓ validate command: every problem with its severity, non-zero exit only on errors, --json [#136](https://github.com/lumi-living/score64/issues/136)
 
 ## M2 Studio & sound effects
 
