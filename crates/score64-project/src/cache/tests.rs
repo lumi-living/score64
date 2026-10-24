@@ -338,6 +338,57 @@ fn a_put_over_a_newer_entry_writes_no_copy() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// Run `f` with `hook` called right after each of this thread's `put`s renames its copy into place.
+fn after_rename<T>(hook: impl FnMut(&Path) + 'static, f: impl FnOnce() -> T) -> T {
+    AFTER_RENAME.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    let out = f();
+    AFTER_RENAME.with(|h| *h.borrow_mut() = None);
+    out
+}
+
+#[test]
+fn a_put_disturbed_right_after_its_rename_writes_again() {
+    let (c, dir) = cache("disturbed-once");
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = calls.clone();
+    let entry = after_rename(
+        move |entry| {
+            seen.set(seen.get() + 1);
+            if seen.get() == 1 {
+                // A collector takes a file from the copy as it goes into place.
+                std::fs::remove_file(entry.join("a.bin")).unwrap();
+            }
+        },
+        || c.put("transcribe", &[("a.bin", b"x")], run()),
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 2, "written again once");
+    assert_eq!(c.get("transcribe", key()), Some(entry));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_put_disturbed_every_time_fails_rather_than_return_a_broken_entry() {
+    let (c, dir) = cache("disturbed-always");
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = calls.clone();
+    let got = after_rename(
+        move |entry| {
+            seen.set(seen.get() + 1);
+            std::fs::write(entry.join("a.bin"), b"longer").unwrap();
+        },
+        || c.put("transcribe", &[("a.bin", b"x")], run()),
+    );
+    let e = got.unwrap_err();
+    assert!(
+        e.to_string().contains("changed just after it was written"),
+        "{e}"
+    );
+    assert_eq!(calls.get(), PUT_TRIES);
+    assert_eq!(c.get("transcribe", key()), None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[test]
 fn temporary_directories_are_named_with_when_they_were_made() {
     let (c, dir) = cache("tmpname");

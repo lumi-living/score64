@@ -20,12 +20,17 @@
 //!   size of a directory doesn't count what links in it point to.
 //!
 //! **Removal.** Everything removed, entries, broken directories and leftovers alike, is first renamed aside to a
-//! fresh, uniquely named `.tmp-gc-t<seconds>-...` directory, then deleted there. Nothing is deleted in place: a writer
-//! renaming its temporary copy onto its key and the collector renaming that copy aside can't both succeed, so the
-//! collector never deletes files out of an entry that has just been put, and an entry is either whole under its key or
-//! gone, never half there. What can't be moved (a file open in it, on Windows) is left as it is and reported in
-//! [`Report::in_use`]. What vanished between listing and removal (a writer's rename, another collector) is not
-//! reported. A copy moved aside but not deleted is reported as removed, and the error stops the collection.
+//! fresh, uniquely named `.tmp-gc-t<seconds>-...` directory, and nothing is deleted in place. What was moved is then
+//! checked by its own manifest, because it may not be what was chosen: on Windows a rename opens its source by path
+//! and moves whatever that handle points at, so a writer's copy renamed onto its key in between moves with it. Only
+//! the directory chosen (an unrooted entry with the manifest it was listed with), or one that is no whole entry and
+//! none from a newer Score64, is deleted. A whole or newer entry goes back under its key if that is free, and the
+//! next collection decides about it. If a whole entry is already there, the moved copy is a duplicate and goes;
+//! anything else in the way leaves the copy aside, whole, reported in [`Report::in_use`], for the next collection to
+//! put back. So an entry is whole under its key or gone, never half there, and the collector never deletes one just
+//! put. What can't be moved (a file open in it, on Windows) is left as it is and reported in [`Report::in_use`] too.
+//! What vanished between listing and removal (a writer's rename, another collector) is not reported. A copy moved
+//! aside but not deleted is reported as removed, and the error stops the collection.
 //!
 //! **Cost.** Listing reads and hashes every artifact once, as [`Cache::get`] does. The checks right before a removal
 //! compare manifests and file sizes only; a broken entry whose sizes all match is hashed again, to tell it from one a
@@ -33,7 +38,7 @@
 //!
 //! **Limits.**
 //! - *Concurrency.* A collection may run while other processes `put` entries: an entry put while it runs is not
-//!   removed. It must not run during a pipeline run, though. There is no project lock yet, so roots are read once at
+//!   removed or damaged (see removal above), and `put` writes again if a collector took its copy. It must not run during a pipeline run, though. There is no project lock yet, so roots are read once at
 //!   the start, and an entry a run is making (or has just looked up) but hasn't recorded yet is unrooted and may go.
 //!   The run then makes it again.
 //! - *Scope.* Only the histories in the current checkout are roots. Runs recorded only on other git branches, or in
@@ -50,7 +55,8 @@ use serde::Serialize;
 use score64_core::ContentHash;
 
 use crate::cache::{
-    Cache, Manifest, check_name, made_at, newer_layout, sized, temp_dir_named, temp_name, whole,
+    Cache, MANIFEST, Manifest, check_name, made_at, newer_layout, sized, temp_dir_named, temp_name,
+    whole,
 };
 use crate::history::{CacheRef, History};
 use crate::project::Project;
@@ -154,8 +160,9 @@ pub struct Report {
     pub unrooted_kept: (u64, u64),
     /// What was removed (or would be, in a dry run).
     pub removed: Vec<Removed>,
-    /// Entries that should have gone but couldn't be moved aside (a file open in them, or no permission): left whole
-    /// under their keys.
+    /// Directories that should have gone but couldn't be moved aside (a file open in them, on Windows), left as they
+    /// were; or entries found whole once moved that couldn't go back under their key, left whole aside for the next
+    /// collection. (A stage GC can't write to stops the collection instead.)
     pub in_use: Vec<Removed>,
     /// Entries from a newer Score64, left alone.
     pub newer: u64,
@@ -261,7 +268,8 @@ enum Gone {
     Vanished,
     /// It couldn't be moved aside, so it stays where it is.
     InUse,
-    /// Moved aside, it turned out whole: a writer had just put it. It went back.
+    /// Moved aside, it turned out to be an entry a writer had just put: it went back, or a whole copy was already
+    /// back in its place.
     Whole,
     /// Moved off its key, but the copy aside couldn't be deleted: a leftover for a later collection.
     Aside(Error),
@@ -363,12 +371,14 @@ impl Gc {
                 why: "unrooted",
             };
             let stage_dir = entry.dir.parent().expect("under a stage");
-            match self.remove(stage_dir, &entry.dir, None) {
+            match self.remove(&entry.r.stage, stage_dir, &entry.dir, Some(&entry.manifest)) {
                 Gone::Removed => {
                     kept_bytes = kept_bytes.saturating_sub(entry.bytes);
                     report.removed.push(item);
                 }
-                Gone::Vanished | Gone::Whole => kept_bytes = kept_bytes.saturating_sub(entry.bytes),
+                // A writer's fresh copy went back: it is kept.
+                Gone::Whole => {}
+                Gone::Vanished => kept_bytes = kept_bytes.saturating_sub(entry.bytes),
                 Gone::InUse => report.in_use.push(item),
                 Gone::Aside(error) => {
                     report.removed.push(item);
@@ -421,7 +431,7 @@ impl Gc {
                 // whole by its sizes is hashed again.
                 continue;
             }
-            match self.remove(&o.stage_dir, &o.dir, key.map(|k| (o.stage.as_str(), k))) {
+            match self.remove(&o.stage, &o.stage_dir, &o.dir, None) {
                 Gone::Removed => report.removed.push(item),
                 Gone::Vanished | Gone::Whole => {}
                 Gone::InUse => report.in_use.push(item),
@@ -435,15 +445,16 @@ impl Gc {
         Ok(())
     }
 
-    /// Remove `dir`, a directory under a stage: renamed aside to a fresh `.tmp-gc-*` directory first, then deleted
-    /// there, so it is never half there under its own name and never deleted while a writer renames it into place. If
-    /// it can't be moved it stays as it was. With `key` (its stage and key) a copy that turns out whole once moved was
-    /// just put by a writer, and goes back. A dry run does nothing.
-    fn remove(&self, stage_dir: &Path, dir: &Path, key: Option<(&str, ContentHash)>) -> Gone {
+    /// Remove `dir`, a directory under `stage`: renamed aside to a fresh `.tmp-gc-*` directory first, then checked,
+    /// then deleted there. `chosen` is the manifest of the unrooted entry chosen for removal; without one, `dir` was
+    /// chosen as no entry. If what was moved isn't what was chosen but a whole entry, or one from a newer Score64, a
+    /// writer put it there meanwhile: it goes back (see the module's removal rules). A dry run does nothing.
+    fn remove(&self, stage: &str, stage_dir: &Path, dir: &Path, chosen: Option<&Manifest>) -> Gone {
         self.remove_with(
+            stage,
             stage_dir,
             dir,
-            key,
+            chosen,
             |from, to| std::fs::rename(from, to),
             |d| std::fs::remove_dir_all(d),
         )
@@ -452,9 +463,10 @@ impl Gc {
     /// [`Gc::remove`], moving it aside with `rename` and deleting the copy with `delete`.
     fn remove_with(
         &self,
+        stage: &str,
         stage_dir: &Path,
         dir: &Path,
-        key: Option<(&str, ContentHash)>,
+        chosen: Option<&Manifest>,
         rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
         delete: impl Fn(&Path) -> std::io::Result<()>,
     ) -> Gone {
@@ -481,14 +493,11 @@ impl Gc {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Gone::Vanished,
             Err(_) => return Gone::InUse,
         }
-        if let Some((stage, key)) = key
-            && whole(&aside, stage, key).is_some()
-        {
-            // If another entry has taken its place meanwhile, that one stays and this copy goes.
-            if std::fs::rename(&aside, dir).is_err() {
-                let _ = std::fs::remove_dir_all(&aside);
-            }
-            return Gone::Whole;
+        // Check what was moved. The entry chosen, as listed (size-damaged since or not), goes. Anything else that is
+        // an entry to keep goes back.
+        let as_chosen = chosen.is_some_and(|m| sized(&aside, stage, m.key).as_ref() == Some(m));
+        if !as_chosen && let Some(home) = belongs(&aside, stage, stage_dir, dir) {
+            return put_back(&aside, &home, stage);
         }
         match delete(&aside) {
             Ok(()) => Gone::Removed,
@@ -496,6 +505,45 @@ impl Gc {
             Err(error) => Gone::Aside(Error::Io { path: aside, error }),
         }
     }
+}
+
+/// Where the directory moved to `aside` belongs, if it is an entry to keep: under its own key, if it is a whole entry
+/// of `stage` by its own manifest, or one from a newer Score64 (under the key its manifest gives, else back where it
+/// came `from` if that is named like a key). `None` for anything else, which may go.
+fn belongs(aside: &Path, stage: &str, stage_dir: &Path, from: &Path) -> Option<PathBuf> {
+    let text = std::fs::read(aside.join(MANIFEST)).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&text).ok()?;
+    let own_key = manifest
+        .get("key")
+        .and_then(serde_json::Value::as_str)
+        .and_then(key_named);
+    if newer_layout(aside) {
+        let from_key = from
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(key_named);
+        return own_key.or(from_key).map(|k| stage_dir.join(k.to_string()));
+    }
+    let key = own_key?;
+    whole(aside, stage, key).map(|_| stage_dir.join(key.to_string()))
+}
+
+/// Put the entry moved to `aside` back at `home`. If `home` already holds a whole (or newer) entry, the moved copy is a
+/// duplicate and is deleted. If anything else is in the way, the copy stays aside, whole, for the next collection.
+fn put_back(aside: &Path, home: &Path, stage: &str) -> Gone {
+    if std::fs::rename(aside, home).is_ok() {
+        return Gone::Whole;
+    }
+    let taken = home
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(key_named)
+        .is_some_and(|key| whole(home, stage, key).is_some() || newer_layout(home));
+    if taken {
+        let _ = std::fs::remove_dir_all(aside);
+        return Gone::Whole;
+    }
+    Gone::InUse
 }
 
 /// Every directory under the cache's stages, sorted: the whole entries, and the rest. Stage folders with names a

@@ -479,9 +479,8 @@ fn a_vanished_entry_is_not_removed_again() {
     let stage = stage_dir(&p);
     std::fs::create_dir_all(&stage).unwrap();
     let gone = stage.join("ab".repeat(32));
-    assert!(matches!(gc(0).remove(&stage, &gone, None), Gone::Vanished));
     assert!(matches!(
-        gc(0).remove(&stage, &gone, Some(("song", ContentHash([0xab; 32])))),
+        gc(0).remove("song", &stage, &gone, None),
         Gone::Vanished
     ));
     assert_eq!(
@@ -500,21 +499,21 @@ fn an_entry_that_cant_be_moved_aside_stays_whole_and_is_in_use() {
     let refuse = |_: &Path, _: &Path| Err(std::io::Error::other("a file is open in it"));
     let delete = |d: &Path| std::fs::remove_dir_all(d);
     assert!(matches!(
-        gc(0).remove_with(&stage, &e.dir, None, refuse, delete),
+        gc(0).remove_with("song", &stage, &e.dir, None, refuse, delete),
         Gone::InUse
     ));
     assert_eq!(keys(&p), [as_ref(&e)]);
     assert_eq!(temps(&stage), Vec::<String>::new());
     let not_found = |_: &Path, _: &Path| Err(std::io::ErrorKind::NotFound.into());
     assert!(matches!(
-        gc(0).remove_with(&stage, &e.dir, None, not_found, delete),
+        gc(0).remove_with("song", &stage, &e.dir, None, not_found, delete),
         Gone::Vanished
     ));
     // A leftover that can't be moved stays too: nothing is deleted in place.
     let left = stage.join(".tmp-t1-1-0-0");
     std::fs::create_dir_all(&left).unwrap();
     assert!(matches!(
-        gc(0).remove_with(&stage, &left, None, refuse, delete),
+        gc(0).remove_with("song", &stage, &left, None, refuse, delete),
         Gone::InUse
     ));
     assert!(left.is_dir());
@@ -522,7 +521,7 @@ fn an_entry_that_cant_be_moved_aside_stays_whole_and_is_in_use() {
     let stuck = |_: &Path| Err(std::io::Error::other("read-only"));
     let std_rename = |a: &Path, b: &Path| std::fs::rename(a, b);
     assert!(matches!(
-        gc(0).remove_with(&stage, &e.dir, None, std_rename, stuck),
+        gc(0).remove_with("song", &stage, &e.dir, Some(&e.manifest), std_rename, stuck),
         Gone::Aside(Error::Io { .. })
     ));
     assert_eq!(keys(&p), []);
@@ -552,7 +551,7 @@ fn a_broken_entry_put_whole_meanwhile_stays() {
     // Moved aside and found whole, it goes back.
     let stage = stage_dir(&p);
     assert!(matches!(
-        gc(0).remove(&stage, &e.dir, Some(("song", e.manifest.key))),
+        gc(0).remove("song", &stage, &e.dir, None),
         Gone::Whole
     ));
     assert_eq!(keys(&p), [as_ref(&e)]);
@@ -574,7 +573,10 @@ fn an_unrooted_entry_damaged_meanwhile_is_not_counted_as_removed() {
         .unwrap();
     assert_eq!(report.removed, []);
     assert_eq!(temp_dirs_made(), before);
-    assert!(e.dir.is_dir(), "left for the broken-entry pass");
+    assert!(
+        e.dir.is_dir(),
+        "it waits for the next collection, as a broken entry"
+    );
     let _ = std::fs::remove_dir_all(p.root());
 }
 
@@ -838,5 +840,137 @@ fn an_entry_moved_aside_but_not_deleted_is_reported_removed_and_stops() {
         [(e.manifest.key.to_string(), "unrooted")]
     );
     assert_eq!(keys(&p), [], "off its key all the same");
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+/// A rename that moves `actual` instead of what it was asked to: what a Windows rename does when its source is
+/// renamed between its opening the source by path and moving it.
+fn moves(actual: PathBuf) -> impl Fn(&Path, &Path) -> std::io::Result<()> {
+    move |_, to| std::fs::rename(&actual, to)
+}
+
+fn delete(d: &Path) -> std::io::Result<()> {
+    std::fs::remove_dir_all(d)
+}
+
+#[test]
+fn an_entry_moved_aside_in_a_leftovers_place_goes_back() {
+    let p = project("handle");
+    let stage = stage_dir(&p);
+    let e = put(&p, 1, 10);
+    // The collector meant to move a writer's temporary copy; the writer renamed it onto its key first.
+    let left = stage.join(".tmp-t1-1-0-0");
+    let gone = gc(0).remove_with("song", &stage, &left, None, moves(e.dir.clone()), delete);
+    assert!(matches!(gone, Gone::Whole));
+    assert_eq!(keys(&p), [as_ref(&e)]);
+    assert_eq!(temps(&stage), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn a_moved_copy_with_a_whole_entry_back_in_its_place_is_a_duplicate() {
+    let p = project("dup");
+    let stage = stage_dir(&p);
+    let e = put(&p, 1, 10);
+    let left = stage.join(".tmp-t1-1-0-0");
+    let (dir, again) = (e.dir.clone(), p.root().to_path_buf());
+    let move_then_put = move |_: &Path, to: &Path| {
+        std::fs::rename(&dir, to)?;
+        // Another writer puts the same entry again before the collector puts its copy back.
+        let p = Project::open(&again).unwrap();
+        put(&p, 1, 10);
+        Ok(())
+    };
+    let gone = gc(0).remove_with("song", &stage, &left, None, move_then_put, delete);
+    assert!(matches!(gone, Gone::Whole));
+    assert_eq!(keys(&p), [as_ref(&e)]);
+    assert_eq!(temps(&stage), Vec::<String>::new(), "the duplicate went");
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn a_moved_entry_that_cant_go_back_stays_aside_whole_until_the_next_collection() {
+    let p = project("blocked");
+    let stage = stage_dir(&p);
+    let e = put(&p, 1, 10);
+    let left = stage.join(".tmp-t1-1-0-0");
+    let dir = e.dir.clone();
+    let move_then_block = move |_: &Path, to: &Path| {
+        std::fs::rename(&dir, to)?;
+        // Something that is no entry takes the key meanwhile.
+        std::fs::create_dir_all(dir.join("junk"))?;
+        std::fs::write(dir.join("junk/x"), b"x")
+    };
+    let gone = gc(0).remove_with("song", &stage, &left, None, move_then_block, delete);
+    assert!(matches!(gone, Gone::InUse));
+    let aside = temps(&stage);
+    assert_eq!(aside.len(), 1);
+    assert!(
+        whole(&stage.join(&aside[0]), "song", e.manifest.key).is_some(),
+        "never deleted"
+    );
+    // Later collections clear what is in the way and put the entry back.
+    let sweep = Gc {
+        tmp_age: Duration::ZERO,
+        ..gc(u64::MAX)
+    };
+    for _ in 0..2 {
+        sweep.collect_at(&p, &[&RecordedVersions], later()).unwrap();
+    }
+    assert_eq!(keys(&p), [as_ref(&e)]);
+    assert_eq!(temps(&stage), Vec::<String>::new());
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn an_unrooted_entry_replaced_as_it_is_moved_goes_back() {
+    let p = project("replaced");
+    let stage = stage_dir(&p);
+    let e = put(&p, 1, 10);
+    let chosen = e.manifest.clone();
+    let (dir, root) = (e.dir.clone(), p.root().to_path_buf());
+    let replace_then_move = move |_: &Path, to: &Path| {
+        // A writer replaces the entry with a fresh copy (another `created`) just before the rename.
+        std::fs::remove_dir_all(&dir)?;
+        let fresh = put(&Project::open(&root).unwrap(), 1, 10);
+        created_at(&fresh, 99);
+        std::fs::rename(&dir, to)
+    };
+    let gone = gc(0).remove_with(
+        "song",
+        &stage,
+        &e.dir,
+        Some(&chosen),
+        replace_then_move,
+        delete,
+    );
+    assert!(matches!(gone, Gone::Whole));
+    assert_eq!(keys(&p), [as_ref(&e)]);
+    // The one chosen, as listed, goes.
+    assert!(matches!(
+        gc(0).remove(
+            "song",
+            &stage,
+            &e.dir,
+            Some(&cache(&p).get("song", e.manifest.key).unwrap().manifest)
+        ),
+        Gone::Removed
+    ));
+    assert_eq!(keys(&p), []);
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn a_newer_entry_found_once_moved_goes_back() {
+    let p = project("newer-moved");
+    let stage = stage_dir(&p);
+    let e = put(&p, 1, 10);
+    let path = e.dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("\"schema\": 2", "\"schema\": 3")).unwrap();
+    let gone = gc(0).remove("song", &stage, &e.dir, None);
+    assert!(matches!(gone, Gone::Whole));
+    assert!(newer_layout(&e.dir));
+    assert_eq!(temps(&stage), Vec::<String>::new());
     let _ = std::fs::remove_dir_all(p.root());
 }

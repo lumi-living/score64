@@ -151,7 +151,28 @@ impl std::error::Error for Error {
     }
 }
 
-const MANIFEST: &str = "manifest.json";
+pub(crate) const MANIFEST: &str = "manifest.json";
+
+/// How many times [`Cache::put`] writes an entry whose copy a collector disturbed before it gives up.
+const PUT_TRIES: usize = 3;
+
+/// The outcome of one try at [`Cache::put`].
+enum Try {
+    /// The entry, whole.
+    Done(Box<Entry>),
+    /// Disturbed (a collector took or moved something); this error if no try succeeds.
+    Again(Error),
+}
+
+/// A test's hook on an entry's folder.
+#[cfg(test)]
+type Hook = Option<Box<dyn FnMut(&Path)>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Called with the entry's folder right after `put` renames its copy into place, so a test can disturb it.
+    pub(crate) static AFTER_RENAME: std::cell::RefCell<Hook> = const { std::cell::RefCell::new(None) };
+}
 
 /// Names that stay inside their directory on every system: letters, digits, `-`, `_` and `.`; not starting with `.`
 /// (which also keeps clear of the temporary directories) or ending with one; not a Windows device name (`con`,
@@ -239,7 +260,8 @@ impl Cache {
     /// temporary directory, then renamed into place. If another writer got there first, its entry is kept and
     /// returned; an entry already there but not whole (damaged, or from an older layout) is replaced, and one from a
     /// newer Score64 is left alone ([`Error::Newer`]). After the rename the entry's manifest and sizes are checked
-    /// again; if a cache GC took the copy as it went into place, it is written again, up to three times.
+    /// again. If a cache GC took the copy as it went into place, or moved what was in the way as this moved it, it is
+    /// written again, up to three times, and then the last error is returned: never an entry that isn't whole.
     pub fn put(&self, stage: &str, artifacts: &[(&str, &[u8])], run: Run) -> Result<Entry, Error> {
         check_name(stage)?;
         let mut names: Vec<String> = Vec::with_capacity(artifacts.len());
@@ -255,29 +277,26 @@ impl Cache {
         let key = Self::key(stage, &run.stage_version, &run.config, &run.inputs);
         // A collector can take the temporary copy, or what was just renamed into place, while this runs (#29): then
         // write it again, a few times at most.
-        for _ in 0..3 {
-            if let Some(entry) = self.write(stage, key, artifacts, run.clone())? {
-                return Ok(entry);
+        let mut last = None;
+        for _ in 0..PUT_TRIES {
+            match self.write(stage, key, artifacts, run.clone())? {
+                Try::Done(entry) => return Ok(*entry),
+                Try::Again(error) => last = Some(error),
             }
         }
-        Err(Error::Io {
-            path: self.entry_dir(stage, key),
-            error: std::io::Error::other(
-                "the entry was changed just after it was written, three times; is a cache GC running?",
-            ),
-        })
+        Err(last.expect("at least one try"))
     }
 
-    /// One try at [`Cache::put`]: `None` when the entry renamed into place was no longer as written right after.
+    /// One try at [`Cache::put`].
     fn write(
         &self,
         stage: &str,
         key: ContentHash,
         artifacts: &[(&str, &[u8])],
         run: Run,
-    ) -> Result<Option<Entry>, Error> {
+    ) -> Result<Try, Error> {
         if let Some(entry) = self.get(stage, key) {
-            return Ok(Some(entry));
+            return Ok(Try::Done(Box::new(entry)));
         }
         // One from a newer Score64 stays, so don't write a copy only to throw it away (#29).
         let dir = self.entry_dir(stage, key);
@@ -344,14 +363,23 @@ impl Cache {
             if let Ok(aside) = temp_dir(&stage_dir) {
                 let _ = std::fs::remove_dir(&aside);
                 if std::fs::rename(&dir, &aside).is_ok() {
-                    if whole(&aside, stage, key).is_some() {
+                    // What was moved may not be what was checked: another writer's whole entry, or a newer one, put
+                    // there in between. It goes back.
+                    let newer = newer_layout(&aside);
+                    if newer || whole(&aside, stage, key).is_some() {
                         let _ = std::fs::rename(&aside, &dir);
                         let _ = std::fs::remove_dir_all(&tmp);
-                        return self.get(stage, key).map(Some).ok_or(Error::Io {
-                            path: dir,
-                            error: std::io::Error::other(
-                                "another writer's entry moved while replacing",
-                            ),
+                        if newer {
+                            return Err(Error::Newer(dir));
+                        }
+                        return Ok(match self.get(stage, key) {
+                            Some(entry) => Try::Done(Box::new(entry)),
+                            None => Try::Again(Error::Io {
+                                path: dir,
+                                error: std::io::Error::other(
+                                    "another writer's entry moved while replacing",
+                                ),
+                            }),
                         });
                     }
                     if std::fs::remove_dir_all(&aside).is_err() {
@@ -364,19 +392,33 @@ impl Cache {
         match result {
             Ok(()) => {
                 sync(&stage_dir);
-                // Check it is still as written: a collector deleting the temporary copy in place as it was renamed
-                // would have taken files from the entry. Sizes are enough to see that; nothing is hashed again.
+                #[cfg(test)]
+                AFTER_RENAME.with(|hook| {
+                    if let Some(hook) = hook.borrow_mut().as_mut() {
+                        hook(&dir);
+                    }
+                });
+                // Check it is still as written: a collector that took files from the copy as it was renamed would
+                // show here. Sizes are enough to see that; nothing is hashed again.
                 if sized(&dir, stage, key).as_ref() != Some(&manifest) {
-                    return Ok(None);
+                    return Ok(Try::Again(Error::Io {
+                        path: dir,
+                        error: std::io::Error::other(
+                            "the entry was changed just after it was written; is a cache GC running?",
+                        ),
+                    }));
                 }
-                Ok(Some(Entry { dir, manifest }))
+                Ok(Try::Done(Box::new(Entry { dir, manifest })))
             }
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&tmp);
-                // Another writer's entry won the race: keep it, since a pure stage gives the same output.
-                self.get(stage, key)
-                    .map(Some)
-                    .ok_or(Error::Io { path: dir, error })
+                // Another writer's entry won the race: keep it, since a pure stage gives the same output. Otherwise a
+                // collector took the copy (not found) or moved what was in the way as this did (not empty): try again,
+                // and give this error if it keeps happening.
+                Ok(match self.get(stage, key) {
+                    Some(entry) => Try::Done(Box::new(entry)),
+                    None => Try::Again(Error::Io { path: dir, error }),
+                })
             }
         }
     }
