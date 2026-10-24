@@ -122,7 +122,7 @@ When it is, each entry here names the project, the commit or version, the files 
 | `emulator_6502` 1.1.0 | 6502 core of the emulator helper (ADR-010) | MIT | `crates/score64-emu` only |
 | GoatTracker 2 file formats | `.sng` / `.ins` / sound-effect writers, written from the format documentation | Format documentation | `crates/score64-formats` |
 | Basic Pitch model (`nmp.onnx`) | Local transcription | Apache-2.0 | Downloaded at first use, not committed |
-| gt2reloc (GoatTracker 2) | Packing; called as an external program | GoatTracker licence | Not vendored |
+| gt2reloc (GoatTracker 2) | Packing; called as an external program | The packer: GPL-2.0-or-later (`gt2reloc.c` header, `copying`). The playroutine it assembles into every packed file (`player.s`, `altplayer.s`) has its own notice putting it outside the GPL, free for any use (checked in the 2.77 and 2.72 sources); Debian's copyright file doesn't record that notice. See ADR-016 (Proposed) | Not vendored |
 
 ## Inter and JetBrains Mono (fonts)
 
