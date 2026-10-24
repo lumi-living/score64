@@ -6,8 +6,10 @@
 //! - `track.toml`, without its `[target]` and `[pack]` overrides, which count only through the values they resolve to,
 //!   and without its sources' paths: a source is identified by its hash, so moving the file is no new version;
 //! - `decisions.toml`, in subtune and id order, whatever order the file lists them in;
-//! - the resolved video standard and `[pack]` (an explicit `hard_restart_adsr = 0x0F00`, gt2reloc's default, still
-//!   differs from leaving it out: a needless new version, never a wrong match);
+//! - the resolved video standard and `[pack]`, its window and raster budget included: the budget doesn't change the
+//!   packed bytes, but it changes whether the build passes the budget gate (rule 8). An explicit
+//!   `hard_restart_adsr = 0x0F00`, gt2reloc's default, still differs from leaving it out: a needless new version,
+//!   never a wrong match;
 //! - the definition of the profile each subtune plays with (its own, else the track's default, else `full`), so a
 //!   change to a profile no subtune uses leaves the track's versions alone;
 //! - the project's `[validate]` and `[tools]`, which every track uses.
@@ -32,8 +34,9 @@ use crate::cache::Cache;
 use crate::project::{Pack, Project, Tools, Track, TrackFile, ValidateSettings};
 
 /// The version of the identity scheme itself: a change to what goes into the hash changes it, so old and new ids
-/// never collide.
-pub const SCHEME: &str = "version@1";
+/// never collide. `version@2` (#198): the resolved `[pack]` holds `window = { start, end }` and the optional
+/// `max_play_cycles` in place of `player_page`.
+pub const SCHEME: &str = "version@2";
 
 /// A track's version: the hash of its intent, sources and tool version.
 pub type VersionId = ContentHash;
