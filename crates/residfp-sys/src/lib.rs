@@ -1,6 +1,6 @@
 //! reSIDfp (libresidfp 1.2.3, GPL-2.0-or-later) for Score64's emulator helper (ADR-011).
 //!
-//! The library is vendored in `vendor/libresidfp` with one documented patch (`vendor/SCORE64-PATCHES.md`) and built
+//! The library is vendored in `vendor/libresidfp` with two documented patches (`vendor/SCORE64-PATCHES.md`) and built
 //! by `build.rs`. `unsafe` stays in [`ffi`]; [`ResidFp`] is the safe interface. Only `score64-emu` may depend on this
 //! crate (ADR-002).
 
@@ -298,8 +298,9 @@ mod tests {
         assert!(peak > 1000, "peak {peak}");
     }
 
-    /// Two SIDs fed the same writes give the same samples, filter included: no state is shared between instances
-    /// (#207, `vendor/SCORE64-PATCHES.md` patch 2).
+    /// Two SIDs fed the same writes give the same samples, filter included: the filter's dither is per SID (#207,
+    /// `vendor/SCORE64-PATCHES.md` patch 2). The 6581 filter range is still one setting per process (upstream), so this
+    /// holds for SIDs with the same settings.
     #[test]
     fn identical_writes_give_identical_samples() {
         for model in [ChipModel::Mos6581, ChipModel::Csg8580] {

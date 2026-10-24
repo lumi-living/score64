@@ -26,6 +26,10 @@ are in `../generated/` (written for Score64, not upstream files).
      - the few values set up once, by a fixed position.
    - **The shared counter is gone.** The threaded build is kept.
    - **Result:** identical writes give byte-identical samples, across processes and between SIDs in one process. `src/lib.rs`'s `identical_writes_give_identical_samples` and `score64-adapters`' `helper_determinism` check this.
+   - **Limits:**
+     - `reset()` restarts the filter's counter, but upstream's reset keeps other state, such as the oscillators and the filter's voltages. A reset SID is therefore not a fresh one. The helper never resets: `Model` builds a new SID.
+     - reSIDfp's state save and restore doesn't carry the counter. The shim doesn't expose it.
+     - The 6581 filter range is still one setting per process, as upstream.
    - **Relative to upstream:** the dither is the same kind of noise from the same sequence, only assigned in a fixed order. Upstream's order was itself different on every run.
 
 Nothing else is changed. To update, replace `libresidfp/` with a newer release, re-apply the patches above, regenerate

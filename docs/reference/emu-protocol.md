@@ -20,7 +20,7 @@ The client sends one request and reads exactly one reply before sending the next
 
 To trace a timeline, send `Trace` before its `Init`, and `Report` whenever the client wants what has been collected. A trace stays armed for every following `Init` until another `Trace` replaces or disarms it.
 
-The same build of the helper gives byte-identical replies to identical requests, in any process (#207; `crates/score64-adapters/tests/helper_determinism.rs`). Different platforms or compilers may still differ slightly in floating point.
+The same build of the helper gives byte-identical replies to identical request sequences from `Hello`, in any process (#207; `crates/score64-adapters/tests/helper_determinism.rs`). Different platforms or compilers may still differ slightly in floating point.
 
 ## Requests (client → helper)
 

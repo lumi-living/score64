@@ -1,7 +1,8 @@
 //! The helper's output is byte-identical across processes for identical input (#207): two helpers fed the same
 //! requests give the same samples, on both chips, with the filter in use. Runs when the helper has been built into the
 //! same target directory (`cargo test --workspace` does that) or `SCORE64_EMU` points at it; otherwise it skips
-//! visibly.
+//! visibly. `cargo test -p score64-adapters` alone doesn't rebuild the helper, so after changing it, build it first
+//! (`cargo build -p score64-emu`) or run the workspace's tests.
 
 use std::io::Write as _;
 
