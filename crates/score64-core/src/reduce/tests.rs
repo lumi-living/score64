@@ -994,6 +994,23 @@ fn only_this_voice_and_subtune_and_not_the_rules_own() {
     );
     assert_eq!(r.notes.len(), 1);
     assert!(r.unapplied.is_empty());
+    // Nor a keep of voice 2's: voice 1's ghost goes.
+    let other_voice_keep = person(
+        "keep-voice-2",
+        Proposal::KeepNote {
+            voice: Voice::new(2).unwrap(),
+            row: 0,
+            pitch: "C-4".parse().unwrap(),
+        },
+    );
+    let r = monophonise_with(
+        vec![note(0, 4, "C-4", 0.1)],
+        &at(&n),
+        &MonoRules::default(),
+        &[other_voice_keep],
+    );
+    assert!(r.notes.is_empty());
+    assert!(r.unapplied.is_empty());
     // A model's decision counts like a person's here; resolve has already chosen between them.
     let mut by_model = person("by-model", drop_of(0, 4, "C-4"));
     by_model.provenance = Provenance::Llm {
@@ -1014,11 +1031,10 @@ proptest! {
     /// that validates with no errors, and every override either applied or says why not.
     #[test]
     fn any_overrides_still_give_a_valid_line(
-        soup in strategies::note_soup(),
+        soup in strategies::note_soup_of(1..48),
         rules in any_rules(),
         picks in proptest::collection::vec((any::<proptest::sample::Index>(), 0u8..4, 1u32..12), 0..6),
     ) {
-        prop_assume!(!soup.is_empty());
         let n = name();
         let overrides: Vec<Decision> = picks
             .iter()
@@ -1208,12 +1224,11 @@ proptest! {
     /// override that applied, or one the note came in with.
     #[test]
     fn overrides_in_any_order_and_ids_that_exist(
-        soup in strategies::note_soup(),
+        soup in strategies::note_soup_of(1..48),
         rules in any_rules(),
         picks in proptest::collection::vec((any::<proptest::sample::Index>(), 0u8..4, 1u32..12, any::<bool>()), 0..6),
         seed in any::<u64>(),
     ) {
-        prop_assume!(!soup.is_empty());
         let n = name();
         let overrides: Vec<Decision> = picks
             .iter()
@@ -1432,11 +1447,10 @@ proptest! {
     /// Applying the overrides directly gives what `resolve` and then the rule give.
     #[test]
     fn overrides_apply_as_resolve_would_choose(
-        soup in strategies::note_soup(),
+        soup in strategies::note_soup_of(1..48),
         rules in any_rules(),
         picks in proptest::collection::vec((any::<proptest::sample::Index>(), 0u8..4, 1u32..12, any::<bool>()), 0..6),
     ) {
-        prop_assume!(!soup.is_empty());
         let n = name();
         let overrides: Vec<Decision> = picks
             .iter()
@@ -1529,7 +1543,7 @@ fn a_kept_note_wins_its_row_over_the_skyline() {
     let (plain, r) = with_keeps(&soup, &MonoRules::default(), &[(0, "C-4")]);
     assert_eq!(shape(&plain.notes), [(0, 4, "E-4".into())]);
     assert_eq!(shape(&r.notes), [(0, 4, "C-4".into())]);
-    // The skyline's pick goes instead, as the rule drops any other note of a row, at its usual confidence.
+    // The skyline's pick goes instead, as the rule drops any other note of a row. The keep forces it, so it's certain.
     let drops: Vec<_> = r
         .decisions
         .iter()
@@ -1547,7 +1561,7 @@ fn a_kept_note_wins_its_row_over_the_skyline() {
                 source: None,
                 reason: DropReason::Skyline,
             },
-            0.5
+            1.0
         )]
     );
     assert_eq!(
@@ -1555,6 +1569,25 @@ fn a_kept_note_wins_its_row_over_the_skyline() {
         Some("k0")
     );
     assert_valid(&r.notes);
+    // A skyline drop the rule makes anyway keeps its confidence: here E-4's, which loses to G-4 without the keep.
+    let soup = vec![
+        note(0, 4, "G-4", 0.9),
+        note(0, 4, "E-4", 0.9),
+        note(0, 4, "C-4", 0.9),
+    ];
+    let (_, r) = with_keeps(&soup, &MonoRules::default(), &[(0, "C-4")]);
+    let sure: Vec<_> = r
+        .decisions
+        .iter()
+        .map(|d| (d.id.as_str(), d.confidence.get()))
+        .collect();
+    assert_eq!(
+        sure,
+        [
+            ("mono-skyline-v1-r0-p55", 1.0),
+            ("mono-skyline-v1-r0-p52", 0.5)
+        ]
+    );
 }
 
 #[test]
@@ -2011,39 +2044,375 @@ fn a_saved_note_keeps_an_earlier_rules_id() {
     );
 }
 
-/// Dense soups: rows 0–11 and three pitches, so overrides of every kind meet on the same notes and rows.
+#[test]
+fn a_knock_on_overlap_drop_has_the_usual_gap() {
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let soup = vec![
+        note(0, 2, "C-4", 0.7),
+        note(1, 2, "C-4", 0.8),
+        note(2, 2, "C-4", 0.9),
+        note(3, 2, "C-4", 0.3),
+    ];
+    let (plain, r) = with_keeps(&soup, &rules, &[(3, "C-4")]);
+    assert_eq!(
+        shape(&plain.notes),
+        [(0, 2, "C-4".into()), (2, 2, "C-4".into())]
+    );
+    // Row 2 is too close to the kept row 3, so the keep forces its drop; row 1 then stays, and row 0 goes because of
+    // it, a note that isn't kept: as sure as row 1 was surer.
+    assert_eq!(
+        shape(&r.notes),
+        [(1, 2, "C-4".into()), (3, 2, "C-4".into())]
+    );
+    let sure: Vec<_> = r
+        .decisions
+        .iter()
+        .map(|d| (d.id.as_str(), d.confidence.get()))
+        .collect();
+    assert_eq!(
+        sure,
+        [
+            ("mono-overlap-v1-r2-p48", 1.0),
+            ("mono-overlap-v1-r0-p48", 0.8f32 - 0.7)
+        ]
+    );
+}
+
+#[test]
+fn a_models_keep_never_takes_out_a_note_a_person_trimmed_or_restarted() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    // Overlap: kept, E-4 would push out C-4, which a person trimmed.
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9), note(1, 4, "E-4", 0.3)],
+        &at(&n),
+        &rules,
+        &[
+            person("trim", trim_of(0, "C-4", 2)),
+            as_model(person("keep", keep_of(1, "E-4"))),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(0, 2, "C-4".into())]);
+    assert_eq!(unapplied(&r), [("keep", Unapplied::Overruled)]);
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(DecisionId::as_str),
+        Some("trim")
+    );
+    // Skyline: kept, C-4 would take the row from E-4, which a person restarted.
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9), legato(note(0, 4, "E-4", 0.9))],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("fresh", retrigger_of(0, "E-4")),
+            as_model(person("keep", keep_of(0, "C-4"))),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(0, 4, "E-4".into())]);
+    assert_eq!(unapplied(&r), [("keep", Unapplied::Overruled)]);
+    assert_eq!(r.notes[0].attack, Attack::Fresh);
+    // A person's keep with the lower id beats a person's trim, as a keep beats a drop.
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9), note(1, 4, "E-4", 0.3)],
+        &at(&n),
+        &rules,
+        &[
+            person("b-trim", trim_of(0, "C-4", 2)),
+            person("a-keep", keep_of(1, "E-4")),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(1, 4, "E-4".into())]);
+    assert_eq!(unapplied(&r), [("b-trim", Unapplied::NoSuchNote)]);
+}
+
+#[test]
+fn a_keep_that_would_push_out_stronger_notes_names_the_strongest() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(3).unwrap(),
+        ..MonoRules::default()
+    };
+    // Kept, D-4 would push out C-4, which a person trims, and E-4, which a model with a lower id restarts.
+    let r = monophonise_with(
+        [
+            note(0, 4, "C-4", 0.9),
+            note(2, 4, "D-4", 0.5),
+            note(4, 4, "E-4", 0.9),
+        ],
+        &at(&n),
+        &rules,
+        &[
+            person("z", trim_of(0, "C-4", 3)),
+            as_model(person("a", retrigger_of(4, "E-4"))),
+            as_model(person("c", keep_of(2, "D-4"))),
+        ],
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 3, "C-4".into()), (4, 4, "E-4".into())]
+    );
+    assert_eq!(unapplied(&r), [("c", Unapplied::Overruled)]);
+}
+
+#[test]
+fn a_keep_that_beats_the_drop_of_its_note_records_its_id() {
+    let n = name();
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a-keep", keep_of(0, "C-4")),
+            person("b-drop", drop_of(0, 4, "C-4")),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(0, 4, "C-4".into())]);
+    assert_eq!(unapplied(&r), [("b-drop", Unapplied::Outranked)]);
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(DecisionId::as_str),
+        Some("a-keep")
+    );
+}
+
+#[test]
+fn a_keep_met_because_of_another_drop_records_nothing() {
+    let n = name();
+    let r = monophonise_with(
+        [note(0, 4, "E-4", 0.9), note(0, 4, "C-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("drop", drop_of(0, 4, "E-4")),
+            person("keep", keep_of(0, "C-4")),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(0, 4, "C-4".into())]);
+    assert!(r.unapplied.is_empty());
+    assert_eq!(r.notes[0].decision, None);
+}
+
+#[test]
+fn a_keep_that_loses_to_its_drops_names_the_strongest() {
+    let n = name();
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9), note(0, 2, "C-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            as_model(person("b-keep", keep_of(0, "C-4"))),
+            as_model(person("a-short", drop_of(0, 2, "C-4"))),
+            person("z-long", drop_of(0, 4, "C-4")),
+        ],
+    );
+    assert!(r.notes.is_empty());
+    assert_eq!(unapplied(&r), [("b-keep", Unapplied::Overruled)]);
+}
+
+#[test]
+fn a_kept_note_pushed_out_names_the_strongest_keep_that_did_it() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(3).unwrap(),
+        ..MonoRules::default()
+    };
+    // `z` keeps C-4 and `a` E-4, both pushing out a note the rule keeps; D-4, between them, is too close to both.
+    let r = monophonise_with(
+        [
+            note(0, 4, "C-4", 0.5),
+            note(2, 4, "D-4", 0.9),
+            note(4, 4, "E-4", 0.5),
+            note(6, 4, "G-4", 0.95),
+        ],
+        &at(&n),
+        &rules,
+        &[
+            person("z", keep_of(0, "C-4")),
+            as_model(person("a", keep_of(4, "E-4"))),
+            as_model(person("c", keep_of(2, "D-4"))),
+        ],
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 4, "C-4".into()), (4, 4, "E-4".into())]
+    );
+    assert_eq!(unapplied(&r), [("c", Unapplied::Overruled)]);
+    // The same when the stronger keeps' notes stay anyway, and D-4 would push them out.
+    let r = monophonise_with(
+        [
+            note(0, 4, "C-4", 0.9),
+            note(2, 4, "D-4", 0.9),
+            note(4, 4, "E-4", 0.9),
+        ],
+        &at(&n),
+        &rules,
+        &[
+            person("z", keep_of(0, "C-4")),
+            as_model(person("a", keep_of(4, "E-4"))),
+            as_model(person("c", keep_of(2, "D-4"))),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("c", Unapplied::Overruled)]);
+}
+
+#[test]
+fn a_models_keep_of_a_ghost_at_the_minimum_applies() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    let r = monophonise_with(
+        [note(0, 2, "C-4", 0.1)],
+        &at(&n),
+        &rules,
+        &[as_model(person("m", keep_of(0, "C-4")))],
+    );
+    assert!(r.unapplied.is_empty(), "{:?}", r.unapplied);
+    assert_eq!(shape(&r.notes), [(0, 2, "C-4".into())]);
+}
+
+#[test]
+fn a_keep_that_loses_leaves_the_rules_own_decisions() {
+    let n = name();
+    // The model's keep would save the ghost C-4, but the person's E-4 holds the row: C-4 is dropped as a ghost, as
+    // without the keep, not as a skyline.
+    let soup = vec![note(0, 4, "C-4", 0.1), note(0, 4, "E-4", 0.9)];
+    let plain = monophonise(soup.clone(), &at(&n), &MonoRules::default());
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a", keep_of(0, "E-4")),
+            as_model(person("b", keep_of(0, "C-4"))),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("b", Unapplied::Overruled)]);
+    assert_eq!(r.notes, plain.notes);
+    assert_eq!(r.decisions, plain.decisions);
+    assert_eq!(reasons(&r), [DropReason::Ghost]);
+}
+
+#[test]
+fn a_drop_beaten_by_a_keep_that_then_fails_applies() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    // The model's keep is stronger than its drop, but can't keep a note shorter than the minimum: the drop applies.
+    let r = monophonise_with(
+        [note(0, 1, "C-4", 0.9)],
+        &at(&n),
+        &rules,
+        &[
+            as_model(person("a", keep_of(0, "C-4"))),
+            as_model(person("b", drop_of(0, 1, "C-4"))),
+        ],
+    );
+    assert!(r.notes.is_empty());
+    assert!(r.decisions.is_empty(), "{:?}", r.decisions);
+    assert_eq!(unapplied(&r), [("a", Unapplied::OutOfRange)]);
+    // Nor when the keep loses its row to a stronger one.
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9), note(0, 4, "E-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a", keep_of(0, "E-4")),
+            as_model(person("b", keep_of(0, "C-4"))),
+            as_model(person("c", drop_of(0, 4, "C-4"))),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(0, 4, "E-4".into())]);
+    assert!(r.decisions.is_empty(), "{:?}", r.decisions);
+    assert_eq!(unapplied(&r), [("b", Unapplied::Overruled)]);
+}
+
+#[test]
+fn stronger_across_slots_is_resolves_order() {
+    let n = name();
+    let soup = vec![note(0, 4, "C-4", 0.9)];
+    // A person's drop and a person's trim of one note: the lower id wins, as a keep against a drop.
+    let r = monophonise_with(
+        soup.clone(),
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a-trim", trim_of(0, "C-4", 2)),
+            person("b-drop", drop_of(0, 4, "C-4")),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(0, 2, "C-4".into())]);
+    assert_eq!(unapplied(&r), [("b-drop", Unapplied::Outranked)]);
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("b-trim", trim_of(0, "C-4", 2)),
+            person("a-drop", drop_of(0, 4, "C-4")),
+        ],
+    );
+    assert!(r.notes.is_empty());
+    assert_eq!(unapplied(&r), [("b-trim", Unapplied::NoSuchNote)]);
+}
+
+/// Dense soups: rows 0–11 and three pitches, so overrides of every kind meet on the same notes and rows. Some notes
+/// come from a source span, and confidences favour the ghost threshold, the skyline's and certainty.
 fn dense_soup() -> impl Strategy<Value = Vec<Note>> {
     let pitch = prop_oneof![Just("C-4"), Just("E-4"), Just("G-4")]
         .prop_map(|p| p.parse::<Pitch>().unwrap());
-    let note = (0u32..12, 1u32..6, pitch, any::<bool>(), 0.0f32..=1.0).prop_map(
-        |(row, length, pitch, tie, confidence)| Note {
+    let confidence = prop_oneof![
+        Just(0.1f32),
+        Just(0.5f32),
+        Just(0.9f32),
+        Just(1.0f32),
+        0.0f32..=1.0
+    ];
+    let source = prop_oneof![
+        3 => Just(None),
+        1 => (0u64..3).prop_map(|s| SourceRef::new(ContentHash([7; 32]), s * 10, s * 10 + 5)),
+    ];
+    let note = (0u32..12, 1u32..6, pitch, any::<bool>(), confidence, source).prop_map(
+        |(row, length, pitch, tie, confidence, source)| Note {
             row,
             length: NonZeroU32::new(length).unwrap(),
             pitch,
             attack: if tie { Attack::Legato } else { Attack::Fresh },
             instrument: None,
-            source: None,
+            source,
             confidence: Confidence::new(confidence).unwrap(),
             decision: None,
         },
     );
-    proptest::collection::vec(note, 1..20)
+    proptest::collection::vec(note, 1..24)
 }
 
-/// What to make an override of: which note, which kind (a drop of its length, a drop of any length, a trim, a fresh
-/// start or a keep), a length, a rank (a person's, a model's, a model's a person accepted) and an id prefix.
-type Pick = (proptest::sample::Index, u8, u32, u8, u8);
+/// What to make an override of: which note; which kind (a drop of its length, of any length, or by its source
+/// span; a trim; a fresh start; a keep of it, of its pitch on any row, or of any pitch on its row); a length; a rank
+/// (a person's, a model's, a model's a person accepted, or the rules', which the rule ignores); an id prefix; a
+/// confidence; and a row.
+type Pick = (proptest::sample::Index, u8, u32, u8, u8, u8, u32);
 
 fn dense_picks() -> impl Strategy<Value = Vec<Pick>> {
     proptest::collection::vec(
         (
             any::<proptest::sample::Index>(),
-            0u8..5,
+            0u8..9,
             1u32..6,
+            0u8..4,
+            0u8..4,
             0u8..3,
-            0u8..3,
+            0u32..12,
         ),
-        0..12,
+        0..16,
     )
 }
 
@@ -2052,31 +2421,67 @@ fn dense_overrides(soup: &[Note], picks: &[Pick]) -> Vec<Decision> {
     picks
         .iter()
         .enumerate()
-        .map(|(k, &(i, kind, len, rank, prefix))| {
+        .map(|(k, &(i, kind, len, rank, prefix, sure, stray))| {
             let o = &soup[i.index(soup.len())];
             let pitch = o.pitch.to_string();
             let p = match kind {
                 0 => drop_of(o.row, o.length.get(), &pitch),
                 1 => drop_of(o.row, len, &pitch),
-                2 => trim_of(o.row, &pitch, len),
-                3 => retrigger_of(o.row, &pitch),
-                _ => keep_of(o.row, &pitch),
+                2 => Proposal::DropNote {
+                    voice: v1(),
+                    row: o.row,
+                    pitch: o.pitch,
+                    length: o.length,
+                    source: o.source,
+                    reason: DropReason::Repeat,
+                },
+                3 => trim_of(o.row, &pitch, len),
+                4 => retrigger_of(o.row, &pitch),
+                5 | 6 => keep_of(o.row, &pitch),
+                7 => keep_of(stray, &pitch),
+                _ => keep_of(o.row, ["C-4", "E-4", "G-4"][len as usize % 3]),
             };
-            let mut d = person(&format!("{}{k}", ["a", "b", "c"][usize::from(prefix)]), p);
-            if rank > 0 {
-                d = as_model(d);
-                d.reviewed = rank == 2;
+            let mut d = person(
+                &format!("{}{k}", ["a", "b", "c", "d"][usize::from(prefix)]),
+                p,
+            );
+            d.confidence = Confidence::new([1.0, 0.5, 0.2][usize::from(sure)]).unwrap();
+            match rank {
+                0 => {}
+                1 => d = as_model(d),
+                2 => {
+                    d = as_model(d);
+                    d.reviewed = true;
+                }
+                _ => {
+                    d.provenance = Provenance::Rules {
+                        rule: MONOPHONISE.into(),
+                    }
+                }
             }
             d
         })
         .collect()
 }
 
+fn shuffled<T: Clone>(v: &[T], seed: u64) -> Vec<T> {
+    let mut v = v.to_vec();
+    let mut state = seed;
+    for i in (1..v.len()).rev() {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        v.swap(i, (state >> 33) as usize % (i + 1));
+    }
+    v
+}
+
 proptest! {
     /// On dense soups with overrides of every kind and rank: `resolve` and then the rule give what the rule gives
-    /// directly; the line validates with no overlaps; every input note is on the line or dropped by one decision;
-    /// every keep that applied has its note on the line; every id a note records exists; and the order of the
-    /// overrides doesn't matter.
+    /// directly, and report what `resolve` refused as the rule does; the line validates with no overlaps; every input
+    /// note is on the line or dropped by one decision; every keep that applied has its note on the line; every id a
+    /// note records exists; a person is never overruled; a person's trim or fresh start never misses its note because
+    /// of a weaker keep; and neither the order of the overrides nor of the notes matters.
     #[test]
     fn dense_overrides_apply_as_resolve_would_and_account_for_every_note(
         soup in dense_soup(),
@@ -2087,10 +2492,21 @@ proptest! {
         let n = name();
         let overrides = dense_overrides(&soup, &picks);
         let r = monophonise_with(soup.clone(), &at(&n), &rules, &overrides);
-        let chosen = crate::decide::resolve(overrides.clone()).chosen;
-        let resolved = monophonise_with(soup.clone(), &at(&n), &rules, &chosen);
+        let resolution = crate::decide::resolve(overrides.clone());
+        let resolved = monophonise_with(soup.clone(), &at(&n), &rules, &resolution.chosen);
         prop_assert_eq!(&r.notes, &resolved.notes);
         prop_assert_eq!(&r.decisions, &resolved.decisions);
+        // What `resolve` refused (but the rules' own), as the rule refuses it, and what the rule refuses of the rest.
+        let mut expect = resolved.unapplied.clone();
+        for (loser, by) in &resolution.overruled {
+            if loser.rank() != Rank::Rules {
+                let winner = overrides.iter().find(|d| &d.id == by).unwrap();
+                expect.push((loser.id.clone(), crate::decide::lost_to(loser, winner)));
+            }
+        }
+        expect.sort_by(|a, b| a.0.cmp(&b.0));
+        prop_assert_eq!(&r.unapplied, &expect);
+        prop_assert_eq!(crate::decide::resolve(resolution.chosen.clone()).chosen, resolution.chosen);
 
         let (song, ctx) = checked(r.notes.clone());
         let errors: Vec<_> = validate(&song, &ctx).into_iter().filter(|p| p.is_error()).collect();
@@ -2100,7 +2516,15 @@ proptest! {
         }
 
         let refused: BTreeSet<&DecisionId> = r.unapplied.iter().map(|(id, _)| id).collect();
-        let applied: Vec<&Decision> = overrides.iter().filter(|d| !refused.contains(&d.id)).collect();
+        let applied: Vec<&Decision> = overrides
+            .iter()
+            .filter(|d| d.rank() != Rank::Rules && !refused.contains(&d.id))
+            .collect();
+        for (id, why) in &r.unapplied {
+            let d = overrides.iter().find(|d| &d.id == id).unwrap();
+            prop_assert!(d.rank() != Rank::Rules, "a rules decision reported: {id:?}");
+            prop_assert!(!(d.rank() == Rank::Person && *why == Unapplied::Overruled), "{id:?} overruled");
+        }
         // Each input note is taken by one drop (the rule's or one in force), or is on the line.
         let mut left: Vec<(u32, Pitch, u32)> = soup.iter().map(|x| (x.row, x.pitch, x.length.get())).collect();
         let drops = r.decisions.iter().chain(applied.iter().copied()).filter_map(|d| match d.proposal {
@@ -2132,14 +2556,110 @@ proptest! {
                 prop_assert!(ok, "{id:?} is neither a decision of the call nor an applied override");
             }
         }
-
-        let mut shuffled = overrides;
-        let mut state = seed;
-        for i in (1..shuffled.len()).rev() {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            shuffled.swap(i, (state >> 33) as usize % (i + 1));
+        // A person's trim or fresh start that misses its note misses it without the weaker keeps too.
+        for (id, why) in &r.unapplied {
+            let t = overrides.iter().find(|d| &d.id == id).unwrap();
+            if *why != Unapplied::NoSuchNote
+                || t.rank() != Rank::Person
+                || !matches!(t.proposal, Proposal::TrimNote { .. } | Proposal::Retrigger { .. })
+            {
+                continue;
+            }
+            let fewer: Vec<Decision> = overrides
+                .iter()
+                .filter(|k| !matches!(k.proposal, Proposal::KeepNote { .. }) || crate::decide::strength(k, t).is_lt())
+                .cloned()
+                .collect();
+            let again = monophonise_with(soup.clone(), &at(&n), &rules, &fewer);
+            prop_assert!(
+                again.unapplied.iter().any(|(i, w)| i == id && *w == Unapplied::NoSuchNote),
+                "{id:?} misses its note because of a weaker keep"
+            );
         }
-        prop_assert_eq!(monophonise_with(soup, &at(&n), &rules, &shuffled), r);
+
+        prop_assert_eq!(&monophonise_with(soup.clone(), &at(&n), &rules, &shuffled(&overrides, seed)), &r);
+        prop_assert_eq!(&monophonise_with(shuffled(&soup, seed ^ 0x55), &at(&n), &rules, &overrides), &r);
+    }
+
+    /// A person's keep stronger than every other decision, of any note in the soup, always applies and keeps a note on
+    /// its row and pitch, whatever else is in force.
+    #[test]
+    fn the_strongest_keep_always_applies(
+        soup in dense_soup(),
+        rules in any_rules(),
+        picks in dense_picks(),
+        pick in any::<proptest::sample::Index>(),
+    ) {
+        let n = name();
+        let mut overrides = dense_overrides(&soup, &picks);
+        let o = &soup[pick.index(soup.len())];
+        overrides.push(person("0keep", keep_of(o.row, &o.pitch.to_string())));
+        let r = monophonise_with(soup.clone(), &at(&n), &rules, &overrides);
+        prop_assert!(!r.unapplied.iter().any(|(id, _)| id.as_str() == "0keep"), "{:?}", r.unapplied);
+        prop_assert!(r.notes.iter().any(|x| (x.row, x.pitch) == (o.row, o.pitch)));
+    }
+
+    /// Taking out the overrides that didn't apply changes no note and no decision of the rule's, and then every
+    /// override applies.
+    #[test]
+    fn overrides_that_didnt_apply_change_nothing(
+        soup in dense_soup(),
+        rules in any_rules(),
+        picks in dense_picks(),
+    ) {
+        let n = name();
+        let overrides = dense_overrides(&soup, &picks);
+        let r = monophonise_with(soup.clone(), &at(&n), &rules, &overrides);
+        let refused: BTreeSet<&DecisionId> = r.unapplied.iter().map(|(id, _)| id).collect();
+        let applied: Vec<Decision> = overrides.iter().filter(|d| !refused.contains(&d.id)).cloned().collect();
+        let again = monophonise_with(soup.clone(), &at(&n), &rules, &applied);
+        // Which keep a note records may change: a keep that beat a drop records it, one met anyway doesn't.
+        let strip = |v: &[Note]| v.iter().cloned().map(|mut x| { x.decision = None; x }).collect::<Vec<_>>();
+        prop_assert_eq!(strip(&again.notes), strip(&r.notes));
+        prop_assert_eq!(&again.decisions, &r.decisions);
+        prop_assert!(again.unapplied.is_empty(), "{:?}", again.unapplied);
+    }
+
+    /// With any overrides in force, a keep weaker than all of them, of a note on the line, changes no note. With no
+    /// other keep in force it changes no decision either, and may be a person's. (Placed first, a kept note makes a
+    /// drop next to it certain, which another keep may have made a mechanical one.)
+    #[test]
+    fn keeping_a_note_on_the_line_changes_nothing(
+        soup in dense_soup(),
+        rules in any_rules(),
+        picks in dense_picks(),
+        pick in any::<proptest::sample::Index>(),
+        by_person in any::<bool>(),
+    ) {
+        let n = name();
+        let overrides = dense_overrides(&soup, &picks);
+        let r = monophonise_with(soup.clone(), &at(&n), &rules, &overrides);
+        // With no line there is nothing to keep, which is no reason to try again.
+        if r.notes.is_empty() {
+            return Ok(());
+        }
+        let o = &r.notes[pick.index(r.notes.len())];
+        let keeps = overrides
+            .iter()
+            .any(|d| matches!(d.proposal, Proposal::KeepNote { .. }) && d.rank() != Rank::Rules);
+        let k = person("zzkeep", keep_of(o.row, &o.pitch.to_string()));
+        let mut more = overrides.clone();
+        more.push(if by_person && !keeps { k } else { as_model(k) });
+        let again = monophonise_with(soup.clone(), &at(&n), &rules, &more);
+        prop_assert_eq!(&again.notes, &r.notes);
+        if !keeps {
+            prop_assert_eq!(&again.decisions, &r.decisions);
+        }
+        // It applies, unless another keep of the note holds its slot.
+        let (mine, rest): (Vec<_>, Vec<_>) = again.unapplied.iter().cloned().partition(|(id, _)| id.as_str() == "zzkeep");
+        prop_assert_eq!(&rest, &r.unapplied);
+        if !mine.is_empty() {
+            let held = overrides.iter().any(|d| {
+                d.rank() != Rank::Rules
+                    && matches!(d.proposal, Proposal::KeepNote { row, pitch, .. } if (row, pitch) == (o.row, o.pitch))
+            });
+            prop_assert!(held, "{:?}", mine);
+        }
     }
 }
 

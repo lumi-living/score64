@@ -133,7 +133,8 @@ pub fn monophonise(
 
 /// [`monophonise`] with a model's or a person's decisions in force (#167): `overrides` are resolved decisions
 /// ([`crate::decide::resolve`]'s `chosen`, after [`crate::decide::check`]). Those for this subtune and voice apply;
-/// the rules' own, and any of another kind, are left alone.
+/// the rules' own, and any of another kind, are left alone. "Stronger" is `resolve`'s order throughout: the higher
+/// rank, then of one rank the lower id.
 ///
 /// - A `drop_note` takes its note (same row, pitch and length) out before the rule starts, as if it had never been
 ///   there, so the rule's other choices follow from the line without it.
@@ -141,30 +142,39 @@ pub fn monophonise(
 ///   the note is unapplied (`lengthens`). Shorter than `min_rows` is a person's call: an unreviewed model's is
 ///   unapplied (`out_of_range`).
 /// - A `retrigger` gives its note a fresh start.
-/// - A `keep_note` keeps a note on its row and pitch that the rule would drop (ADR-014 §8). The rule runs as usual
-///   with the kept note in place, so the notes around it give way by the rule's own logic:
-///   - **drops in force:** a keep is met by any note the drops leave on its row and pitch, so to keep a shorter
-///     repeat, keep the row and pitch and drop the longer ones. Only when the drops take out every note there do they
-///     compete with the keep: it saves the longest note whose drop it is stronger than, and that drop loses to it
-///     (`overruled` or `outranked`); when every drop there is stronger, the keep loses to the strongest.
+/// - A `keep_note` keeps a note on its row and pitch that the rule would drop (ADR-014 §8). Keeps apply one at a time,
+///   the strongest first, each with the stronger ones in force, and the rule runs with the kept notes in place, so
+///   the notes around them give way by the rule's own logic:
+///   - **drops in force:** a keep is met by any note the drops leave on its row and pitch. So to keep a shorter
+///     repeat, keep the row and pitch and drop the longer ones, whatever their ids; to bring back a longer repeat a
+///     drop took, drop the shorter ones too. A drop names a length, so of twins of one length it takes one only. Only
+///     when the drops take out every note there do they compete with the keep: it saves the longest note whose drop
+///     it is stronger than, and that drop loses to it (`overruled` or `outranked`); when every drop there is stronger,
+///     the keep loses to the strongest. When the keep then can't apply, the drop applies after all.
 ///   - **ghost, too short:** of a kept row and pitch where no note passes step 1, the first (the longest) stays.
 ///     Shorter than `min_rows` is a person's call: an unreviewed model's keep of it is unapplied (`out_of_range`).
 ///   - **skyline:** the kept pitch is the one its row keeps, in its longest note as for any repeats, and the row's
-///     other notes are dropped as usual (`repeat` or `skyline`).
+///     other notes are dropped (`repeat` or `skyline`). A skyline drop a keep forces is certain, unless the line
+///     without the keeps drops that note as a skyline too: then it is as sure as the skyline always is.
 ///   - **overlap:** kept notes are placed first, so a note closer than `min_rows` to one is dropped (`overlap`) even
-///     when it is the surer. That drop follows from the keep, so it is certain, unless the line without the keeps
-///     drops the note as an overlap too: then it has that drop's confidence. Then notes running into a kept note are
-///     trimmed, and a kept note running into the next is too, as the rule trims any note.
+///     when it is the surer. When a kept note is among the neighbours it is too close to, the drop follows from the
+///     keep, so it is certain, unless the line without the keeps drops the note as an overlap too: then it has that
+///     drop's confidence. A drop caused only by notes that aren't kept has the usual gap. Then notes running into a
+///     kept note are trimmed, and a kept note running into the next is too, as the rule trims any note.
 ///
-///   Of two kept notes that can't both stay (on one row, or closer than `min_rows`), the stronger keep's stays and
-///   the other's is dropped as the rule would, its keep `overruled` or `outranked`. A kept note that the line without
-///   the keeps (with the other overrides in force) doesn't have records the keep's id, unless it already records one;
-///   a trim or fresh start in force on it then leaves that id. So keeping a note the rule keeps anyway changes
-///   nothing.
-/// - A `drop_note` gives way (`overruled`) to a stronger trim or fresh start of the same note, even one that then
-///   can't apply: those are separate slots, so `resolve` keeps all three, and a stronger decision about the note
-///   means it should stay. It takes the note from its source span when it names one; of identical notes otherwise,
-///   the one the rule would drop.
+///   A keep that can't keep its note is unapplied and changes nothing: an unreviewed model's keep of a note that is
+///   too short (`out_of_range`), or one whose note a stronger keep's pushes out, on its row or closer than `min_rows`
+///   (`overruled` or `outranked`). So is one whose note would push out a note a stronger keep, trim or fresh start is
+///   about (ADR-008: a model's keep never takes out a note a person trimmed or restarted). A keep that the line with
+///   the stronger keeps already meets changes no note; when no other keep changes the line, it changes no decision
+///   either. Its note still stays against weaker keeps, and, like every kept note, is placed first. A kept note
+///   records its keep's id when the keep saved it, from a drop in force or from the rule (the line with only the
+///   stronger keeps doesn't have it), unless it already records one; a trim or fresh start in force on it then leaves
+///   that id.
+/// - A `drop_note` gives way to a stronger trim or fresh start of the same note (`overruled` or `outranked`), even
+///   one that then can't apply: those are separate slots, so `resolve` keeps all three, and a stronger decision about
+///   the note means it should stay. It takes the note from its source span when it names one; of identical notes
+///   otherwise, the one the rule would drop.
 /// - Of several decisions for one slot (as when `resolve` hasn't run), the strongest claims it, whether or not it then
 ///   applies, and the others are `overruled` or `outranked`: the result is the one `resolve` and then this rule give.
 ///
@@ -198,6 +208,23 @@ pub fn monophonise_with(
     let mut notes: Vec<Note> = notes.into_iter().collect();
     notes.sort_by(|a, b| canonical(a, b, rules.skyline));
 
+    // The trims and fresh starts that hold their slots, which keep their note against a weaker drop or keep: of each
+    // row and pitch, the strongest.
+    let mut held: BTreeMap<(u32, Pitch), &Decision> = BTreeMap::new();
+    for d in &mine {
+        if let Proposal::TrimNote { row, pitch, .. } | Proposal::Retrigger { row, pitch, .. } =
+            d.proposal
+        {
+            held.entry((row, pitch))
+                .and_modify(|h| {
+                    if strength(d, h).is_lt() {
+                        *h = d;
+                    }
+                })
+                .or_insert(d);
+        }
+    }
+
     // 0. Drops in force, by the index of their note. A drop, a trim and a fresh start of one note are separate slots,
     // so `resolve` keeps all three; a drop gives way when a stronger decision trims or restarts the note instead.
     let mut dropping: BTreeMap<usize, &Decision> = BTreeMap::new();
@@ -217,14 +244,8 @@ pub fn monophonise_with(
             unapplied.push((d.id.clone(), why));
             continue;
         }
-        let stronger = mine.iter().any(|o| {
-            o.rank() > d.rank()
-                && matches!(o.proposal,
-                    Proposal::TrimNote { row: r, pitch: p, .. } | Proposal::Retrigger { row: r, pitch: p, .. }
-                    if r == row && p == pitch)
-        });
-        if stronger {
-            unapplied.push((d.id.clone(), Unapplied::Overruled));
+        if let Some(h) = held.get(&(row, pitch)).filter(|h| strength(h, d).is_lt()) {
+            unapplied.push((d.id.clone(), lost_to(d, h)));
             continue;
         }
         // Its note: the one from its source span when it names one; otherwise the last of its row, pitch and
@@ -243,12 +264,11 @@ pub fn monophonise_with(
             None => unapplied.push((d.id.clone(), Unapplied::NoSuchNote)),
         }
     }
-    // Every note a drop in force takes, for the line without the keeps.
-    let dropped: BTreeSet<usize> = dropping.keys().copied().collect();
-
-    // Keeps in force, by row and pitch: those that won their slot and have a note there. A note the drops leave
-    // there meets the keep; when they take every one, the keep saves the longest whose drop it beats.
-    let mut keeps: BTreeMap<(u32, Pitch), &Decision> = BTreeMap::new();
+    // Keeps, strongest first, those that hold their slot and have a note on their row and pitch. When the drops take
+    // every note there, a keep saves the longest whose drop it beats (`spares`, by the note's index), or loses to the
+    // strongest of them.
+    let mut keep_order: Vec<&Decision> = Vec::new();
+    let mut spares: BTreeMap<usize, &Decision> = BTreeMap::new();
     for d in &mine {
         let Proposal::KeepNote { row, pitch, .. } = d.proposal else {
             continue;
@@ -259,7 +279,7 @@ pub fn monophonise_with(
         }
         // Its row and pitch's notes, longest first.
         let there: Vec<usize> = (0..notes.len())
-            .filter(|&i| notes[i].row == row && notes[i].pitch == pitch)
+            .filter(|&i| (notes[i].row, notes[i].pitch) == (row, pitch))
             .collect();
         if there.is_empty() {
             unapplied.push((d.id.clone(), Unapplied::NoSuchNote));
@@ -267,9 +287,8 @@ pub fn monophonise_with(
         }
         if there.iter().all(|i| dropping.contains_key(i)) {
             match there.iter().find(|&i| strength(d, dropping[i]).is_lt()) {
-                Some(i) => {
-                    let beaten = dropping.remove(i).expect("a drop takes it");
-                    unapplied.push((beaten.id.clone(), lost_to(beaten, d)));
+                Some(&i) => {
+                    spares.insert(i, d);
                 }
                 None => {
                     let by = there
@@ -282,66 +301,50 @@ pub fn monophonise_with(
                 }
             }
         }
-        keeps.insert((row, pitch), d);
+        keep_order.push(d);
     }
+    keep_order.sort_by(|a, b| strength(a, b));
+    // Try the keeps one by one, strongest first, each with the note it spares, if any, on the line the stronger ones
+    // made. A drop whose note a keep spared loses to it; one whose keep couldn't apply applies after all.
+    let tried = try_keeps(&notes, &dropping, &spares, &keep_order, &held, rules, at);
+    unapplied.extend(tried.refused);
+    for i in tried.spared {
+        let k = spares[&i];
+        let beaten = dropping.remove(&i).expect("a drop takes it");
+        unapplied.push((beaten.id.clone(), lost_to(beaten, k)));
+    }
+    let saved = tried.saved;
+    let mut kept = tried.kept;
 
-    // The line without the keeps, with every drop in force taken out, tells what the keeps change.
-    let base = (!keeps.is_empty()).then(|| {
-        let notes = notes
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !dropped.contains(i))
-            .map(|(_, n)| n.clone())
-            .collect();
+    // The line with every keep that applied in force, their notes placed first. The line without any (with the drops
+    // that apply) says how sure a drop they force is.
+    let notes = without(&notes, &dropping);
+    let base = (!kept.is_empty()).then(|| {
         let mut scratch = Log::new(at, MONOPHONISE, "mono");
-        let line = place(
-            notes,
+        place(
+            notes.clone(),
             &mut BTreeMap::new(),
             rules,
             &mut scratch,
             &mut Vec::new(),
             None,
         );
-        Baseline {
-            on_line: line.iter().map(|n| (n.row, n.pitch)).collect(),
-            overlaps: scratch
-                .decisions
-                .iter()
-                .filter_map(|d| match d.proposal {
-                    Proposal::DropNote {
-                        row,
-                        pitch,
-                        reason: DropReason::Overlap,
-                        ..
-                    } => Some(((row, pitch), d.confidence)),
-                    _ => None,
-                })
-                .collect(),
-        }
+        Baseline::of(&scratch.decisions)
     });
-    let notes = notes
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| !dropping.contains_key(i))
-        .map(|(_, n)| n)
-        .collect();
     let mut line = place(
         notes,
-        &mut keeps,
+        &mut kept,
         rules,
         &mut log,
         &mut unapplied,
         base.as_ref(),
     );
-    // A kept note the line without the keeps doesn't have was saved by its keep, and records it in place of any id
-    // this rule would give it; an earlier rule's id stays.
-    if let Some(base) = &base {
-        for n in &mut line {
-            if !base.on_line.contains(&(n.row, n.pitch))
-                && let Some(d) = keeps.get(&(n.row, n.pitch))
-            {
-                n.decision.get_or_insert(d.id.clone());
-            }
+    // A note a keep saved records it, in place of any id this rule would give it; an earlier rule's id stays.
+    for n in &mut line {
+        if saved.contains(&(n.row, n.pitch))
+            && let Some(d) = kept.get(&(n.row, n.pitch))
+        {
+            n.decision.get_or_insert(d.id.clone());
         }
     }
     for i in 1..line.len() {
@@ -457,11 +460,158 @@ pub fn monophonise_with(
     }
 }
 
-/// What the line without the keeps in force has: its rows and pitches, and each overlap drop's confidence by row and
-/// pitch.
+/// What trying keeps one by one gives: the keeps that applied, by row and pitch, which the rule places first; the
+/// rows and pitches whose note a keep saved, from a drop or from the rule; the notes kept from their drops, by index;
+/// and the keeps that couldn't apply, with why.
+struct Tried<'d> {
+    kept: BTreeMap<(u32, Pitch), &'d Decision>,
+    saved: BTreeSet<(u32, Pitch)>,
+    spared: Vec<usize>,
+    refused: Vec<(DecisionId, Unapplied)>,
+}
+
+/// Try `keeps`, strongest first, on `all` the notes without those `dropping` takes, each on the line the stronger
+/// ones made and with the note it `spares` from its drop, if any. One the line already meets changes nothing. One
+/// that can't keep its note, or that would push out a note a stronger decision is about (a keep, or a trim or fresh
+/// start of `held`), is refused, and its drop takes its note after all.
+fn try_keeps<'d>(
+    all: &[Note],
+    dropping: &BTreeMap<usize, &Decision>,
+    spares: &BTreeMap<usize, &'d Decision>,
+    keeps: &[&'d Decision],
+    held: &BTreeMap<(u32, Pitch), &'d Decision>,
+    rules: &MonoRules,
+    at: &Placement,
+) -> Tried<'d> {
+    let mut tried = Tried {
+        kept: BTreeMap::new(),
+        saved: BTreeSet::new(),
+        spared: Vec::new(),
+        refused: Vec::new(),
+    };
+    if keeps.is_empty() {
+        return tried;
+    }
+    let line_with = |notes: Vec<Note>, keeps: &BTreeMap<(u32, Pitch), &'d Decision>| {
+        let mut scratch = Log::new(at, MONOPHONISE, "mono");
+        let mut why = Vec::new();
+        let line = place(
+            notes,
+            &mut keeps.clone(),
+            rules,
+            &mut scratch,
+            &mut why,
+            None,
+        );
+        (line, why)
+    };
+    let on = |line: &[Note], at: (u32, Pitch)| line.iter().any(|n| (n.row, n.pitch) == at);
+    let mut taking = dropping.clone();
+    // What each note on the line is kept by, which a weaker keep may not push out.
+    let mut stays = held.clone();
+    let mut line = line_with(without(all, &taking), &tried.kept).0;
+    for &d in keeps {
+        let Proposal::KeepNote { row, pitch, .. } = d.proposal else {
+            unreachable!("only keeps");
+        };
+        let here = (row, pitch);
+        let spare = spares.iter().find(|(_, k)| k.id == d.id).map(|(&i, _)| i);
+        let mut with_spare = taking.clone();
+        if let Some(i) = spare {
+            with_spare.remove(&i);
+        }
+        let mut with = tried.kept.clone();
+        with.insert(here, d);
+        // Met by the line as it is, with its note spared, it changes no note; it is placed first all the same.
+        let met = match spare {
+            Some(_) => line_with(without(all, &with_spare), &tried.kept).0,
+            None => line.clone(),
+        };
+        let next = if on(&met, here) {
+            met
+        } else {
+            let (next, why) = line_with(without(all, &with_spare), &with);
+            if !on(&next, here) {
+                let why = why
+                    .into_iter()
+                    .find(|(id, _)| id == &d.id)
+                    .expect("a keep that can't keep its note says why");
+                tried.refused.push(why);
+                continue;
+            }
+            tried.saved.insert(here);
+            next
+        };
+        // A note a stronger decision is about can't give way to it.
+        let pushed = stays
+            .iter()
+            .filter(|&(&at, s)| strength(s, d).is_lt() && on(&line, at) && !on(&next, at))
+            .map(|(_, s)| *s)
+            .min_by(|a, b| strength(a, b));
+        if let Some(by) = pushed {
+            tried.saved.remove(&here);
+            tried.refused.push((d.id.clone(), lost_to(d, by)));
+            continue;
+        }
+        if let Some(i) = spare {
+            taking = with_spare;
+            tried.spared.push(i);
+            tried.saved.insert(here);
+        }
+        stays
+            .entry(here)
+            .and_modify(|s| {
+                if strength(d, s).is_lt() {
+                    *s = d;
+                }
+            })
+            .or_insert(d);
+        tried.kept.insert(here, d);
+        line = next;
+    }
+    tried
+}
+
+/// The notes left when `dropping` takes its notes out, in canonical order.
+fn without(notes: &[Note], dropping: &BTreeMap<usize, &Decision>) -> Vec<Note> {
+    notes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !dropping.contains_key(i))
+        .map(|(_, n)| n.clone())
+        .collect()
+}
+
+/// What the line without the keeps drops by skyline (by row and pitch), and how sure each overlap drop is.
 struct Baseline {
-    on_line: BTreeSet<(u32, Pitch)>,
+    skylines: BTreeSet<(u32, Pitch)>,
     overlaps: BTreeMap<(u32, Pitch), Confidence>,
+}
+
+impl Baseline {
+    fn of(decisions: &[Decision]) -> Self {
+        let mut base = Baseline {
+            skylines: BTreeSet::new(),
+            overlaps: BTreeMap::new(),
+        };
+        for d in decisions {
+            if let Proposal::DropNote {
+                row, pitch, reason, ..
+            } = d.proposal
+            {
+                match reason {
+                    DropReason::Skyline => {
+                        base.skylines.insert((row, pitch));
+                    }
+                    DropReason::Overlap => {
+                        base.overlaps.insert((row, pitch), d.confidence);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        base
+    }
 }
 
 /// The keep in force on `n`'s row and pitch, if any.
@@ -471,7 +621,7 @@ fn kept_by<'d>(n: &Note, keeps: &BTreeMap<(u32, Pitch), &'d Decision>) -> Option
 
 /// Steps 1 to 3 of [`monophonise_with`], on `notes` in canonical order with `keeps` in force: the notes placed on the
 /// line, by row and not yet trimmed. A keep that can't apply leaves `keeps`, and says why in `unapplied`. With keeps,
-/// `base` is the line without them, which says how sure an overlap drop is.
+/// `base` is the line without them, which says how sure a drop they force is.
 fn place(
     notes: Vec<Note>,
     keeps: &mut BTreeMap<(u32, Pitch), &Decision>,
@@ -497,28 +647,29 @@ fn place(
         rescue.insert((row, pitch));
         true
     });
-    let mut kept = Vec::with_capacity(notes.len());
+    let mut passed = Vec::with_capacity(notes.len());
     for note in notes {
         if !passes(&note) && rescue.remove(&(note.row, note.pitch)) {
-            kept.push(note);
+            passed.push(note);
         } else if note.confidence < rules.ghost_below {
             let sure = Confidence::new(1.0 - note.confidence.get()).expect("in range");
             log.drop(&note, DropReason::Ghost, sure);
         } else if note.length < rules.min_rows {
             log.drop(&note, DropReason::TooShort, Confidence::CERTAIN);
         } else {
-            kept.push(note);
+            passed.push(note);
         }
     }
 
     // 2. One note per row: the first in canonical order is the skyline's pick, and the longest of its pitch. A kept
     // pitch on the row is picked instead, the strongest keep's if there are several; the other keeps there lose to it.
-    let mut heads: Vec<Note> = Vec::with_capacity(kept.len());
-    let mut kept = kept.into_iter().peekable();
-    while let Some(first) = kept.next() {
+    let skyline = Confidence::new(SKYLINE_CONFIDENCE).expect("in range");
+    let mut heads: Vec<Note> = Vec::with_capacity(passed.len());
+    let mut passed = passed.into_iter().peekable();
+    while let Some(first) = passed.next() {
         let row = first.row;
         let mut on_row = vec![first];
-        while let Some(n) = kept.next_if(|n| n.row == row) {
+        while let Some(n) = passed.next_if(|n| n.row == row) {
             on_row.push(n);
         }
         // `min_by` takes the first of equals: of a kept pitch's notes, the longest.
@@ -553,10 +704,15 @@ fn place(
             let (reason, sure) = if note.pitch == pitch {
                 (DropReason::Repeat, Confidence::CERTAIN)
             } else {
-                (
-                    DropReason::Skyline,
-                    Confidence::new(SKYLINE_CONFIDENCE).expect("in range"),
-                )
+                // With keeps in force, a drop the line without them doesn't make follows from a keep (which picked the
+                // row: the others' rows are as there).
+                let sure = match base {
+                    Some(base) if !base.skylines.contains(&(note.row, note.pitch)) => {
+                        Confidence::CERTAIN
+                    }
+                    _ => skyline,
+                };
+                (DropReason::Skyline, sure)
             };
             log.drop(&note, reason, sure);
         }
@@ -596,24 +752,25 @@ fn place(
                 placed.insert(note.row, note);
             }
             Some(winner) => {
+                // The strongest keep among the neighbours it is too close to.
+                let by = near(&placed, note.row, min)
+                    .filter_map(|n| kept_by(n, keeps))
+                    .min_by(|a, b| strength(a, b));
                 // A kept note too close to a stronger kept one, which is all that is placed before it.
                 if let Some(d) = kept_by(&note, keeps) {
-                    let by = near(&placed, note.row, min)
-                        .filter_map(|n| kept_by(n, keeps))
-                        .min_by(|a, b| strength(a, b))
-                        .expect("only kept notes are placed before a kept one");
+                    let by = by.expect("only kept notes are placed before a kept one");
                     unapplied.push((d.id.clone(), lost_to(d, by)));
                 }
                 let sure = match base {
-                    // With keeps in force, a drop the line without them makes too is as sure as it is there; any
-                    // other follows from a keep.
-                    Some(base) => base
+                    // Next to a kept note, the drop follows from the keep, unless the line without the keeps makes
+                    // it too.
+                    Some(base) if by.is_some() => base
                         .overlaps
                         .get(&(note.row, note.pitch))
                         .copied()
                         .unwrap_or(Confidence::CERTAIN),
                     // As sure as the neighbour was surer: a tie is a coin toss, settled by order.
-                    None => Confidence::new((winner - note.confidence.get()).clamp(0.0, 1.0))
+                    _ => Confidence::new((winner - note.confidence.get()).clamp(0.0, 1.0))
                         .expect("clamped"),
                 };
                 log.drop(&note, DropReason::Overlap, sure);
