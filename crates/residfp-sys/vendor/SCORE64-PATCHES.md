@@ -16,5 +16,17 @@ are in `../generated/` (written for Score64, not upstream files).
    on every platform and bit-identical to upstream on macOS (checked: all 1,024 values). Also adds `#include <cmath>`.
    ADR-011 §5.
 
-Nothing else is changed. To update, replace `libresidfp/` with a newer release, re-apply the patch above, regenerate
+2. **The filter's dither counter** (#207). `src/FilterModelConfig.h` (`Randomnoise`, `getNormalizedValue`, `getNormalizedVoice`), `src/Filter.h`, `src/Filter.cpp`, `src/FilterModelConfig6581.cpp` (`getDAC`), `src/Integrator6581.h`, `src/Integrator8580.h`.
+   - **Upstream** drew every float-to-int value's dither from one counter, `Randomnoise::index`, shared by every caller in the process.
+   - **The tables** (summer, mixer, volume, resonance) are built on four to six threads at once, so which dither each entry got depended on how the threads interleaved, and the counter was a data race. The same input gave different samples in each process.
+   - **At run time** every SID drew from the same counter, so a SID's output also depended on what other SIDs in the process had drawn before it.
+   - **The patch** keeps the same 1,024-value sequence but gives each caller its own counter:
+     - each table, starting from the sequence's start;
+     - each SID's filter, from the start at construction and at every `reset()`;
+     - the few values set up once, by a fixed position.
+   - **The shared counter is gone.** The threaded build is kept.
+   - **Result:** identical writes give byte-identical samples, across processes and between SIDs in one process. `src/lib.rs`'s `identical_writes_give_identical_samples` and `score64-adapters`' `helper_determinism` check this.
+   - **Relative to upstream:** the dither is the same kind of noise from the same sequence, only assigned in a fixed order. Upstream's order was itself different on every run.
+
+Nothing else is changed. To update, replace `libresidfp/` with a newer release, re-apply the patches above, regenerate
 `../generated/` from its `.in` templates, and re-run the acceptance check (`crates/score64-emu` README / #116).

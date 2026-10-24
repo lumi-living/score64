@@ -298,6 +298,40 @@ mod tests {
         assert!(peak > 1000, "peak {peak}");
     }
 
+    /// Two SIDs fed the same writes give the same samples, filter included: no state is shared between instances
+    /// (#207, `vendor/SCORE64-PATCHES.md` patch 2).
+    #[test]
+    fn identical_writes_give_identical_samples() {
+        for model in [ChipModel::Mos6581, ChipModel::Csg8580] {
+            let render = || {
+                let mut sid =
+                    ResidFp::new(model, 985_248.0, 48_000.0, SamplingMethod::Resample).unwrap();
+                // Voice 1 through the low-pass filter, resonance 15, cutoff $400: a pulse note, then its release.
+                for (reg, v) in [
+                    (0x18, 0x1F),
+                    (0x17, 0xF1),
+                    (0x15, 0x00),
+                    (0x16, 0x40),
+                    (0x01, 0x11),
+                    (0x03, 0x08),
+                    (0x05, 0x09),
+                    (0x06, 0xA0),
+                    (0x04, 0x41),
+                ] {
+                    sid.write(reg, v);
+                }
+                let mut out = Vec::new();
+                sid.clock(985_248 / 4, &mut out);
+                sid.write(0x04, 0x40);
+                sid.clock(985_248 / 4, &mut out);
+                out
+            };
+            let first = render();
+            assert!(first.iter().any(|&s| s != first[0]), "{model:?} is silent");
+            assert!(render() == first, "{model:?}: a second SID differs");
+        }
+    }
+
     #[test]
     fn rejects_nothing_valid() {
         let mut sid = ResidFp::new(

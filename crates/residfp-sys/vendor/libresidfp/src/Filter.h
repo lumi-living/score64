@@ -47,6 +47,9 @@ private:
 
     const FilterModelConfig& m_fmc;
 
+    /// Score64 patch 2: this filter's own dither counter, from 0 at construction and at every reset.
+    mutable int noise = 0;
+
     const Integrator& m_hpIntegrator;
 
     const Integrator& m_bpIntegrator;
@@ -133,7 +136,7 @@ protected:
 
     inline int32_t getNormalizedVoice(float v, uint8_t env) const
     {
-        return m_fmc.getNormalizedVoice(v, env);
+        return m_fmc.getNormalizedVoice(v, env, noise);
     }
 
     virtual int32_t getNormalizedMixerVoice(float v, uint8_t env) const = 0;

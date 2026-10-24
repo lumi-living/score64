@@ -142,6 +142,7 @@ void Filter::enable(bool enable)
 
 void Filter::reset()
 {
+    noise = 0; // Score64 patch 2
     writeFC_LO(0);
     writeFC_HI(0);
     writeMODE_VOL(0);
