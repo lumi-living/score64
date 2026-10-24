@@ -373,16 +373,16 @@ How a file is written (comments, key order, hex or decimal, quoting) doesn't cha
 - **Files.** One per recorded run in `tracks/<id>/history/` (`Project::history`), named `<UTC time>-<12 hex digits of the version>.toml`. Further runs in the same second, whatever their versions, add `-2`, `-3`, …, and entries order by time and then that number.
 - **Contents.** Each holds `version`, `parent` (the version that was latest when it was recorded), `time` (a TOML datetime in UTC, whole seconds), `restore` on a restore, and `[provenance]` tagged by `by`: `rules`, `llm` with `model`, or `manual` with the person's git `name`. It may also hold `[[uses]]` (stage and key, sorted, no repeats): the cache entries its version was made from and into, so the link from a version to its artifacts is in the files, for the index (#28) and GC (#29).
 - **Recording.** `History::record` first reads the folder again, so runs another writer recorded meanwhile count. It writes nothing when the version is the latest recorded one, a restore of it included.
-  - **Otherwise** it creates the entry, never replacing a file, with the latest version as parent. Its time is the run's, or the latest entry's if that is later, so a clock behind another machine's never puts a run before the latest. Its number is one past any in that second.
+  - **Otherwise** it creates the entry, never replacing a file, with the latest version as parent. Its time is the run's, or the latest entry's if that is later, so a clock a little behind another machine's never puts a run before the latest. If the latest entry is more than a day ahead (`MAX_AHEAD`), recording refuses and names it. Its number is one past any in that second.
   - **If another writer takes the name first,** it reads the folder again and decides afresh.
   - **It refuses** a restore of a version never recorded, a provenance that names no one, a `uses` stage the cache can't hold, and a second already holding 9,999 runs.
-- **Branches and merges.** Two machines, or two git branches, can each add runs after the same version, and git merges the files without conflict. So a history is a graph rather than one chain: an entry's parent may be any version the folder records. Entries order by time, then number, then name, and the latest is the last of them.
+- **Branches and merges.** Two machines, or two git branches, can each add runs after the same version, and git merges the new files without conflict (only the same version recorded in the same second on both clashes). So a history is a graph rather than one chain: an entry's parent may be any version the folder records, and since versions repeat with restores, following parents can come back to one. Entries order by time, then number, then name, and the latest is the last of them.
 - **Reading.** `History::read` checks every `.toml` file:
   - its name matches its content;
   - its parent, if any, is a version some entry records, and not its own;
   - a restore's version is one another entry records.
 
-  Going back to an earlier version without `restore` is allowed. Unknown keys and newer schemas are errors with file, line and column. Files whose names start with `.` (`.DS_Store`) or don't end in `.toml` (`Thumbs.db`, `.part` files, `x.toml~`) are skipped. A `.toml` file not named as an entry, or a folder named like one, is an error.
+  Going back to an earlier version without `restore` is allowed. Unknown keys and newer schemas are errors with file, line and column. Files whose names start with `.` (`.DS_Store`, `._*`) or don't end in `.toml` (`Thumbs.db`, `.part` files, `x.toml~`) are skipped. A `.toml` file not named as an entry, or a folder or symbolic link named like one, is an error.
 
 ## 5. Repository layout and dependencies
 

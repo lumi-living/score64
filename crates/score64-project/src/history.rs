@@ -5,7 +5,7 @@
 //! ```toml
 //! schema = 1
 //! version = "…"                 # the full version id (ADR-014 §6)
-//! parent = "…"                  # the version recorded before it; absent for the first
+//! parent = "…"                  # the version that was latest when it was recorded; absent for the first
 //! time = 2026-10-24T09:15:02Z   # UTC, whole seconds
 //! restore = true                # only on a restore
 //!
@@ -37,6 +37,14 @@ pub const SCHEMA: u32 = crate::textfile::SCHEMA;
 
 /// 9999-12-31T23:59:59Z, the last time a name can hold.
 const LAST_SECOND: i64 = 253_402_300_799;
+
+/// Characters of the time at the start of a file's name, `2026-10-24T091502Z`.
+const TIME_CHARS: usize = 18;
+
+/// How far ahead of a run's clock the latest entry may be before recording refuses, in seconds: one day. Within it,
+/// the run is recorded at the latest entry's time, so the order holds; beyond it, the latest entry's clock was surely
+/// wrong, and pinning every later run to its time would hide when they happened.
+pub const MAX_AHEAD: i64 = 86_400;
 
 /// Hex digits of the version in a file's name.
 const NAME_DIGITS: usize = 12;
@@ -196,7 +204,9 @@ impl TryFrom<Datetime> for UtcTime {
                 minute,
                 second,
             )
-            .ok_or_else(|| format!("{dt} is not a real time from 1970 on; expected {wanted}")),
+            .ok_or_else(|| {
+                format!("{dt} is not a real date and time from 1970 to 9999; expected {wanted}")
+            }),
             _ => Err(format!("{dt} is not {wanted}")),
         }
     }
@@ -239,10 +249,11 @@ pub struct Entry {
     schema: Schema,
     /// The run's version id.
     pub version: VersionId,
-    /// The version recorded before it on this track; `None` for the first.
+    /// The version that was latest when it was recorded (on this machine or branch); `None` for the first. Versions
+    /// repeat with restores, so following parents can come back to a version: it is a history, not a tree.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<VersionId>,
-    /// When it ran.
+    /// When it ran, or the latest entry's time if that was later (by under [`MAX_AHEAD`]), so entries keep their order.
     pub time: UtcTime,
     /// Whether it restored an earlier version.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -304,6 +315,15 @@ pub enum Error {
     BadStage(String),
     /// Every number for runs in this second (up to [`MAX_IN_SECOND`]) is taken.
     Crowded(String),
+    /// The latest entry is dated more than [`MAX_AHEAD`] after the run: a clock was wrong when it was recorded.
+    Ahead {
+        /// The latest entry's file.
+        path: PathBuf,
+        /// Its time.
+        time: UtcTime,
+        /// The run's.
+        run: UtcTime,
+    },
 }
 
 /// The most runs one second can hold: names number them `-2` to `-9999`.
@@ -325,6 +345,12 @@ impl fmt::Display for Error {
                 write!(f, "`uses` names a stage `{stage}` the cache can't hold")
             }
             Error::Crowded(second) => write!(f, "{second} already holds {MAX_IN_SECOND} runs"),
+            Error::Ahead { path, time, run } => write!(
+                f,
+                "{}: the latest run is dated {time}, more than a day after this run ({run}); a clock was wrong when it \
+                 was recorded. Fix that entry's time and name, or this machine's clock",
+                path.display()
+            ),
         }
     }
 }
@@ -372,16 +398,24 @@ impl History {
                 path: dir.to_path_buf(),
                 error,
             })?;
-            let name = item.file_name();
-            let Some(name) = name.to_str() else {
+            let raw = item.file_name();
+            let bytes = raw.as_encoded_bytes();
+            if bytes.starts_with(b".") || !bytes.ends_with(b".toml") {
+                continue;
+            }
+            let Some(name) = raw.to_str() else {
                 return Err(Error::Invalid {
                     path: item.path(),
                     at: None,
                     message: "not a history entry: the name isn't valid UTF-8".into(),
                 });
             };
-            if name.starts_with('.') || !name.ends_with(".toml") {
-                continue;
+            if item.file_type().is_ok_and(|t| t.is_symlink()) {
+                return Err(Error::Invalid {
+                    path: item.path(),
+                    at: None,
+                    message: "a symbolic link, where a history entry belongs".into(),
+                });
             }
             names.push(name.to_owned());
         }
@@ -508,17 +542,19 @@ impl History {
     /// A run whose version is the latest recorded one writes nothing (a restore of it included) and returns `None`.
     /// Otherwise its entry is created in the folder (made if needed), never replacing a file, and its path returned:
     /// - the entry's parent is the latest version;
-    /// - its time is the run's, or the latest entry's if that is later, so a clock behind another machine's never
-    ///   puts a new run before the latest;
+    /// - its time is the run's, or the latest entry's if that is later (by at most [`MAX_AHEAD`]), so a clock a little
+    ///   behind another machine's never puts a new run before the latest;
     /// - its number in its second is one past any already there.
     ///
-    /// If another writer takes the name first, the folder is read again and the run decided afresh.
+    /// If another writer takes the name first, the folder is read again and the run decided afresh. Under a race the
+    /// history this returns can lag behind the folder; read it again for the current state.
     ///
     /// Refused:
     /// - a restore of a version never recorded;
     /// - a provenance with an empty model or name;
     /// - a `uses` stage the cache can't hold;
-    /// - a second already holding [`MAX_IN_SECOND`] runs.
+    /// - a second already holding [`MAX_IN_SECOND`] runs;
+    /// - a latest entry dated more than [`MAX_AHEAD`] after the run ([`Error::Ahead`]).
     pub fn record(&mut self, run: Run) -> Result<Option<PathBuf>, Error> {
         run.provenance.check().map_err(Error::NoOne)?;
         if let Some(bad) = run
@@ -539,6 +575,15 @@ impl History {
             }
             if run.restore && !self.entries.iter().any(|(_, e)| e.version == run.version) {
                 return Err(Error::NotRecorded(run.version));
+            }
+            if let Some((name, l)) = self.entries.last()
+                && l.time.unix() - run.time.unix() > MAX_AHEAD
+            {
+                return Err(Error::Ahead {
+                    path: self.dir.join(name),
+                    time: l.time,
+                    run: run.time,
+                });
             }
             let entry = Entry {
                 schema: Schema,
@@ -619,7 +664,7 @@ fn key_line(text: &str, key: &str) -> Option<(usize, usize)> {
 /// nothing or `-2` to `-9999` (digits only, no leading zero), then `.toml`.
 fn parse_name(name: &str) -> Option<(String, String)> {
     let stem = name.strip_suffix(".toml")?;
-    let (time, rest) = stem.split_at_checked(18)?;
+    let (time, rest) = stem.split_at_checked(TIME_CHARS)?;
     let rest = rest.strip_prefix('-')?;
     let (prefix, suffix) = rest.split_at_checked(NAME_DIGITS)?;
     let time_ok = time.char_indices().all(|(i, c)| match i {
@@ -649,10 +694,10 @@ fn number(suffix: &str) -> Option<u32> {
 fn sort_key(name: &str) -> (String, u32) {
     let stem = name.strip_suffix(".toml").unwrap_or(name);
     let n = stem
-        .get(18 + 1 + NAME_DIGITS..)
+        .get(TIME_CHARS + 1 + NAME_DIGITS..)
         .and_then(number)
         .unwrap_or(1);
-    (stem.get(..18).unwrap_or(stem).to_string(), n)
+    (stem.get(..TIME_CHARS).unwrap_or(stem).to_string(), n)
 }
 
 #[cfg(test)]
