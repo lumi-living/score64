@@ -10,6 +10,7 @@
 
 mod commands;
 mod helper;
+pub mod pack;
 mod validate;
 
 use schemars::{JsonSchema, Schema};
@@ -110,6 +111,10 @@ pub enum ErrorKind {
     HelperTimeout,
     /// The emulator helper refused a request (bad sequence, CPU jam, limit, …). It keeps running.
     HelperRefused,
+    /// The packer (gt2reloc) was not found.
+    PackerMissing,
+    /// The packer failed, ran too long, isn't the pinned version, or wrote something other than it was asked for.
+    PackerFailed,
     /// A bug in Score64.
     Internal,
 }

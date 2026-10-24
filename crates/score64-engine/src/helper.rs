@@ -96,6 +96,11 @@ impl HelperSlot {
         self.binary.clone()
     }
 
+    /// How long one job may take by default.
+    pub fn timeout(&self) -> Duration {
+        self.timeout
+    }
+
     /// How many helpers this slot has started.
     pub fn starts(&self) -> u32 {
         self.starts
