@@ -320,6 +320,92 @@ fn an_entry_from_a_newer_score64_is_left_alone() {
 }
 
 #[test]
+fn a_put_over_a_newer_entry_writes_no_copy() {
+    let (c, dir) = cache("newer-nocopy");
+    let made = || TEMP_DIRS_MADE.with(std::cell::Cell::get);
+    let before = made();
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    assert_eq!(made(), before + 1, "a put writes one temporary copy");
+    let path = entry.dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("\"schema\": 2", "\"schema\": 3")).unwrap();
+    let before = made();
+    assert!(matches!(
+        c.put("transcribe", &[("a.bin", b"x")], run()),
+        Err(Error::Newer(_))
+    ));
+    assert_eq!(made(), before, "found before writing anything");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Run `f` with `hook` called right after each of this thread's `put`s renames its copy into place.
+fn after_rename<T>(hook: impl FnMut(&Path) + 'static, f: impl FnOnce() -> T) -> T {
+    AFTER_RENAME.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    let out = f();
+    AFTER_RENAME.with(|h| *h.borrow_mut() = None);
+    out
+}
+
+#[test]
+fn a_put_disturbed_right_after_its_rename_writes_again() {
+    let (c, dir) = cache("disturbed-once");
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = calls.clone();
+    let entry = after_rename(
+        move |entry| {
+            seen.set(seen.get() + 1);
+            if seen.get() == 1 {
+                // A collector takes a file from the copy as it goes into place.
+                std::fs::remove_file(entry.join("a.bin")).unwrap();
+            }
+        },
+        || c.put("transcribe", &[("a.bin", b"x")], run()),
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 2, "written again once");
+    assert_eq!(c.get("transcribe", key()), Some(entry));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_put_disturbed_every_time_fails_rather_than_return_a_broken_entry() {
+    let (c, dir) = cache("disturbed-always");
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = calls.clone();
+    let got = after_rename(
+        move |entry| {
+            seen.set(seen.get() + 1);
+            std::fs::write(entry.join("a.bin"), b"longer").unwrap();
+        },
+        || c.put("transcribe", &[("a.bin", b"x")], run()),
+    );
+    let e = got.unwrap_err();
+    assert!(
+        e.to_string().contains("changed just after it was written"),
+        "{e}"
+    );
+    assert_eq!(calls.get(), PUT_TRIES);
+    assert_eq!(c.get("transcribe", key()), None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn temporary_directories_are_named_with_when_they_were_made() {
+    let (c, dir) = cache("tmpname");
+    let stage = dir.join("cache").join("transcribe");
+    std::fs::create_dir_all(&stage).unwrap();
+    let tmp = temp_dir(&stage).unwrap();
+    let name = tmp.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with(".tmp-t"), "{name}");
+    let made = made_at(name).unwrap();
+    let age = std::time::SystemTime::now().duration_since(made).unwrap();
+    assert!(age < std::time::Duration::from_secs(5), "{name}");
+    assert_ne!(temp_dir(&stage).unwrap(), tmp);
+    drop(c);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_taken_temporary_name_is_skipped() {
     let (_, dir) = cache("taken");
     std::fs::create_dir_all(dir.join("taken")).unwrap();
