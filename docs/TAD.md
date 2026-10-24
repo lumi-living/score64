@@ -371,10 +371,18 @@ How a file is written (comments, key order, hex or decimal, quoting) doesn't cha
 
 **Run history** (`score64_project::History`, ADR-014 §7, #27). A content-addressed id makes restoring an old intent give its old id back. So the history of runs is a separate record: which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`.
 - **Files.** One per recorded run in `tracks/<id>/history/` (`Project::history`), named `<UTC time>-<12 hex digits of the version>.toml`. Further runs in the same second, whatever their versions, add `-2`, `-3`, …, and entries order by time and then that number.
-- **Contents.** Each holds `version`, `parent` (the version recorded before it), `time` (a TOML datetime in UTC, whole seconds), `restore` on a restore, and `[provenance]` tagged by `by`: `rules`, `llm` with `model`, or `manual` with the person's git `name`.
-- **Uses.** An entry may list `[[uses]]` (stage and key, sorted, no repeats): the cache entries its version was made from and into. That makes the link from a version to its artifacts part of the files, so the index can be rebuilt with it and GC (#29) can keep what a recorded version refers to.
-- **Recording.** `History::record` writes nothing when the version is the latest recorded one, a restore of it included. Otherwise it creates the entry, never replacing a file. It refuses a time before the latest run's, a restore of a version never recorded, and a provenance that names no one.
-- **Reading.** `History::read` checks every file. Each name must match its content, each parent must be the version before it, times must not go back, a restore must name a recorded version, a repeat must be a restore, and no two entries may share a time and number. Unknown keys and newer schemas are errors with file, line and column. Writers' `.part` files are skipped; any other file is an error.
+- **Contents.** Each holds `version`, `parent` (the version that was latest when it was recorded), `time` (a TOML datetime in UTC, whole seconds), `restore` on a restore, and `[provenance]` tagged by `by`: `rules`, `llm` with `model`, or `manual` with the person's git `name`. It may also hold `[[uses]]` (stage and key, sorted, no repeats): the cache entries its version was made from and into, so the link from a version to its artifacts is in the files, for the index (#28) and GC (#29).
+- **Recording.** `History::record` first reads the folder again, so runs another writer recorded meanwhile count. It writes nothing when the version is the latest recorded one, a restore of it included.
+  - **Otherwise** it creates the entry, never replacing a file, with the latest version as parent. Its time is the run's, or the latest entry's if that is later, so a clock behind another machine's never puts a run before the latest. Its number is one past any in that second.
+  - **If another writer takes the name first,** it reads the folder again and decides afresh.
+  - **It refuses** a restore of a version never recorded, a provenance that names no one, a `uses` stage the cache can't hold, and a second already holding 9,999 runs.
+- **Branches and merges.** Two machines, or two git branches, can each add runs after the same version, and git merges the files without conflict. So a history is a graph rather than one chain: an entry's parent may be any version the folder records. Entries order by time, then number, then name, and the latest is the last of them.
+- **Reading.** `History::read` checks every `.toml` file:
+  - its name matches its content;
+  - its parent, if any, is a version some entry records, and not its own;
+  - a restore's version is one another entry records.
+
+  Going back to an earlier version without `restore` is allowed. Unknown keys and newer schemas are errors with file, line and column. Files whose names start with `.` (`.DS_Store`) or don't end in `.toml` (`Thumbs.db`, `.part` files, `x.toml~`) are skipped. A `.toml` file not named as an entry, or a folder named like one, is an error.
 
 ## 5. Repository layout and dependencies
 

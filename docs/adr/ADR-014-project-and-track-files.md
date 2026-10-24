@@ -155,6 +155,12 @@ A change to `score64.toml` therefore makes a new version of every track that use
   ```
 
 - **When.** A run is recorded only when its version differs from the track's latest recorded version, or when it restores an earlier intent. A restore is recorded even though its version was seen before, with `restore = true` and the current version as its parent. A re-run that gives the same version writes nothing, so the history only grows when the output can change.
+- **Branches and races** (clarified with #27's review). Two machines or two git branches can each add runs after the same version, and git merges the files without conflict. So a history is a graph rather than one chain:
+  - an entry's parent may be any version recorded in the folder;
+  - entries order by time, then their number in that second (numbered across versions), then name;
+  - the latest is the last.
+
+  Recording reads the folder again first. A run's recorded time is never earlier than the latest entry's, so a clock behind another machine's never makes a new run look older.
 - **Provenance** says what started the change. A person who edited the track or its decisions is `manual`, with their git `user.name`. A model decider is `llm`, with the model id. A re-run that only picks up new tool or rule versions is `rules`.
 - **The index** (#28) is rebuilt from these files, and GC (#29) keeps whatever a recorded version refers to.
 
