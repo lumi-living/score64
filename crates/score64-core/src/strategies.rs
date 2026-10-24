@@ -305,6 +305,11 @@ pub fn proposal() -> impl Strategy<Value = Proposal> {
                 pitch,
                 source
             }),
+        (voice(), 0u32..1024, pitch()).prop_map(|(voice, row, pitch)| Proposal::KeepNote {
+            voice,
+            row,
+            pitch
+        }),
     ]
 }
 
@@ -410,6 +415,13 @@ pub fn project_profile(name: ProfileName) -> impl Strategy<Value = Profile> {
 /// Unreduced notes on the grid, as transcription hands them to the reduction: any order, overlapping, chords (equal
 /// rows), repeats, any attack, any playable pitch, within 256 rows.
 pub fn note_soup() -> impl Strategy<Value = Vec<Note>> {
+    note_soup_of(0..48)
+}
+
+/// [`note_soup`] with `size` notes, for a test that needs one at least.
+pub fn note_soup_of(
+    size: impl Into<proptest::collection::SizeRange>,
+) -> impl Strategy<Value = Vec<Note>> {
     let note = (0u32..256, 1u32..32, pitch(), any::<bool>(), confidence()).prop_map(
         |(row, length, pitch, tie, confidence)| Note {
             row,
@@ -422,7 +434,7 @@ pub fn note_soup() -> impl Strategy<Value = Vec<Note>> {
             decision: None,
         },
     );
-    proptest::collection::vec(note, 0..48)
+    proptest::collection::vec(note, size)
 }
 
 /// Random instrument settings, to be fitted to a voice rule.
