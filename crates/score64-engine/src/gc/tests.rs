@@ -67,7 +67,7 @@ fn the_cap_is_honoured_and_the_index_follows() {
     // Under the default cap nothing goes, and the index is left as it is.
     let out = gc(&root, None, false).unwrap();
     assert_eq!((out.cap_bytes, out.removed.len()), (4 << 30, 0));
-    assert!(!out.index_rebuilt && !out.index_removed && out.complete);
+    assert!(!out.index_rebuilt && out.complete);
     // A dry run reports and changes nothing.
     let out = gc(&root, Some(150), true).unwrap();
     assert_eq!((out.removed.len(), out.index_rebuilt), (2, false));
@@ -83,7 +83,7 @@ fn the_cap_is_honoured_and_the_index_follows() {
             refs: 0
         }]
     );
-    assert!(out.index_rebuilt && !out.index_removed && out.complete);
+    assert!(out.index_rebuilt && out.complete);
     assert_eq!(out.warning, None);
     assert!(!GcCommand::fails(&out));
     // The rebuilt index lists only what is left.
@@ -100,32 +100,45 @@ fn without_an_index_none_is_made() {
     put(&root, "song", 1);
     let out = gc(&root, Some(0), false).unwrap();
     assert_eq!(out.removed.len(), 1);
-    assert!(!out.index_rebuilt && !out.index_removed);
+    assert!(!out.index_rebuilt);
     assert!(!Index::path(&open(&root)).exists());
     let _ = std::fs::remove_dir_all(&root);
 }
 
 #[test]
-fn a_failed_rebuild_removes_the_stale_index_and_still_reports() {
+fn a_failed_rebuild_still_reports_and_the_next_open_catches_up() {
     let root = project("badtrack");
     let gone = put(&root, "song", 1);
     Index::rebuild(&open(&root)).unwrap();
+    assert_eq!(indexed(&root), 1);
     // The roots don't need track files, but the index does: this one makes the rebuild fail.
-    std::fs::write(root.join("tracks/a/track.toml"), "schema = [").unwrap();
+    let track = root.join("tracks/a/track.toml");
+    let (text, when) = (
+        std::fs::read(&track).unwrap(),
+        std::fs::metadata(&track).unwrap().modified().unwrap(),
+    );
+    std::fs::write(&track, "schema = [").unwrap();
     let out = gc(&root, Some(0), false).unwrap();
     assert_eq!(out.removed.len(), 1);
     assert_eq!(out.removed[0].name, gone.manifest.key.to_string());
-    assert!(!out.index_rebuilt && out.index_removed);
+    assert!(!out.index_rebuilt);
     let warning = out.warning.clone().unwrap();
     assert!(warning.contains("index could not be rebuilt"), "{warning}");
-    assert!(
-        !Index::path(&open(&root)).exists(),
-        "no index is better than a wrong one"
-    );
     assert!(
         out.complete && !GcCommand::fails(&out),
         "the collection itself finished"
     );
+    assert!(Index::path(&open(&root)).exists(), "left for readers");
+    // Put the track file back exactly as it was, size and time: only the cache changed since the index was made,
+    // and the next open sees that and rebuilds.
+    std::fs::write(&track, &text).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&track)
+        .unwrap()
+        .set_modified(when)
+        .unwrap();
+    assert_eq!(indexed(&root), 0);
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -147,7 +160,7 @@ fn unreadable_roots_are_an_invalid_input_and_remove_nothing() {
 
 #[cfg(unix)]
 #[test]
-fn a_collection_stopped_part_way_reports_removes_the_index_and_fails() {
+fn a_collection_stopped_part_way_reports_rebuilds_the_index_and_fails() {
     use std::os::unix::fs::PermissionsExt;
     let root = project("stopped");
     put(&root, "a", 1);
@@ -170,9 +183,12 @@ fn a_collection_stopped_part_way_reports_removes_the_index_and_fails() {
     assert!(!out.complete && GcCommand::fails(&out), "{out:?}");
     assert_eq!(out.removed.len(), 1);
     assert_eq!(out.removed[0].stage, "a");
-    assert!(out.index_removed && !out.index_rebuilt);
+    assert!(
+        out.index_rebuilt,
+        "what is left is consistent, so the index follows it"
+    );
     assert!(out.warning.unwrap().contains("stopped part-way"));
-    assert!(!Index::path(&open(&root)).exists());
+    assert_eq!(indexed(&root), 1);
     // With nothing removed, a stop is a plain error, of the I/O kind.
     mode(0o555);
     let e = gc(&root, Some(0), false).unwrap_err();

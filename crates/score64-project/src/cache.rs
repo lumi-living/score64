@@ -238,7 +238,8 @@ impl Cache {
     /// ([`Cache::key`]), so an entry can't claim inputs or config it wasn't made from. Written whole and synced into a
     /// temporary directory, then renamed into place. If another writer got there first, its entry is kept and
     /// returned; an entry already there but not whole (damaged, or from an older layout) is replaced, and one from a
-    /// newer Score64 is left alone ([`Error::Newer`]).
+    /// newer Score64 is left alone ([`Error::Newer`]). After the rename the entry's manifest and sizes are checked
+    /// again; if a cache GC took the copy as it went into place, it is written again, up to three times.
     pub fn put(&self, stage: &str, artifacts: &[(&str, &[u8])], run: Run) -> Result<Entry, Error> {
         check_name(stage)?;
         let mut names: Vec<String> = Vec::with_capacity(artifacts.len());
@@ -252,8 +253,31 @@ impl Cache {
             names.push(folded);
         }
         let key = Self::key(stage, &run.stage_version, &run.config, &run.inputs);
+        // A collector can take the temporary copy, or what was just renamed into place, while this runs (#29): then
+        // write it again, a few times at most.
+        for _ in 0..3 {
+            if let Some(entry) = self.write(stage, key, artifacts, run.clone())? {
+                return Ok(entry);
+            }
+        }
+        Err(Error::Io {
+            path: self.entry_dir(stage, key),
+            error: std::io::Error::other(
+                "the entry was changed just after it was written, three times; is a cache GC running?",
+            ),
+        })
+    }
+
+    /// One try at [`Cache::put`]: `None` when the entry renamed into place was no longer as written right after.
+    fn write(
+        &self,
+        stage: &str,
+        key: ContentHash,
+        artifacts: &[(&str, &[u8])],
+        run: Run,
+    ) -> Result<Option<Entry>, Error> {
         if let Some(entry) = self.get(stage, key) {
-            return Ok(entry);
+            return Ok(Some(entry));
         }
         // One from a newer Score64 stays, so don't write a copy only to throw it away (#29).
         let dir = self.entry_dir(stage, key);
@@ -323,7 +347,7 @@ impl Cache {
                     if whole(&aside, stage, key).is_some() {
                         let _ = std::fs::rename(&aside, &dir);
                         let _ = std::fs::remove_dir_all(&tmp);
-                        return self.get(stage, key).ok_or(Error::Io {
+                        return self.get(stage, key).map(Some).ok_or(Error::Io {
                             path: dir,
                             error: std::io::Error::other(
                                 "another writer's entry moved while replacing",
@@ -340,12 +364,19 @@ impl Cache {
         match result {
             Ok(()) => {
                 sync(&stage_dir);
-                Ok(Entry { dir, manifest })
+                // Check it is still as written: a collector deleting the temporary copy in place as it was renamed
+                // would have taken files from the entry. Sizes are enough to see that; nothing is hashed again.
+                if sized(&dir, stage, key).as_ref() != Some(&manifest) {
+                    return Ok(None);
+                }
+                Ok(Some(Entry { dir, manifest }))
             }
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&tmp);
                 // Another writer's entry won the race: keep it, since a pure stage gives the same output.
-                self.get(stage, key).ok_or(Error::Io { path: dir, error })
+                self.get(stage, key)
+                    .map(Some)
+                    .ok_or(Error::Io { path: dir, error })
             }
         }
     }
@@ -419,9 +450,10 @@ pub(crate) fn newer_layout(dir: &Path) -> bool {
         .is_some_and(|v| v > u64::from(MANIFEST_SCHEMA))
 }
 
-/// The manifest of the entry in `dir`, if it is whole: it reads, is this layout, names `stage` and `key`, and every
-/// artifact's bytes still hash to what it says.
-pub(crate) fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
+/// The manifest of the entry in `dir`, if it looks whole without reading its artifacts: the manifest reads, is this
+/// layout, names `stage` and `key`, and every artifact is a file of the size it says. Nothing is hashed, so a file
+/// changed in place without changing its size passes; [`whole`] is the full check.
+pub(crate) fn sized(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
     let text = std::fs::read(dir.join(MANIFEST)).ok()?;
     let manifest: Manifest = serde_json::from_slice(&text).ok()?;
     if manifest.schema != MANIFEST_SCHEMA || manifest.stage != stage || manifest.key != key {
@@ -429,6 +461,19 @@ pub(crate) fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifes
     }
     for a in &manifest.artifacts {
         check_name(&a.name).ok()?;
+        let m = std::fs::metadata(dir.join(&a.name)).ok()?;
+        if !m.is_file() || m.len() != a.bytes {
+            return None;
+        }
+    }
+    Some(manifest)
+}
+
+/// The manifest of the entry in `dir`, if it is whole: it is [`sized`] (checked first, so a missing or resized file
+/// costs no reading), and every artifact's bytes still hash to what it says.
+pub(crate) fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
+    let manifest = sized(dir, stage, key)?;
+    for a in &manifest.artifacts {
         let bytes = std::fs::read(dir.join(&a.name)).ok()?;
         if bytes.len() as u64 != a.bytes || ContentHash(*blake3::hash(&bytes).as_bytes()) != a.hash
         {

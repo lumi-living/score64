@@ -2,27 +2,34 @@
 //! the cache is over its size cap, along with what isn't a usable entry at all.
 //!
 //! - **Roots** are the cache entries something in the project's files refers to ([`Roots`]): every recorded run's
-//!   `[[uses]]`, in every `tracks/*/history/` folder ([`RecordedVersions`]). Approvals and `audio.lock` (E10) add
-//!   theirs the same way. A root is never removed, even when the roots alone are over the cap; the report says by how
+//!   `[[uses]]`, in every `tracks/*/history/` folder ([`RecordedVersions`]). Approvals and `audio.lock` (E10) can
+//!   add theirs the same way. A root is never removed, even when the roots alone are over the cap; the report says by how
 //!   much.
 //! - **The cap** counts the bytes of whole entries' artifacts (what their manifests list), not manifests, leftovers or
 //!   the file system's overhead. Whole entries no root names are removed oldest-first by `created` while the total is
 //!   over the cap. With a cap of 0 every unrooted entry goes, empty ones included.
 //! - **Broken entries:** a directory under a stage that isn't a whole entry of this layout (damaged, half-written, an
-//!   older layout) can never be a hit, so it is removed once it is older than [`Gc::tmp_age`]. It is checked again
-//!   just before: if a writer has put a whole entry there since it was listed, it stays. One from a newer Score64 is
-//!   left alone.
+//!   older layout) can never be a hit, so it is removed once it is older than [`Gc::tmp_age`], whatever the cap. It
+//!   is checked again just before: if a writer has put a whole entry there since it was listed, it stays. One from a
+//!   newer Score64 is left alone.
 //! - **Leftovers:** `.tmp-*` directories older than [`Gc::tmp_age`] are a crashed or racing writer's (or a crashed
-//!   collector's), and are removed. Their age is the time in their name ([`crate::cache`] writes one), else their
-//!   modification time. Younger ones may be a write, or another collection, in progress.
+//!   collector's), and are removed whatever the cap. Their age is the time in their name ([`crate::cache`] writes
+//!   one), else, for a name without one or with a time still to come (a clock ahead of this one), their modification
+//!   time. Younger ones may be a write, or another collection, in progress.
 //! - **Links** are never followed: a stage or entry that is a symbolic link is left alone and not counted, and the
 //!   size of a directory doesn't count what links in it point to.
 //!
-//! **Removal.** An entry under its key is first renamed aside to a fresh, uniquely named `.tmp-gc-*` directory, then
-//! deleted, so it is either whole under its key or gone, never half there. If it can't be moved (a file open in it, on
-//! Windows), it is left as it is and reported in [`Report::in_use`]. Leftovers and broken directories that aren't
-//! named like a key are deleted where they are. An entry that vanished between listing and removal (another
-//! collector) is not reported.
+//! **Removal.** Everything removed, entries, broken directories and leftovers alike, is first renamed aside to a
+//! fresh, uniquely named `.tmp-gc-t<seconds>-...` directory, then deleted there. Nothing is deleted in place: a writer
+//! renaming its temporary copy onto its key and the collector renaming that copy aside can't both succeed, so the
+//! collector never deletes files out of an entry that has just been put, and an entry is either whole under its key or
+//! gone, never half there. What can't be moved (a file open in it, on Windows) is left as it is and reported in
+//! [`Report::in_use`]. What vanished between listing and removal (a writer's rename, another collector) is not
+//! reported. A copy moved aside but not deleted is reported as removed, and the error stops the collection.
+//!
+//! **Cost.** Listing reads and hashes every artifact once, as [`Cache::get`] does. The checks right before a removal
+//! compare manifests and file sizes only; a broken entry whose sizes all match is hashed again, to tell it from one a
+//! writer has just put. The engine's index rebuild afterwards hashes the kept entries once more.
 //!
 //! **Limits.**
 //! - *Concurrency.* A collection may run while other processes `put` entries: an entry put while it runs is not
@@ -42,7 +49,9 @@ use serde::Serialize;
 
 use score64_core::ContentHash;
 
-use crate::cache::{Cache, check_name, made_at, newer_layout, temp_dir_named, temp_name, whole};
+use crate::cache::{
+    Cache, Manifest, check_name, made_at, newer_layout, sized, temp_dir_named, temp_name, whole,
+};
 use crate::history::{CacheRef, History};
 use crate::project::Project;
 
@@ -231,7 +240,7 @@ impl std::error::Error for Stopped {
 /// A whole entry, as listed.
 struct Listed {
     r: CacheRef,
-    created: crate::UtcTime,
+    manifest: Manifest,
     bytes: u64,
     dir: PathBuf,
 }
@@ -300,7 +309,7 @@ impl Gc {
         let cache = Cache::new(&cache_dir);
         let listed = list(&cache, &cache_dir);
         let result = listed.and_then(|(whole, other)| {
-            self.sweep_unrooted(&cache, &rooted, whole, &mut report)?;
+            self.sweep_unrooted(&rooted, whole, &mut report)?;
             self.sweep_others(&cache, other, now, &mut report)
         });
         match result {
@@ -312,7 +321,6 @@ impl Gc {
     /// Keep the roots, and remove unrooted entries oldest-first while the cache is over the cap.
     fn sweep_unrooted(
         &self,
-        cache: &Cache,
         rooted: &BTreeSet<CacheRef>,
         whole: Vec<Listed>,
         report: &mut Report,
@@ -335,15 +343,16 @@ impl Gc {
         report.missing_roots = rooted.difference(&present).count() as u64;
         report.roots_over_cap = rooted_bytes.saturating_sub(self.cap_bytes);
         // Oldest first, then by stage and key, so the same cache always loses the same entries.
-        unrooted.sort_by(|a, b| (a.created, &a.r).cmp(&(b.created, &b.r)));
+        unrooted.sort_by(|a, b| (a.manifest.created, &a.r).cmp(&(b.manifest.created, &b.r)));
         for entry in unrooted {
             if kept_bytes <= self.cap_bytes && self.cap_bytes != 0 {
                 report.unrooted_kept.0 += 1;
                 report.unrooted_kept.1 = report.unrooted_kept.1.saturating_add(entry.bytes);
                 continue;
             }
-            // Check again: damaged or gone since it was listed, it is no longer a whole entry to count or remove.
-            if cache.get(&entry.r.stage, entry.r.key).is_none() {
+            // Check again, by manifest and sizes (listing just hashed it): damaged, replaced or gone since it was
+            // listed, it is no longer the whole entry to count or remove.
+            if sized(&entry.dir, &entry.r.stage, entry.r.key).as_ref() != Some(&entry.manifest) {
                 kept_bytes = kept_bytes.saturating_sub(entry.bytes);
                 continue;
             }
@@ -354,7 +363,7 @@ impl Gc {
                 why: "unrooted",
             };
             let stage_dir = entry.dir.parent().expect("under a stage");
-            match self.remove_keyed(stage_dir, &entry.dir, None) {
+            match self.remove(stage_dir, &entry.dir, None) {
                 Gone::Removed => {
                     kept_bytes = kept_bytes.saturating_sub(entry.bytes);
                     report.removed.push(item);
@@ -382,8 +391,11 @@ impl Gc {
         for o in other {
             let leftover = o.name.starts_with(".tmp-");
             if leftover {
-                // The time in the name, which a rename aside doesn't change; else when it was last changed.
-                let made = made_at(&o.name).or_else(|| modified(&o.dir));
+                // The time in the name, which a rename aside doesn't change; else, with none or one still to come (a
+                // clock ahead of this one), when it was last changed.
+                let made = made_at(&o.name)
+                    .filter(|t| *t <= now)
+                    .or_else(|| modified(&o.dir));
                 if !older_than(made, now, self.tmp_age) {
                     continue;
                 }
@@ -401,17 +413,15 @@ impl Gc {
                 why: if leftover { "leftover" } else { "broken" },
             };
             let key = (!leftover).then(|| key_named(&o.name)).flatten();
-            let gone = match key {
-                Some(key) => {
-                    // A writer may have put a whole entry here since it was listed: whole means keep.
-                    if cache.get(&o.stage, key).is_some() {
-                        continue;
-                    }
-                    self.remove_keyed(&o.stage_dir, &o.dir, Some((&o.stage, key)))
-                }
-                None => self.remove_in_place(&o.dir),
-            };
-            match gone {
+            if let Some(key) = key
+                && sized(&o.dir, &o.stage, key).is_some()
+                && cache.get(&o.stage, key).is_some()
+            {
+                // A writer has put a whole entry here since it was listed: whole means keep. Only one that looks
+                // whole by its sizes is hashed again.
+                continue;
+            }
+            match self.remove(&o.stage_dir, &o.dir, key.map(|k| (o.stage.as_str(), k))) {
                 Gone::Removed => report.removed.push(item),
                 Gone::Vanished | Gone::Whole => {}
                 Gone::InUse => report.in_use.push(item),
@@ -425,25 +435,28 @@ impl Gc {
         Ok(())
     }
 
-    /// Remove `dir`, a directory under its key: renamed aside to a fresh `.tmp-gc-*` directory first, so it is never
-    /// half there under its key, then deleted. If it can't be moved it stays, whole, as it was. With `broken` (its stage
-    /// and key) a copy that turns out whole once moved was just put by a writer, and goes back. A dry run does nothing.
-    fn remove_keyed(
-        &self,
-        stage_dir: &Path,
-        dir: &Path,
-        broken: Option<(&str, ContentHash)>,
-    ) -> Gone {
-        self.remove_keyed_with(stage_dir, dir, broken, |from, to| std::fs::rename(from, to))
+    /// Remove `dir`, a directory under a stage: renamed aside to a fresh `.tmp-gc-*` directory first, then deleted
+    /// there, so it is never half there under its own name and never deleted while a writer renames it into place. If
+    /// it can't be moved it stays as it was. With `key` (its stage and key) a copy that turns out whole once moved was
+    /// just put by a writer, and goes back. A dry run does nothing.
+    fn remove(&self, stage_dir: &Path, dir: &Path, key: Option<(&str, ContentHash)>) -> Gone {
+        self.remove_with(
+            stage_dir,
+            dir,
+            key,
+            |from, to| std::fs::rename(from, to),
+            |d| std::fs::remove_dir_all(d),
+        )
     }
 
-    /// [`Gc::remove_keyed`], moving it aside with `rename`.
-    fn remove_keyed_with(
+    /// [`Gc::remove`], moving it aside with `rename` and deleting the copy with `delete`.
+    fn remove_with(
         &self,
         stage_dir: &Path,
         dir: &Path,
-        broken: Option<(&str, ContentHash)>,
+        key: Option<(&str, ContentHash)>,
         rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+        delete: impl Fn(&Path) -> std::io::Result<()>,
     ) -> Gone {
         if self.dry_run {
             return Gone::Removed;
@@ -468,7 +481,7 @@ impl Gc {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Gone::Vanished,
             Err(_) => return Gone::InUse,
         }
-        if let Some((stage, key)) = broken
+        if let Some((stage, key)) = key
             && whole(&aside, stage, key).is_some()
         {
             // If another entry has taken its place meanwhile, that one stays and this copy goes.
@@ -477,25 +490,10 @@ impl Gc {
             }
             return Gone::Whole;
         }
-        match std::fs::remove_dir_all(&aside) {
+        match delete(&aside) {
             Ok(()) => Gone::Removed,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Gone::Removed,
             Err(error) => Gone::Aside(Error::Io { path: aside, error }),
-        }
-    }
-
-    /// Delete `dir` where it is: a leftover or a broken directory not under a key. A dry run does nothing.
-    fn remove_in_place(&self, dir: &Path) -> Gone {
-        if self.dry_run {
-            return Gone::Removed;
-        }
-        match std::fs::remove_dir_all(dir) {
-            Ok(()) => Gone::Removed,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Gone::Vanished,
-            Err(error) => Gone::Failed(Error::Io {
-                path: dir.to_path_buf(),
-                error,
-            }),
         }
     }
 }
@@ -518,17 +516,17 @@ fn list(cache: &Cache, root: &Path) -> Result<(Vec<Listed>, Vec<Other>), Error> 
             if let Some(key) = key_named(&name)
                 && let Some(entry) = cache.get(&stage, key)
             {
-                let m = &entry.manifest;
                 whole.push(Listed {
                     r: CacheRef {
                         stage: stage.clone(),
                         key,
                     },
-                    created: m.created,
-                    bytes: m
+                    bytes: entry
+                        .manifest
                         .artifacts
                         .iter()
                         .fold(0u64, |sum, a| sum.saturating_add(a.bytes)),
+                    manifest: entry.manifest,
                     dir,
                 });
             } else {

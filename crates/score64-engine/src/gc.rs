@@ -11,9 +11,10 @@ use score64_project::{Index, Project};
 use crate::{Command, CommandError, Effect, Engine, ErrorKind};
 
 /// `gc`: remove cache entries no recorded version uses, oldest first, until the cache's artifacts fit `cap_bytes`.
-/// Also removes broken entries and `.tmp-*` leftovers older than ten minutes. Entries from a newer Score64, entries
-/// put while it runs, and links stay. An existing index is rebuilt afterwards, or removed (to be rebuilt on next open)
-/// if that or the collection fails part-way; the output then carries a `warning`.
+/// Also removes broken entries and `.tmp-*` leftovers older than ten minutes, whatever the cap. Entries from a newer
+/// Score64, entries put while it runs, and links stay. An existing index is rebuilt afterwards; if that fails, the
+/// output carries a `warning`, and the next `Index::open` rebuilds it since the cache it lists has changed. A
+/// collection an error stops part-way still reports what it removed, with a `warning`, and fails.
 ///
 /// Destructive: a removed entry's paid stages run again (and cost again) if it is ever needed. The effect is the
 /// command's, so a `dry_run`, which removes nothing, is still labelled destructive.
@@ -88,8 +89,6 @@ pub struct GcOutput {
     pub dry_run: bool,
     /// Whether the index was rebuilt afterwards (when one exists and something was removed).
     pub index_rebuilt: bool,
-    /// Whether the index was removed instead, because it couldn't be kept in step; the next open rebuilds it.
-    pub index_removed: bool,
     /// False when an error stopped the collection part-way; `warning` says which. A failure (exit 1).
     pub complete: bool,
     /// What went wrong after something was removed: the collection stopping part-way, or the index.
@@ -143,33 +142,17 @@ impl Command for GcCommand {
         if let Some(e) = &stopped {
             warnings.push(format!("stopped part-way: {e}"));
         }
-        // The index lists cache entries: keep it in step when something went, or remove it so the next open
-        // rebuilds it (it only ever holds what the files say, ADR-004).
-        let index = Index::path(&project);
+        // The index lists cache entries: keep it in step when something went. If that fails it is left as it is; its
+        // fingerprint of the cache's folders no longer matches, so the next `Index::open` rebuilds it (#28). Deleting
+        // it instead would leave a reader on Unix holding the deleted file.
         let changed = !report.dry_run && !report.removed.is_empty();
-        let (mut index_rebuilt, mut index_removed) = (false, false);
-        if changed && index.exists() {
-            if stopped.is_none() {
-                match Index::rebuild(&project) {
-                    Ok(_) => index_rebuilt = true,
-                    Err(e) => warnings.push(format!("the index could not be rebuilt: {e}")),
-                }
-            }
-            if !index_rebuilt {
-                match std::fs::remove_file(&index) {
-                    Ok(()) => index_removed = true,
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => index_removed = true,
-                    Err(e) => warnings.push(format!(
-                        "{}: the out-of-date index could not be removed: {e}; rebuild it with `score64 index --rebuild`",
-                        index.display()
-                    )),
-                }
-                if index_removed {
-                    warnings.push(format!(
-                        "{} was removed; the next open rebuilds it",
-                        index.display()
-                    ));
-                }
+        let mut index_rebuilt = false;
+        if changed && Index::path(&project).exists() {
+            match Index::rebuild(&project) {
+                Ok(_) => index_rebuilt = true,
+                Err(e) => warnings.push(format!(
+                    "the index could not be rebuilt ({e}); it is out of date until the next open rebuilds it"
+                )),
             }
         }
         Ok(GcOutput {
@@ -193,7 +176,6 @@ impl Command for GcCommand {
             newer: report.newer,
             dry_run: report.dry_run,
             index_rebuilt,
-            index_removed,
             complete: stopped.is_none(),
             warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
         })

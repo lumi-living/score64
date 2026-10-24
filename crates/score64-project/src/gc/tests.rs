@@ -375,9 +375,16 @@ fn ages_come_from_the_name_else_the_modification_time() {
             ("not-an-entry".into(), "broken")
         ]
     );
-    // A time before the directory was made counts as young.
-    std::fs::create_dir_all(stage.join(format!(".tmp-t{t}-2-0-0"))).unwrap();
-    assert_eq!(run(0, at - Duration::from_secs(1)).removed, []);
+    // A name's time still to come (a clock ahead of this one) doesn't keep it young for ever: its modification time
+    // counts instead.
+    let ahead = format!(".tmp-t{}-2-0-0", t + 365 * 24 * 3600);
+    std::fs::create_dir_all(stage.join(&ahead)).unwrap();
+    let made = modified(&ahead);
+    assert_eq!(run(100, made + Duration::from_secs(100)).removed, []);
+    assert_eq!(
+        whys(&run(100, made + Duration::from_secs(101))),
+        [(ahead, "leftover")]
+    );
     let _ = std::fs::remove_dir_all(p.root());
 }
 
@@ -472,11 +479,11 @@ fn a_vanished_entry_is_not_removed_again() {
     let stage = stage_dir(&p);
     std::fs::create_dir_all(&stage).unwrap();
     let gone = stage.join("ab".repeat(32));
+    assert!(matches!(gc(0).remove(&stage, &gone, None), Gone::Vanished));
     assert!(matches!(
-        gc(0).remove_keyed(&stage, &gone, None),
+        gc(0).remove(&stage, &gone, Some(("song", ContentHash([0xab; 32])))),
         Gone::Vanished
     ));
-    assert!(matches!(gc(0).remove_in_place(&gone), Gone::Vanished));
     assert_eq!(
         temps(&stage),
         Vec::<String>::new(),
@@ -491,17 +498,34 @@ fn an_entry_that_cant_be_moved_aside_stays_whole_and_is_in_use() {
     let e = put(&p, 1, 10);
     let stage = stage_dir(&p);
     let refuse = |_: &Path, _: &Path| Err(std::io::Error::other("a file is open in it"));
+    let delete = |d: &Path| std::fs::remove_dir_all(d);
     assert!(matches!(
-        gc(0).remove_keyed_with(&stage, &e.dir, None, refuse),
+        gc(0).remove_with(&stage, &e.dir, None, refuse, delete),
         Gone::InUse
     ));
     assert_eq!(keys(&p), [as_ref(&e)]);
     assert_eq!(temps(&stage), Vec::<String>::new());
     let not_found = |_: &Path, _: &Path| Err(std::io::ErrorKind::NotFound.into());
     assert!(matches!(
-        gc(0).remove_keyed_with(&stage, &e.dir, None, not_found),
+        gc(0).remove_with(&stage, &e.dir, None, not_found, delete),
         Gone::Vanished
     ));
+    // A leftover that can't be moved stays too: nothing is deleted in place.
+    let left = stage.join(".tmp-t1-1-0-0");
+    std::fs::create_dir_all(&left).unwrap();
+    assert!(matches!(
+        gc(0).remove_with(&stage, &left, None, refuse, delete),
+        Gone::InUse
+    ));
+    assert!(left.is_dir());
+    // Moved aside but not deleted: off its key, so removed, with the error to stop on.
+    let stuck = |_: &Path| Err(std::io::Error::other("read-only"));
+    let std_rename = |a: &Path, b: &Path| std::fs::rename(a, b);
+    assert!(matches!(
+        gc(0).remove_with(&stage, &e.dir, None, std_rename, stuck),
+        Gone::Aside(Error::Io { .. })
+    ));
+    assert_eq!(keys(&p), []);
     let _ = std::fs::remove_dir_all(p.root());
 }
 
@@ -528,7 +552,7 @@ fn a_broken_entry_put_whole_meanwhile_stays() {
     // Moved aside and found whole, it goes back.
     let stage = stage_dir(&p);
     assert!(matches!(
-        gc(0).remove_keyed(&stage, &e.dir, Some(("song", e.manifest.key))),
+        gc(0).remove(&stage, &e.dir, Some(("song", e.manifest.key))),
         Gone::Whole
     ));
     assert_eq!(keys(&p), [as_ref(&e)]);
@@ -546,7 +570,7 @@ fn an_unrooted_entry_damaged_meanwhile_is_not_counted_as_removed() {
     let before = temp_dirs_made();
     let mut report = Report::default();
     gc(0)
-        .sweep_unrooted(&c, &BTreeSet::new(), whole, &mut report)
+        .sweep_unrooted(&BTreeSet::new(), whole, &mut report)
         .unwrap();
     assert_eq!(report.removed, []);
     assert_eq!(temp_dirs_made(), before);
@@ -778,5 +802,41 @@ fn an_error_after_a_removal_comes_with_the_report_so_far() {
         [(first.manifest.key.to_string(), "unrooted")]
     );
     assert_eq!(keys(&p), [as_ref(&second)], "the other stays whole");
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[cfg(unix)]
+#[test]
+fn an_entry_moved_aside_but_not_deleted_is_reported_removed_and_stops() {
+    use std::os::unix::fs::PermissionsExt;
+    let p = project("stuck");
+    let e = put(&p, 1, 10);
+    // A read-only folder inside the entry: renaming the entry aside works, deleting what's in that folder doesn't.
+    let locked = e.dir.join("locked");
+    std::fs::create_dir_all(&locked).unwrap();
+    std::fs::write(locked.join("x"), b"x").unwrap();
+    let mode =
+        |dir: &Path, m| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(m)).unwrap();
+    mode(&locked, 0o555);
+    if std::fs::remove_file(locked.join("x")).is_ok() {
+        // Permissions don't bind this user (root): nothing to test here.
+        mode(&locked, 0o755);
+        let _ = std::fs::remove_dir_all(p.root());
+        return;
+    }
+    let stopped = gc(0).collect(&p, &[&RecordedVersions]).unwrap_err();
+    for t in temps(&stage_dir(&p)) {
+        let _ = std::fs::set_permissions(
+            stage_dir(&p).join(t).join("locked"),
+            std::fs::Permissions::from_mode(0o755),
+        );
+    }
+    assert!(matches!(stopped.error, Error::Io { .. }), "{stopped}");
+    assert!(stopped.changed());
+    assert_eq!(
+        whys(&stopped.report),
+        [(e.manifest.key.to_string(), "unrooted")]
+    );
+    assert_eq!(keys(&p), [], "off its key all the same");
     let _ = std::fs::remove_dir_all(p.root());
 }
