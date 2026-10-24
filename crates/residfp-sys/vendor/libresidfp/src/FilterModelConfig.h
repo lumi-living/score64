@@ -82,7 +82,6 @@ private:
     {
     private:
         double buffer[1024];
-        mutable int index = 0;
     public:
         Randomnoise()
         {
@@ -101,7 +100,9 @@ private:
                 buffer[i] = v < 1.0 ? v : std::nextafter(1.0, 0.0);
             }
         }
-        double getNoise() const { index = (index + 1) & 0x3ff; return buffer[index]; }
+        // Score64 patch 2 (see ../../SCORE64-PATCHES.md): upstream kept one shared counter here (`mutable int index`),
+        // advanced by every caller. The same sequence now comes from a counter the caller owns.
+        double getNoise(int& at) const { at = (at + 1) & 0x3ff; return buffer[at]; }
     };
 
 protected:
@@ -197,6 +198,7 @@ protected:
         const double r_N16 = 1. / N16;
 
         int idx = 0;
+        int noise = 0; // Score64 patch 2: this table's own dither counter
         for (int i = 0; i < 5; i++)
         {
             const int idiv = 2 + i;        // 2 - 6 input "resistors".
@@ -208,7 +210,7 @@ protected:
             for (int vi = 0; vi < size; vi++)
             {
                 const double vin = vmin + vi * r_N16 * r_idiv; /* vmin .. vmax */
-                summer[idx++] = getNormalizedValue(opampModel.solve(n, vin));
+                summer[idx++] = getNormalizedValue(opampModel.solve(n, vin), noise);
             }
         }
     }
@@ -226,6 +228,7 @@ protected:
         const double r_N16 = 1. / N16;
 
         int idx = 0;
+        int noise = 0; // Score64 patch 2: this table's own dither counter
         for (int i = 0; i < 8; i++)
         {
             const int idiv = (i == 0) ? 1 : i;
@@ -237,7 +240,7 @@ protected:
             for (int vi = 0; vi < size; vi++)
             {
                 const double vin = vmin + vi * r_N16 * r_idiv; /* vmin .. vmax */
-                mixer[idx++] = getNormalizedValue(opampModel.solve(n, vin));
+                mixer[idx++] = getNormalizedValue(opampModel.solve(n, vin), noise);
             }
         }
     }
@@ -254,6 +257,7 @@ protected:
         const double r_N16 = 1. / N16;
 
         int idx = 0;
+        int noise = 0; // Score64 patch 2: this table's own dither counter
         for (int n8 = 0; n8 < 16; n8++)
         {
             constexpr int size = 1 << 16;
@@ -263,7 +267,7 @@ protected:
             for (int vi = 0; vi < size; vi++)
             {
                 const double vin = vmin + vi * r_N16; /* vmin .. vmax */
-                volume[idx++] = getNormalizedValue(opampModel.solve(n, vin));
+                volume[idx++] = getNormalizedValue(opampModel.solve(n, vin), noise);
             }
         }
     }
@@ -280,6 +284,7 @@ protected:
         const double r_N16 = 1. / N16;
 
         int idx = 0;
+        int noise = 0; // Score64 patch 2: this table's own dither counter
         for (int n8 = 0; n8 < 16; n8++)
         {
             constexpr int size = 1 << 16;
@@ -288,7 +293,7 @@ protected:
             for (int vi = 0; vi < size; vi++)
             {
                 const double vin = vmin + vi * r_N16; /* vmin .. vmax */
-                resonance[idx++] = getNormalizedValue(opampModel.solve(resonance_n[n8], vin));
+                resonance[idx++] = getNormalizedValue(opampModel.solve(resonance_n[n8], vin), noise);
             }
         }
     }
@@ -305,9 +310,18 @@ public:
 
     // helper functions
 
-    inline uint16_t getNormalizedValue(double value) const
+    // Score64 patch 2: upstream drew every value's dither from one counter shared by all callers. The tables are
+    // built on several threads at once, so their dither depended on how the threads interleaved (and raced), and each
+    // SID's output depended on what every other SID in the process had drawn. Each caller now owns its counter: each
+    // table, each SID's filter, and the few values set up once (by their position).
+    inline uint16_t getNormalizedValue(double value, int& noise) const
     {
-        return to_uint16_dither(N16 * (value - vmin), rnd.getNoise());
+        return to_uint16_dither(N16 * (value - vmin), rnd.getNoise(noise));
+    }
+
+    inline uint16_t getNormalizedValueAt(double value, int position) const
+    {
+        return getNormalizedValue(value, position);
     }
 
     template<int N>
@@ -321,9 +335,9 @@ public:
         return to_uint16(N16 * vmin);
     }
 
-    inline int32_t getNormalizedVoice(float value, uint8_t env) const
+    inline int32_t getNormalizedVoice(float value, uint8_t env, int& noise) const
     {
-        return static_cast<int32_t>(getNormalizedValue(getVoiceVoltage(value, env)));
+        return static_cast<int32_t>(getNormalizedValue(getVoiceVoltage(value, env), noise));
     }
 };
 
