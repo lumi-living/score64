@@ -35,6 +35,53 @@ Attack: 2, 8, 16, 24, 38, 56, 68, 80, 100, 250, 500, 800 ms, 1, 3, 5, 8 s (value
 Decay and release: 6, 24, 48, 72, 114, 168, 204, 240, 300, 750 ms, 1.5, 2.4, 3, 9, 15, 24 s (values 0–15; three times the attack time).
 Sustain is a level (0–15), not a time.
 
+## After the release
+
+After the gate goes off and the release reaches zero, the voice isn't silent: the oscillator keeps running and a little of the waveform leaks to the output, a faint ghost of the last note. Selecting no waveform silences it. GoatTracker's command `7XY` sets the waveform register; it has no effect while a wavetable program is still writing the waveform (GoatTracker 2 readme, "Command 7XY"). Score64's opt-in `silence_after_release` writes `7 00` once the release has fully decayed (#186).
+
+Measured in the emulator helper (reSIDfp, as sidplayfp sets it up) by `crates/score64-adapters/tests/after_release_levels.rs`, which is ignored by default; run it with `cargo test -p score64-adapters --test after_release_levels -- --ignored --nocapture`.
+
+**The setup:**
+- master volume 15; voice 1 at frequency `$1100`, pulse width `$800`, AD `$00` and SR `$F0` (full sustain, release 0);
+- the gate on with the waveform for 0.5 s, then off for 0.2 s; then the waveform register is left alone or written.
+
+**The measures:** levels are the RMS of 0.5 s windows from the write, with each window's DC taken out, in dBFS. "Settled" is the loudest window from 1 s to 4 s.
+
+Since #207 the helper renders identical input byte for byte, so one run is the measurement; the script repeats it to show that.
+
+| Chip | Waveform | Left alone (the ghost) | `$00` settled | `$08` (test bit) settled |
+|---|---|---|---|---|
+| 6581 | pulse | −60.0 | silent | silent |
+| 6581 | saw | −64.7 | silent | silent |
+| 6581 | triangle, noise | −64.6 | silent | silent |
+| 8580 | pulse | −67.8 | −99.6 | −99.6 |
+| 8580 | saw | −72.5 | silent | silent |
+| 8580 | triangle | −72.4 | silent | silent |
+| 8580 | noise | −72.5 | silent | silent |
+
+"Silent" means the output is exactly constant.
+
+**What the table shows:**
+- **The ghost goes either way.** Both values silence it exactly, except the 8580's pulse, which settles at −99.6 dBFS, 31.8 dB under its ghost.
+- **The 8580 bump.** On the 8580 both values first fade through a bump in the first second, as the waveform output floats down: −69.9 dBFS for pulse, −71.3 for saw, −79.7 for triangle and −82.1 for noise.
+- **No difference between them.** The two values give the same samples here.
+- **Other setups give other figures.** A different attack, gate length or pitch changes the numbers. The table is this setup's.
+
+Score64 uses `$00`. The test bit does more than silence: while it's set, it resets the oscillator and holds it at zero, and it resets the noise generator (MOS 6581 datasheet, control register bit 3). `$00` leaves both alone, and the next note's own waveform takes over from there.
+
+`crates/score64-adapters/tests/silence_after_release.rs` checks this end to end, through an exported song packed by gt2reloc 2.73:
+- **Without the setting,** the gap after a key-off keeps the ghost: −60 to −73 dBFS.
+- **With it,** the gap is exactly silent over its last 3 s, on both chips and for pulse, saw and triangle.
+- **Its checks:** silence (below −150 dBFS, where exact silence reads −200), and 15 dB under the ghost.
+
+**When it's written.** A release from full level lasts 756 envelope rate periods: 255 steps, the lower ones slowed by the exponential counter (162 × 1, 39 × 2, 28 × 4, 12 × 8, 8 × 16 and 6 × 30). The periods are reSIDfp's: 9, 32, 63, … 31,251 cycles by nibble, as in reSID.
+
+Before the first step, the "ADSR bug" can add up to one wrap of the 15-bit rate counter, 32,767 cycles. The export allows a little more: 756 × (period + 1) + 32,768 cycles. For release 8 that is 334.8 ms (17 PAL frames), against the datasheet's 300 ms.
+
+GoatTracker clears the gate when it fetches the key-off row, the instrument's gate timer of frames before that row (`gplay.c`, the early fetch), so the count starts there.
+
+A wavetable step that writes a waveform after `7XY` undoes it, so the export also waits for the note's wavetable program to stop.
+
 ## Hard restart
 
 Envelope state carries over between notes and can make a new note start late or silent (the "ADSR bug"). Players avoid it with a **hard restart**: gate off with fast release a couple of frames before the next note, optionally set the test bit for one frame, then start the note. GoatTracker's packed player does this per instrument; gt2reloc's `-Axx` sets the hard-restart ADSR value (default `0F00`). Score64 instrument presets must state their hard-restart behaviour.
