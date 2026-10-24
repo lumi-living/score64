@@ -152,7 +152,7 @@ const MANIFEST: &str = "manifest.json";
 /// Names that stay inside their directory on every system: letters, digits, `-`, `_` and `.`; not starting with `.`
 /// (which also keeps clear of the temporary directories) or ending with one; not a Windows device name (`con`,
 /// `nul.json`, `com1`, ...); not the manifest.
-fn check_name(name: &str) -> Result<(), Error> {
+pub(crate) fn check_name(name: &str) -> Result<(), Error> {
     let device = crate::textfile::is_device_name(name);
     let ok = !name.is_empty()
         && name.len() <= 128
