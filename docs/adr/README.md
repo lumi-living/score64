@@ -20,3 +20,4 @@ One file per decision, `ADR-NNN-short-title.md`, copied from `ADR-000-template.m
 | [013](ADR-013-command-outcomes-and-exit-codes.md) | Commands decide failure; CLI exit codes; a provisional validation context file | Accepted |
 | [014](ADR-014-project-and-track-files.md) | Project and track files: `score64.toml` and `track.toml` | Accepted |
 | [015](ADR-015-song-level-filter-events.md) | Song-level filter events in the score | Accepted |
+| [017](ADR-017-update-notifications.md) | Update notifications now, one-click updates with signed releases, shared with Convert64 | Proposed |
