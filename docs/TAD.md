@@ -254,6 +254,20 @@ In all of these, `unapplied` is sorted by id, and of several decisions for one s
   - A legato note ties with `3` `00` and no instrument, so it isn't retriggered (#137).
   - A note followed by silence ends with a key-off. One followed directly by another note leaves the gate to that note's hard restart.
   - A note that runs to the end, when the loop row is silent, gets a key-off on the loop row, so it stops after the jump back.
+  - **Silence after the release** (`export_with` and `Options::silence_after_release`, #186; opt-in per preset, off by default). After a key-off the oscillator keeps running and leaks a ghost of the note. For a preset that asks, the export writes `7 00` (no waveform) in the gap after the key-off (for a note running to the end, after the loop row's key-off on the jump back). It goes on the first row where the voice is quiet on every pass through the song:
+    - **The release is over.** On the first pass, and for a row at or after the loop row on every pass after the jump back, the last note before the row has been keyed off for its whole release. That includes other presets' notes on the voice. The release lasts 756 rate periods of its nibble plus one wrap of the rate counter (the "ADSR bug"), in cycles. It's counted from the gate-off, the instrument's gate timer of frames before the key-off row, at `Options::video`'s frame length.
+    - **The wavetable program has stopped.** That's the program the note last started (at the note or the note it's tied to, or at the end of an arpeggio inside it), since a later waveform step would undo `7XY`. A program that loops or runs a pattern command never counts as stopped, nor does an arpeggio running to the note's end.
+
+    It writes nothing:
+    - when the next note comes first;
+    - when the voice's command slot on that row is taken (it goes in last, so it never moves another command);
+    - when the note that sounds next, on this pass or after the jump back, wouldn't set a waveform of its own: a tie, or an instrument whose first waveform is `$00`, `$FE` or `$FF`.
+
+    A gap after a note tied over the loop row is left alone. After the jump back, the tie continues the song's last note, with that note's instrument and program.
+
+    A `7 00` after the jump back can also land after another preset's note, the song's last. That note has fully released by then, so only its ghost goes.
+
+    The next note's early fetch, its gate timer, comes after the row starts, as a legal gate timer is shorter than a row. `$00` rather than the test bit (`$08`) is explained in `reference/sid.md` §After the release: both settle alike in the helper, and `$00` doesn't reset the oscillator. The preset file gains the setting with #49.
 - **Song-wide commands.** These go on the first voice with a free command slot, after the voices' own commands; a row with none is an error:
   - the tempo (`Fxx`, all voices) on row 0, at each tempo change, and on the loop row when the tempo there differs from the tempo at the end;
   - each timing mark of an adaptive layer (`DXY`, values from `AdaptiveSet::timing_marks`). `Exported::timing_marks` says the song must be packed with `-H1`.
