@@ -139,6 +139,22 @@ impl std::str::FromStr for UtcTime {
     }
 }
 
+/// [`UtcTime`] as a `2026-10-24T09:15:02Z` string, for formats without a datetime type (the cache's JSON manifests).
+pub(crate) mod as_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    use super::UtcTime;
+
+    pub fn serialize<S: Serializer>(t: &UtcTime, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(t)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<UtcTime, D::Error> {
+        let text = String::deserialize(d)?;
+        text.parse().map_err(serde::de::Error::custom)
+    }
+}
+
 impl fmt::Display for UtcTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (y, mo, d, h, m, s) = self.civil();

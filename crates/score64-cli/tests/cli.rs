@@ -42,7 +42,7 @@ fn commands_lists_the_registry_with_schemas() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["version", "helper_info", "validate"]);
+    assert_eq!(names, ["version", "helper_info", "validate", "index"]);
     for c in list.as_array().unwrap() {
         assert!(
             ["read_only", "writes_project", "destructive"].contains(&c["effect"].as_str().unwrap()),
@@ -231,4 +231,34 @@ mod validate {
         assert_eq!(by_name, typed);
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+#[test]
+fn index_typed_and_by_name_agree_and_rebuild_from_files() {
+    let root = std::env::temp_dir().join(format!("score64-cli-index-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("tracks/main")).unwrap();
+    std::fs::write(root.join("score64.toml"), "schema = 1\n").unwrap();
+    std::fs::write(root.join("tracks/main/track.toml"), "schema = 1\n").unwrap();
+    let dir = root.display().to_string();
+    let typed = stdout_json(&score64(&["index", "--project", &dir, "--json"]));
+    assert_eq!(
+        (typed["tracks"].as_u64(), typed["versions"].as_u64()),
+        (Some(1), Some(0))
+    );
+    assert!(root.join(".score64/index.db").is_file());
+    let by_name = stdout_json(&score64(&[
+        "run",
+        "index",
+        &json!({ "project": dir, "rebuild": true }).to_string(),
+    ]));
+    assert_eq!(typed, by_name);
+    // Not a project: an input error.
+    let o = score64(&[
+        "index",
+        "--project",
+        &root.join("tracks").display().to_string(),
+    ]);
+    assert_eq!(error_kind(&o), "invalid_input");
+    let _ = std::fs::remove_dir_all(&root);
 }

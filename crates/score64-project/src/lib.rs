@@ -5,6 +5,7 @@
 pub mod cache;
 pub mod decisions;
 pub mod history;
+pub mod index;
 pub mod project;
 mod textfile;
 pub mod version;
@@ -12,4 +13,5 @@ pub mod version;
 pub use cache::Cache;
 pub use decisions::DecisionsFile;
 pub use history::{CacheRef, Entry, History, Run, RunProvenance, UtcTime};
+pub use index::Index;
 pub use project::{Project, ProjectFile, SourceProblem, Timestamp, Track, TrackFile};
