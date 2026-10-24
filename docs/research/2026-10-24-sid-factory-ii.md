@@ -77,5 +77,11 @@ In Driver 11.03 and later, a channel is filtered only if **both** the instrument
 
 ## 3. Licence notes (for ADR-016)
 - **SID Factory II itself:** GPL-2.0-or-later.
-- **The drivers** are 6502 binaries in the same GPL-2.0-or-later repository. No separate licence or "free to use in productions" statement was found in the docs. So a packed SF2 tune embeds driver code under the repository's licence unless the authors (Laxity, JCH) say otherwise. **This is the same situation as the GoatTracker player in ADR-016:** record it as a distribution obligation in the pack report, and check with the authors before relying on it for closed-source work.
+- **The drivers** are 6502 binaries in the same GPL-2.0-or-later repository. No separate licence or "free to use in productions" statement was found in the docs. So a packed SF2 tune embeds driver code under GPL-2.0-or-later unless the authors (Laxity, JCH) say otherwise. Record it as a distribution obligation in the pack report, and check with the authors before relying on it for closed-source work.
+- **This is not the GoatTracker player's situation** (corrected 2026-10-25).
+  - GoatTracker 2 as a whole is GPL-2.0-or-later, but its playroutine opens with its own notice: "This playroutine source code does not fall under the GPL license!"
+  - The source for this is `src/player.s` in GoatTracker 2.77, lines 4–6. `src/altplayer.s` carries the same notice.
+  - The notice goes on to allow free use of the routine, and of tunes built with it, for any purpose, commercial or not.
+  - So packed GoatTracker tunes carry no GPL obligation from the player, while a packed SF2 tune carries the drivers' GPL obligations.
+  - Debian's copyright file for GoatTracker doesn't record the player's exception. The evidence is in `docs/reference/player.md`, "The player's licence", and in ADR-016 (proposed in #210).
 - **The demo songs:** their licences aren't stated, so don't use them as committed fixtures.
