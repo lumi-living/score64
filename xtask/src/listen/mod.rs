@@ -36,7 +36,7 @@ pub struct Args {
     #[arg(long)]
     out: Option<PathBuf>,
     /// Built-in cases to render (default: all of them): sixteen-steps, sixteen-steps-adaptive, combat-filtered,
-    /// ties-keyoffs-arp, loop-tempo.
+    /// ties-keyoffs-arp, loop-tempo, bass-arps.
     cases: Vec<String>,
     /// A score file (`Song` as TOML or JSON) to render as well.
     #[arg(long, requires = "instruments")]
