@@ -1,7 +1,7 @@
 //! The measurement behind `docs/reference/sid.md` §After the release (#186): the level a voice leaves after its
-//! release, left alone or with the waveform register set to `$00` or `$08`, on both chips, over fresh helper processes
-//! (the helper's output varies between processes, #207). Ignored by default; run it with
-//! `cargo test -p score64-adapters --test after_release_levels -- --ignored --nocapture`.
+//! release, left alone or with the waveform register set to `$00` or `$08`, on both chips. Each cell runs in a few fresh
+//! helper processes, which give identical samples since #207, so a range other than one value would be a regression.
+//! Ignored by default; run it with `cargo test -p score64-adapters --test after_release_levels -- --ignored --nocapture`.
 //!
 //! The setup: master volume 15; voice 1 at frequency `$1100` with pulse width `$800`, AD `$00`, SR `$F0` (full
 //! sustain, release 0); the gate on with the waveform for 25 frames (0.5 s), then off for 10 frames (0.2 s), then the
@@ -12,7 +12,7 @@ use std::io::Write as _;
 
 use score64_adapters::emu::{Chip, Helper};
 
-const RUNS: usize = 10;
+const RUNS: usize = 3;
 
 fn dbfs(s: &[i16]) -> f64 {
     let m = s.iter().map(|&v| f64::from(v)).sum::<f64>() / s.len() as f64;

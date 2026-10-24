@@ -141,10 +141,9 @@ fn a_gap_after_a_key_off_goes_silent_with_the_setting() {
         for chip in [Chip::Mos6581, Chip::Mos8580] {
             let off = gap_level(&packer, &helper, wave, false, chip);
             let on = gap_level(&packer, &helper, wave, true, chip);
-            // Without the setting the ghost is there; with it, the gap is silent or near the floor. The helper's
-            // floor varies between runs (#207), from about -90 dBFS to exact silence on the 8580 and now and then
-            // to about -98 dBFS on the 6581, so both chips are held to a limit and to the drop from the ghost.
-            let floor = -85.0;
+            // Without the setting the ghost is there; with it, the gap is exactly silent on both chips. The helper
+            // renders byte for byte the same since #207, so this needs no margin for run-to-run differences.
+            let floor = -150.0;
             assert!(
                 off > -80.0,
                 "{name} on {chip:?}: no ghost without the setting ({off:.1} dBFS)"

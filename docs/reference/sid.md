@@ -47,35 +47,32 @@ Measured in the emulator helper (reSIDfp, as sidplayfp sets it up) by `crates/sc
 
 **The measures:** levels are the RMS of 0.5 s windows from the write, with each window's DC taken out, in dBFS. "Settled" is the loudest window from 1 s to 4 s.
 
-The helper isn't deterministic: identical input gives slightly different samples in each process (#207). Each cell is therefore the range over 10 fresh processes, with how many were exactly silent.
+Since #207 the helper renders identical input byte for byte, so one run is the measurement; the script repeats it to show that.
 
 | Chip | Waveform | Left alone (the ghost) | `$00` settled | `$08` (test bit) settled |
 |---|---|---|---|---|
-| 6581 | pulse | −60.2 to −59.7 | silent (10/10) | silent (10/10) |
-| 6581 | saw, triangle | −64.7 to −64.5 | silent (10/10) | silent (10/10) |
-| 6581 | noise | −64.8 to −64.5 | −114.8 to silent (9/10) | silent (10/10) |
-| 8580 | pulse | −69.3 to −67.6 | −109.5 to −90.3 (0/10) | −103.1 to −90.5 (0/10) |
-| 8580 | saw | −74.2 to −72.2 | −90.4 to silent (2/10) | −92.9 to silent (4/10) |
-| 8580 | triangle | −73.2 to −72.3 | −90.3 to silent (4/10) | −90.6 to silent (6/10) |
-| 8580 | noise | −73.5 to −72.5 | −91.1 to silent (2/10) | −91.6 to silent (1/10) |
+| 6581 | pulse | −60.0 | silent | silent |
+| 6581 | saw | −64.7 | silent | silent |
+| 6581 | triangle, noise | −64.6 | silent | silent |
+| 8580 | pulse | −67.8 | −99.6 | −99.6 |
+| 8580 | saw | −72.5 | silent | silent |
+| 8580 | triangle | −72.4 | silent | silent |
+| 8580 | noise | −72.5 | silent | silent |
+
+"Silent" means the output is exactly constant.
 
 **What the table shows:**
-- **The ghost goes either way.** Both values take it away: to silence, or close to it, on the 6581, and by at least 18 dB on the 8580 in this setup.
-- **The 8580 bump.** On the 8580 both values first fade through a bump in the first second, as the waveform output floats down: −72.7 to −69.7 dBFS for pulse and saw, −80.3 to −76.2 for triangle, −83.2 to −79.3 for noise.
-- **No difference between them.** The two values settle in the same range.
-- **Other setups vary more.** A review's re-measure, with AD `$09`, a 1 s gate and 12 processes, found:
-  - settled levels up to −86.8 dBFS on the 8580 (about 14 dB under the ghost);
-  - first-second bumps up to −69.5 dBFS for triangle and noise;
-  - an occasional −98 to −112 dBFS on the 6581.
-
-  Treat the table as typical rather than as a bound.
+- **The ghost goes either way.** Both values silence it exactly, except the 8580's pulse, which settles at −99.6 dBFS, 31.8 dB under its ghost.
+- **The 8580 bump.** On the 8580 both values first fade through a bump in the first second, as the waveform output floats down: −69.9 dBFS for pulse, −71.3 for saw, −79.7 for triangle and −82.1 for noise.
+- **No difference between them.** The two values give the same samples here.
+- **Other setups give other figures.** A different attack, gate length or pitch changes the numbers. The table is this setup's.
 
 Score64 uses `$00`. The test bit does more than silence: while it's set, it resets the oscillator and holds it at zero, and it resets the noise generator (MOS 6581 datasheet, control register bit 3). `$00` leaves both alone, and the next note's own waveform takes over from there.
 
 `crates/score64-adapters/tests/silence_after_release.rs` checks this end to end, through an exported song packed by gt2reloc 2.73:
 - **Without the setting,** the gap after a key-off keeps the ghost: −60 to −73 dBFS.
-- **With it,** the gap is exactly silent in most runs. Otherwise, it's −98 dBFS or lower on the 6581, and −90 dBFS or lower on the 8580, over the gap's last 3 s.
-- **Its checks:** below −85 dBFS, and 15 dB under the ghost, on both chips.
+- **With it,** the gap is exactly silent over its last 3 s, on both chips and for pulse, saw and triangle.
+- **Its checks:** silence (below −150 dBFS, where exact silence reads −200), and 15 dB under the ghost.
 
 **When it's written.** A release from full level lasts 756 envelope rate periods: 255 steps, the lower ones slowed by the exponential counter (162 × 1, 39 × 2, 28 × 4, 12 × 8, 8 × 16 and 6 × 30). The periods are reSIDfp's: 9, 32, 63, … 31,251 cycles by nibble, as in reSID.
 
