@@ -112,6 +112,12 @@ SOFTWARE.
 - **Source:** <https://github.com/libsidplayfp/libresidfp>
 - **Licence:** GPL-2.0-or-later; full text in `crates/residfp-sys/vendor/libresidfp/COPYING`. Copyright (c) 2000–2011 Dag Lem, (c) 2007–2010 Antti Lankila, (c) 2010–2026 Leandro Nini. `residfp-sys` carries the same licence, and only the GPL-3.0-or-later `score64-emu` may depend on it (ADR-002; CI job `licence-boundary`).
 
+## SQLite (compiled in)
+
+- **What:** SQLite 3.53.2, the amalgamation `libsqlite3-sys` 0.38.2 ships, compiled by its `bundled` feature (through `rusqlite` 0.40.2) into `score64-project`, for the rebuildable index `.score64/index.db` (#28). Of the shipped binaries only the CLI links it today, through `score64-engine`; the app and the MCP server don't depend on `score64-engine` or `score64-project` yet. It isn't in this repository; Cargo fetches it.
+- **Source:** <https://sqlite.org>
+- **Licence:** public domain (<https://sqlite.org/copyright.html>). `rusqlite` and `libsqlite3-sys` are MIT.
+
 Apart from the entries in this file, no third-party source code or data is vendored. Crate dependencies (for example `emulator_6502` and `resid-rs` in `score64-emu`, `ort` in `score64-adapters`) are pulled by Cargo, not copied.
 
 When it is, each entry here names the project, the commit or version, the files ported or included, and the licence text. Planned items and their licences, for reference:

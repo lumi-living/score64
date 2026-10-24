@@ -22,6 +22,8 @@ toml = { workspace = true }
 [dev-dependencies]
 # Only to check that the helper's timing is the core's PAL timing (#139).
 score64-core = { workspace = true }
+# Only to damage an index in a test, as a failing disk or a stray tool would.
+rusqlite = { workspace = true }
 
 [lints]
 workspace = true
