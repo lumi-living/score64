@@ -895,3 +895,68 @@ fn an_arpeggio_running_to_the_end_cant_end_on_a_loop_row_tie() {
     s.voices[0].arps = vec![arp(24, 4, &[0, 4])];
     assert!(export(&song(vec![s]), &library(), &[], &header()).is_ok());
 }
+
+/// Decisions in force (#167) give songs the exporter writes: a loop row a person chose, where no note sounds across
+/// it, and tempo changes from tempo decisions. A loop row inside a note is refused before it gets here.
+#[test]
+fn loop_rows_and_tempos_in_force_export() {
+    use score64_core::provenance::{Decision, DecisionId, Proposal, Provenance};
+    use score64_core::reduce::{LoopRules, apply_tempo, find_loop_with};
+    use score64_core::{Unapplied, check};
+    let person = |id: &str, bar: u32, proposal: Proposal| Decision {
+        id: DecisionId::new(id).unwrap(),
+        subtune: SubtuneName::new("main").unwrap(),
+        bar,
+        proposal,
+        provenance: Provenance::Manual,
+        confidence: Confidence::new(1.0).unwrap(),
+        reviewed: false,
+    };
+    // Notes every 8 rows, 4 long: rows 4–7, 12–15, ... are free.
+    let notes = (0..4)
+        .map(|k| note(k * 8, 4, "C-4", Attack::Fresh))
+        .collect();
+    let mut sub = subtune("main", vec![line(1, "lead", notes)]);
+    let decisions = [
+        person("loop-mid", 1, Proposal::LoopRow { row: 20 }),
+        person(
+            "faster",
+            1,
+            Proposal::FramesPerRow {
+                frames_per_row: FramesPerRow::new(4).unwrap(),
+            },
+        ),
+    ];
+    let checked = check(decisions, &song(vec![sub.clone()]), &Default::default());
+    assert!(checked.unapplied.is_empty());
+    let done = apply_tempo(&mut sub, &checked.valid);
+    assert!(done.unapplied.is_empty());
+    let choice = find_loop_with(&sub, &LoopRules::default(), &checked.valid);
+    assert_eq!((choice.row, choice.by.as_str()), (20, "loop-mid"));
+    sub.loop_row = choice.row;
+    let exported = export(&song(vec![sub.clone()]), &library(), &[], &header()).unwrap();
+    // The restart is the pattern that starts at row 20.
+    assert_eq!(
+        exported.sng.subtunes[0][0].restart, 2,
+        "patterns 0–15, 16–19, 20–31"
+    );
+    // The tempo decision is an F04 at row 16. The loop row's tempo is the ending's, so it needs no command of its own.
+    let tempo: Vec<(usize, u8)> = rows_of(&exported.sng, 0, 0)
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.command == 0xF)
+        .map(|(i, r)| (i, r.data))
+        .collect();
+    assert_eq!(tempo, [(0, 6), (16, 4)]);
+    // Inside a note (row 2 of the 0–3 note): refused, and the subtune keeps the rule's row.
+    let inside = find_loop_with(
+        &sub,
+        &LoopRules::default(),
+        &[person("in-note", 0, Proposal::LoopRow { row: 2 })],
+    );
+    assert_eq!(
+        inside.unapplied,
+        [(DecisionId::new("in-note").unwrap(), Unapplied::InsideNote)]
+    );
+    assert_eq!(inside.by.as_str(), "loop");
+}

@@ -733,6 +733,9 @@ fn unapplied_reasons_keep_their_names() {
         Unapplied::UnknownSubtune,
         Unapplied::WrongBar,
         Unapplied::OutOfRange,
+        Unapplied::NoSuchNote,
+        Unapplied::Lengthens,
+        Unapplied::InsideNote,
     ]
     .iter()
     .map(|u| serde_json::to_string(u).unwrap())
@@ -747,6 +750,9 @@ fn unapplied_reasons_keep_their_names() {
             "\"unknown_subtune\"",
             "\"wrong_bar\"",
             "\"out_of_range\"",
+            "\"no_such_note\"",
+            "\"lengthens\"",
+            "\"inside_note\"",
         ]
     );
 }

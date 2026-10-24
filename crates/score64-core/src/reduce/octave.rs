@@ -1,5 +1,6 @@
 //! Octave folding (#41): moving a voice's notes by whole octaves, a bar at a time, into its role's pitch range.
 
+use crate::decide::{Rank, Unapplied};
 use crate::provenance::{Confidence, Decision, DecisionId, Proposal, Provenance};
 use crate::score::{Note, Pitch, Role, Roles};
 use crate::validate::RoleRanges;
@@ -36,11 +37,46 @@ fn folds(ranges: &RoleRanges, role: Role) -> bool {
 /// record the decision's id unless they already record one. The result is in row order whatever the order
 /// of `notes`.
 pub fn fold_octaves(
-    mut notes: Vec<Note>,
+    notes: Vec<Note>,
     at: &Placement,
     roles: &Roles,
     ranges: &RoleRanges,
 ) -> Reduced {
+    fold_octaves_with(notes, at, roles, ranges, &[])
+}
+
+/// [`fold_octaves`] with a model's or a person's resolved `octave` decisions in force (#167): for this subtune and
+/// voice, each sets its bar's shift in place of the rule's choice, and the next bar carries it on as it would the
+/// rule's. The rule records no decision for that bar, and the bar's folded notes record the override's id unless
+/// they already record a decision, a shift of 0 included: the decision is about the bar, so it accounts for every
+/// folded note there, moved or not. Notes count in the bar they start in.
+///
+/// An override is unapplied when its bar has no note that folds (`no_such_note`), or when its shift would take one
+/// of them past what GoatTracker can play (`out_of_range`); the bar is then the rule's. Of several for one bar, the
+/// strongest claims it whether or not it can apply, as `resolve` would choose; the others are `overruled` or
+/// `outranked`. The rules' own
+/// decisions, and any of another kind, are left alone. `unapplied` is sorted by id.
+pub fn fold_octaves_with(
+    mut notes: Vec<Note>,
+    at: &Placement,
+    roles: &Roles,
+    ranges: &RoleRanges,
+    overrides: &[Decision],
+) -> Reduced {
+    let mut unapplied = Vec::new();
+    // Each bar's overrides, by bar.
+    let mut forced: std::collections::BTreeMap<u32, Vec<&Decision>> =
+        std::collections::BTreeMap::new();
+    for d in overrides
+        .iter()
+        .filter(|d| &d.subtune == at.subtune && d.rank() != Rank::Rules)
+    {
+        if let Proposal::Octave { voice, .. } = d.proposal
+            && voice == at.voice
+        {
+            forced.entry(d.bar).or_default().push(d);
+        }
+    }
     notes.sort_by_key(|n| n.row);
     let rows_per_bar = u32::from(at.rows_per_bar.get());
     let mut decisions = Vec::new();
@@ -61,6 +97,35 @@ pub fn fold_octaves(
         let Some(&first) = folded.first() else {
             continue;
         };
+        if let Some(candidates) = forced.remove(&bar) {
+            let playable = |shift: i8| {
+                folded
+                    .iter()
+                    .all(|&i| shifted(notes[i].pitch, shift).is_some())
+            };
+            // The strongest claims the bar whether or not it can apply, as `resolve` would choose.
+            let ranked = crate::decide::by_strength(candidates);
+            let top = ranked[0];
+            for d in &ranked[1..] {
+                unapplied.push((d.id.clone(), crate::decide::lost_to(d, top)));
+            }
+            let winner = match top.proposal {
+                Proposal::Octave { shift, .. } if playable(shift) => Some((top, shift)),
+                _ => {
+                    unapplied.push((top.id.clone(), Unapplied::OutOfRange));
+                    None
+                }
+            };
+            if let Some((d, shift)) = winner {
+                for &i in &folded {
+                    let n = &mut notes[i];
+                    n.pitch = shifted(n.pitch, shift).expect("checked playable");
+                    n.decision.get_or_insert_with(|| d.id.clone());
+                }
+                previous = Some((bar, roles.at(notes[first].row), shift));
+                continue;
+            }
+        }
         let role = roles.at(notes[first].row);
         let carried = match previous {
             Some((b, r, shift)) if b + 1 == bar && r == role => shift,
@@ -106,7 +171,19 @@ pub fn fold_octaves(
             n.decision.get_or_insert_with(|| id.clone());
         }
     }
-    Reduced { notes, decisions }
+    // Overrides for bars with no folded notes.
+    unapplied.extend(
+        forced
+            .into_values()
+            .flatten()
+            .map(|d| (d.id.clone(), Unapplied::NoSuchNote)),
+    );
+    unapplied.sort_by(|a, b| a.0.cmp(&b.0));
+    Reduced {
+        notes,
+        decisions,
+        unapplied,
+    }
 }
 
 /// `p` moved by `octaves`, if GoatTracker can still play it.
