@@ -31,6 +31,12 @@ Today nothing records any of this. `track.toml`'s `[[source]]` (ADR-014 §3) say
 
 So the packer is GPL-2.0-or-later, and the playroutine that packed files embed is outside the GPL by its author's own notice in the source. Debian's file doesn't record that notice. This ADR follows the source, and question 1 asks the maintainer to confirm that reading.
 
+**SID Factory II's drivers** are a second case, for a future SF2 output (#188; `docs/research/2026-10-24-sid-factory-ii.md` §3).
+- **What's known:** the repository (Chordian/sidfactory2) is GPL-2.0-or-later, and its drivers (11.xx, 12–16, np20, by Laxity and JCH) are 6502 binaries in it. The review found no separate licence or "free to use in productions" statement for them, unlike GoatTracker's `player.s`.
+- **What follows:** a packed SF2 tune embeds driver code under the repository's licence unless its authors say otherwise. That makes commercial use `yes`, with the GPL's obligations: a source offer, a licence notice and share-alike.
+- **Before relying on it:** for closed-source work, check with the driver authors first. A written grant can be recorded as point 5's project `LicenseRef-`.
+- **The demo songs** in `SIDFactoryII/music/` have no stated licence, so they're never committed fixtures.
+
 Constraints from earlier decisions:
 - **Files are the source of truth** (ADR-004). Licence statements are intent, so they live in text files in git. The cache is derived.
 - **Paid calls happen once** (ADR-004, TAD §2). Correcting a licence must not re-run a transcription.
@@ -96,7 +102,8 @@ attribution = "Main theme by A. Composer (CC BY 4.0)"  # optional
   Its terms can affect commercial use (a non-commercial model) and add obligations. By default a model's terms reach its outputs, which is the cautious reading. The project can reclassify (point 5).
 - **A component** is third-party code or data embedded in an output. Its licence matters mainly for its obligations.
   - The pack adapter declares one: the **GoatTracker 2 playroutine**, at the version its `gt2reloc` pin assembles, under the built-in `LicenseRef-goattracker2-playroutine`. That licence classes `yes` with no obligations, and its evidence is the notice at the top of `player.s` and `altplayer.s` (Context).
-  - Other vendored code that ever reaches an output, such as a different player or a driver, is declared the same way.
+  - An SF2 output adapter (#188) declares the **SID Factory II driver** it embeds, such as Driver 11, at the version it was taken from, under `GPL-2.0-or-later`. Its obligations are reported in every SF2 pack report until the authors grant otherwise (Context).
+  - Other vendored code that ever reaches an output, such as a different player, is declared the same way.
   - The packer itself (`gt2reloc`, GPL-2.0-or-later) is a tool. It isn't a component, since its own code isn't in the output.
 - Each declaration is data next to the adapter's pin: a name, a version, a licence in a source's form, and a pointer to the evidence. Stages that only compute (the rules, instruments, render, score and report) add nothing.
 
@@ -166,7 +173,7 @@ attribution = "Main theme by A. Composer (CC BY 4.0)"  # optional
 **7. What the pack and export reports show.** Both the command's output and the HTML report (#63) show:
 - **the commercial-use class,** with every member behind a `no` or `unknown`;
 - **the obligations,** grouped by kind, each naming its member, with the attribution texts collected for credits;
-- **the embedded components,** for pack, always. Every pack report says so in one line, with the version and the evidence: "this file embeds the GoatTracker 2 playroutine (v2.73); its source says it is outside the GPL and free for any use". If the maintainer reads the evidence otherwise (question 1), this line and the table row change, and nothing else does.
+- **the embedded components,** for pack, always. An SF2 pack names its driver and its GPL-2.0-or-later obligations the same way. Every pack report says so in one line, with the version and the evidence: "this file embeds the GoatTracker 2 playroutine (v2.73); its source says it is outside the GPL and free for any use". If the maintainer reads the evidence otherwise (question 1), this line and the table row change, and nothing else does.
 - **the members of each source,** under the sources section.
 
 The Budget view (UX §3) shows the same per asset.
@@ -258,6 +265,7 @@ A costs two columns instead of one, and adapter declarations kept up to date. It
 - [ ] The built-in table (class and obligations) and SPDX expression parsing. Check the `spdx` crate against its current documentation before using it.
 - [ ] Manifest `provenance` (sources, contributors, components; licence ids only), written by `Cache::put` outside the key, with a manifest schema bump.
 - [ ] Contributor declarations next to each adapter's pin: separate (#37), transcribe (#33, #34), grid (#35), the LLM decider (#76).
+- [ ] When an SF2 output exists (#188): its adapter's component declaration for the SID Factory II driver it embeds (GPL-2.0-or-later, Laxity and JCH), and a question to the driver authors about closed-source use.
 - [ ] The pack adapter's component declaration for the GoatTracker 2 playroutine. Record the evidence in `docs/reference/player.md`: the `player.s` and `altplayer.s` notices, Debian's file, and the versions checked. Re-check when the `gt2reloc` pin moves.
 - [ ] `commercial` on the export, pack and build commands: a pre-run gate on the class only, obligations as information, and `fails` (ADR-013). Front-ends: CLI, MCP and app.
 - [ ] Pack and export reports (#63) and the Budget view: class, obligations by member, attributions, and the embedded-component line.
