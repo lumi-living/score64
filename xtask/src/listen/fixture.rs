@@ -105,9 +105,11 @@ pub fn case(name: &str) -> Option<Case> {
             adaptive: vec![],
             notes: "`sixteen-steps`' `main` with **no arp voice**: its chords go on the bass instead, through \
                 `reduce::arpeggiate_on_bass` (#164). The bass (voice 3) keeps its notes on beats 1 and 3 and plays \
-                the bar's chord as an arpeggio on beats 2 and 4, rooted near the bass note before it. **Listen \
-                for:** the harmony still coming through with one voice fewer; the bass line still clear on the \
-                strong beats; no clicks or dropouts where the arpeggio starts and stops. A/B against \
+                the bar's chord as an arpeggio on beats 2 and 4, rooted near the bass note before it. **The voicing \
+                matches `sixteen-steps`':** each arpeggio plays the intervals of the arp voice's chord over it \
+                (root, third, fifth and octave), not the rule's plain triad, so the A/B changes only the voice. \
+                **Listen for:** the harmony still coming through with one voice fewer; the bass line still clear \
+                on the strong beats; no clicks or dropouts where the arpeggio starts and stops. A/B against \
                 `sixteen-steps-main`, which has the chords on a voice of their own.",
         },
         _ => return None,
@@ -469,7 +471,8 @@ fn sixteen_steps() -> Song {
     ])
 }
 
-/// `sixteen-steps`' `main` without its arp voice, the chords put on the bass's weak beats.
+/// `sixteen-steps`' `main` without its arp voice, the chords put on the bass's weak beats, voiced as that arp voice
+/// voices them.
 fn bass_arps() -> Song {
     use score64_core::reduce::{
         BassArpRules, Chord, ChordQuality, ChordSpan, Placement, arpeggiate_on_bass,
@@ -477,6 +480,14 @@ fn bass_arps() -> Song {
     let mut song = sixteen_steps();
     song.subtunes.truncate(1);
     let main = &mut song.subtunes[0];
+    // The arp voice's own arpeggios, for their voicing.
+    let voicing = main
+        .voices
+        .iter()
+        .find(|v| v.voice.get() == 2)
+        .expect("the arp voice")
+        .arps
+        .clone();
     main.voices.retain(|v| v.voice.get() != 2);
     let spans: Vec<ChordSpan> = (0..8u32)
         .map(|bar| {
@@ -514,7 +525,22 @@ fn bass_arps() -> Song {
         score64_core::validate::RoleRanges::default().bass,
     );
     bass.notes = line.notes;
-    bass.arps = line.arps;
+    // The rule voices each chord as its quality's triad; give each arpeggio the arp voice's intervals over the same
+    // chord instead (root, third, fifth and octave), so an A/B against `sixteen-steps` changes only the voice. The
+    // rule's `Chord` decisions, which record the triad, aren't part of the score, so nothing else records it.
+    bass.arps = line
+        .arps
+        .into_iter()
+        .map(|mut arp| {
+            arp.intervals = voicing
+                .iter()
+                .find(|v| v.row <= arp.row && arp.row < v.row + v.length.get())
+                .expect("an arpeggio under every row of `sixteen-steps`' arp voice")
+                .intervals
+                .clone();
+            arp
+        })
+        .collect();
     song
 }
 
@@ -558,4 +584,63 @@ fn loop_tempo() -> Song {
         frames_per_row: FramesPerRow::new(4).expect("3-127"),
     }];
     score(vec![s])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn voice(song: &Song, v: u8) -> &VoiceLine {
+        song.subtunes[0]
+            .voices
+            .iter()
+            .find(|l| l.voice.get() == v)
+            .expect("the voice")
+    }
+
+    /// Each `bass-arps` arpeggio plays `sixteen-steps`' arp voice's chord at its row: the same root and intervals.
+    #[test]
+    fn bass_arps_are_voiced_as_sixteen_steps() {
+        let reference = sixteen_steps();
+        let chords = voice(&reference, 2);
+        let song = bass_arps();
+        let bass = voice(&song, 3);
+        // Beats 2 and 4 of all eight bars.
+        let rows: Vec<u32> = bass.arps.iter().map(|a| a.row).collect();
+        let weak: Vec<u32> = (0..8u32).flat_map(|b| [b * 16 + 4, b * 16 + 12]).collect();
+        assert_eq!(rows, weak);
+        for arp in &bass.arps {
+            let covers =
+                |row: u32, length: NonZeroU32| row <= arp.row && arp.row < row + length.get();
+            let over = chords
+                .arps
+                .iter()
+                .find(|a| covers(a.row, a.length))
+                .expect("a chord at every row");
+            assert_eq!(arp.intervals, over.intervals, "row {}", arp.row);
+            assert_eq!(
+                arp.intervals.last(),
+                Some(&12),
+                "row {}: with the octave",
+                arp.row
+            );
+            let chord = chords
+                .notes
+                .iter()
+                .find(|n| covers(n.row, n.length))
+                .expect("a chord note at every row");
+            let root = bass
+                .notes
+                .iter()
+                .find(|n| n.row == arp.row)
+                .expect("a root note under every arpeggio");
+            assert_eq!(
+                root.pitch.semitone() % 12,
+                chord.pitch.semitone() % 12,
+                "row {}: the same chord root",
+                arp.row
+            );
+            assert_eq!(root.length, arp.length, "row {}", arp.row);
+        }
+    }
 }
