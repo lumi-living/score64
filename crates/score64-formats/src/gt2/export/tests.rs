@@ -985,6 +985,8 @@ fn the_waveform_goes_off_on_the_first_row_after_the_release() {
         (0, 2, vec![], 5),
         (8, 0, vec![], 8),
         (8, 4, vec![], 7),
+        // Only the low 6 bits are the gate timer: `$80` (no hard-restart ADSR) is a flag.
+        (8, 0x80 | 4, vec![], 7),
         (
             9,
             2,
@@ -1033,6 +1035,12 @@ fn nothing_is_written_when_something_comes_first() {
             silences(&gap_song(Some(13), vec![]), &lib, &options),
             [],
             "first wave ${first:02X}"
+        );
+        // The same for the note after the jump back, when none comes before the end.
+        assert_eq!(
+            silences(&gap_song(None, vec![]), &lib, &options),
+            [],
+            "first wave ${first:02X}, after the jump back"
         );
     }
     // The voice's command slot on that row is taken: a tempo change there takes voice 1's first.
@@ -1129,6 +1137,28 @@ fn another_presets_release_is_never_cut_on_any_pass() {
     sub.loop_row = 4;
     sub.voices[0].notes = vec![note(0, 4, "C-4", Attack::Fresh), bass];
     assert_eq!(silences(&s, &lib, &options), [(10, 0x00)]);
+    // The loop row itself counts as after the jump back: with the loop on row 5 and the bass on rows 24-30, row 5
+    // comes 12 frames into its release on every later pass; row 11 is past it.
+    let (mut lib, options) = silencing(0, 2);
+    let bass = bass_note(24, 6, &mut lib);
+    let mut s = gap_song(None, vec![]);
+    let sub = &mut s.subtunes[0];
+    sub.loop_row = 5;
+    sub.voices[0].notes = vec![note(0, 4, "C-4", Attack::Fresh), bass];
+    assert_eq!(silences(&s, &lib, &options), [(11, 0x00)]);
+    // A tie on the loop row continues the song's last note after the jump back, here the bass: the lead's gap after
+    // the tie would cut the bass's release on every later pass, so it's left alone.
+    let (mut lib, options) = silencing(0, 2);
+    let bass = bass_note(24, 8, &mut lib);
+    let mut s = gap_song(None, vec![]);
+    let sub = &mut s.subtunes[0];
+    sub.loop_row = 8;
+    sub.voices[0].notes = vec![
+        note(4, 4, "C-4", Attack::Fresh),
+        note(8, 4, "D-4", Attack::Legato),
+        bass,
+    ];
+    assert_eq!(silences(&s, &lib, &options), []);
 }
 
 #[test]

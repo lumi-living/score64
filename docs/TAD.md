@@ -262,6 +262,10 @@ In all of these, `unapplied` is sorted by id, and of several decisions for one s
     - when the voice's command slot on that row is taken (it goes in last, so it never moves another command);
     - when the note that sounds next, on this pass or after the jump back, wouldn't set a waveform of its own: a tie, or an instrument whose first waveform is `$00`, `$FE` or `$FF`.
 
+    A gap after a note tied over the loop row is left alone. After the jump back, the tie continues the song's last note, with that note's instrument and program.
+
+    A `7 00` after the jump back can also land after another preset's note, the song's last. That note has fully released by then, so only its ghost goes.
+
     The next note's early fetch, its gate timer, comes after the row starts, as a legal gate timer is shorter than a row. `$00` rather than the test bit (`$08`) is explained in `reference/sid.md` §After the release: both settle alike in the helper, and `$00` doesn't reset the oscillator. The preset file gains the setting with #49.
 - **Song-wide commands.** These go on the first voice with a free command slot, after the voices' own commands; a row with none is an error:
   - the tempo (`Fxx`, all voices) on row 0, at each tempo change, and on the loop row when the tempo there differs from the tempo at the end;

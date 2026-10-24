@@ -275,7 +275,7 @@ const SET_WAVEFORM: u8 = 0x7;
 const SILENT_WAVEFORM: u8 = 0x00;
 
 /// The SID envelope's rate counter periods, in cycles, by the ADSR nibble (reSIDfp's `EnvelopeGenerator`, as in reSID):
-/// one envelope step every period (+1 on hardware).
+/// one envelope step every period, exactly. The export counts each as one cycle longer, as margin.
 const RATE_PERIOD: [u32; 16] = [
     9, 32, 63, 95, 149, 220, 267, 313, 392, 977, 1954, 3126, 3907, 11720, 19532, 31251,
 ];
@@ -284,7 +284,8 @@ const RATE_PERIOD: [u32; 16] = [
 /// (162 × 1, 39 × 2, 28 × 4, 12 × 8, 8 × 16 and 6 × 30).
 const RELEASE_STEPS: u32 = 756;
 
-/// The most the first release step can be late, in cycles: once round the 15-bit rate counter (the "ADSR bug").
+/// The most the first release step can be late, in cycles: once round the 15-bit rate counter, 32,767 cycles (the "ADSR
+/// bug"), and one more.
 const ADSR_DELAY: u32 = 0x8000;
 
 /// The frames a release with nibble `release` can take at most from the gate-off, at `video`'s frame length.
@@ -551,6 +552,9 @@ struct Tail<'a> {
     program: u32,
     /// An arpeggio running to its end, whose program keeps going after it.
     arp_at_end: bool,
+    /// A tie on the loop row, or a tie chain from one: after the jump back it continues the song's last note, with that
+    /// note's instrument and program, not the one it follows on the first pass.
+    tied_over_loop: bool,
 }
 
 /// For notes whose preset has `silence_after_release`, a `7 00` on the first row of the gap after the key-off where the
@@ -605,6 +609,8 @@ fn silence_after_release(
             instrument: instrument(preset),
             program,
             arp_at_end,
+            tied_over_loop: n.attack == Attack::Legato
+                && (n.row == loop_row || tails.last().is_some_and(|t| t.tied_over_loop)),
         });
     }
     let keyed_off_on_loop = rows[loop_row as usize].note == KEY_OFF;
@@ -679,9 +685,10 @@ fn quiet(b: &Builder<'_>, subtune: &Subtune, tails: &[Tail], r: u32, video: Vide
             && elapsed(key_off, wrapped) + gate_off >= release_frames(ins.sr, video)
             && elapsed(t.program, wrapped) > program
     };
-    // The first pass.
+    // The first pass. A note tied over the loop row plays differently after the jump back; rather than follow it, its
+    // gap is left alone.
     if let Some(t) = tails.iter().rev().find(|t| t.row < r)
-        && (t.end > r || !settled(t, t.end, false))
+        && (t.end > r || t.tied_over_loop || !settled(t, t.end, false))
     {
         return false;
     }

@@ -39,30 +39,47 @@ Sustain is a level (0–15), not a time.
 
 After the gate goes off and the release reaches zero, the voice isn't silent: the oscillator keeps running and a little of the waveform leaks to the output, a faint ghost of the last note. Selecting no waveform silences it. GoatTracker's command `7XY` sets the waveform register; it has no effect while a wavetable program is still writing the waveform (GoatTracker 2 readme, "Command 7XY"). Score64's opt-in `silence_after_release` writes `7 00` once the release has fully decayed (#186).
 
-Measured in the emulator helper (reSIDfp, as sidplayfp sets it up), 10 fresh helper processes per cell. The note is played at full sustain, gated off with release 0, and 0.2 s later the waveform register is left alone or set as shown. Levels are the RMS of 0.5 s windows with the DC taken out, in dBFS. "Settled" is the loudest window from 1 s to 4 s after the write. The helper isn't deterministic: identical input gives slightly different samples in each process (#207). So each cell is the range over the 10 runs, with how many of them were exactly silent.
+Measured in the emulator helper (reSIDfp, as sidplayfp sets it up) by `crates/score64-adapters/tests/after_release_levels.rs`, which is ignored by default; run it with `cargo test -p score64-adapters --test after_release_levels -- --ignored --nocapture`.
+
+**The setup:**
+- master volume 15; voice 1 at frequency `$1100`, pulse width `$800`, AD `$00` and SR `$F0` (full sustain, release 0);
+- the gate on with the waveform for 0.5 s, then off for 0.2 s; then the waveform register is left alone or written.
+
+**The measures:** levels are the RMS of 0.5 s windows from the write, with each window's DC taken out, in dBFS. "Settled" is the loudest window from 1 s to 4 s.
+
+The helper isn't deterministic: identical input gives slightly different samples in each process (#207). Each cell is therefore the range over 10 fresh processes, with how many were exactly silent.
 
 | Chip | Waveform | Left alone (the ghost) | `$00` settled | `$08` (test bit) settled |
 |---|---|---|---|---|
-| 6581 | pulse | −60.2 to −59.6 | silent (10/10) | silent (9/10), else −114.9 |
-| 6581 | saw, triangle, noise | −64.7 to −64.5 | silent (10/10) | silent (10/10) |
-| 8580 | pulse | −69.2 to −67.2 | −102.8 to −90.2 (0/10) | −90.9 to silent (1/10) |
-| 8580 | saw | −73.4 to −71.8 | −90.8 to silent (4/10) | −90.6 to silent (5/10) |
-| 8580 | triangle | −73.2 to −72.1 | −93.7 to silent (5/10) | −91.1 to silent (5/10) |
-| 8580 | noise | −73.5 to −72.0 | −90.4 to silent (2/10) | −91.7 to silent (4/10) |
+| 6581 | pulse | −60.2 to −59.7 | silent (10/10) | silent (10/10) |
+| 6581 | saw, triangle | −64.7 to −64.5 | silent (10/10) | silent (10/10) |
+| 6581 | noise | −64.8 to −64.5 | −114.8 to silent (9/10) | silent (10/10) |
+| 8580 | pulse | −69.3 to −67.6 | −109.5 to −90.3 (0/10) | −103.1 to −90.5 (0/10) |
+| 8580 | saw | −74.2 to −72.2 | −90.4 to silent (2/10) | −92.9 to silent (4/10) |
+| 8580 | triangle | −73.2 to −72.3 | −90.3 to silent (4/10) | −90.6 to silent (6/10) |
+| 8580 | noise | −73.5 to −72.5 | −91.1 to silent (2/10) | −91.6 to silent (1/10) |
 
 **What the table shows:**
-- Either value takes the ghost away: at least 17 dB down on the 8580, and to silence on the 6581.
-- On the 8580 both values first fade through a bump in the first second, as the waveform output floats down: −72.7 to −69.7 dBFS for pulse and saw, −80.4 to −75.2 for triangle, −84.4 to −79.3 for noise.
-- The two values settle in the same range; the helper shows no level difference between them.
+- **The ghost goes either way.** Both values take it away: to silence, or close to it, on the 6581, and by at least 18 dB on the 8580 in this setup.
+- **The 8580 bump.** On the 8580 both values first fade through a bump in the first second, as the waveform output floats down: −72.7 to −69.7 dBFS for pulse and saw, −80.3 to −76.2 for triangle, −83.2 to −79.3 for noise.
+- **No difference between them.** The two values settle in the same range.
+- **Other setups vary more.** A review's re-measure, with AD `$09`, a 1 s gate and 12 processes, found:
+  - settled levels up to −86.8 dBFS on the 8580 (about 14 dB under the ghost);
+  - first-second bumps up to −69.5 dBFS for triangle and noise;
+  - an occasional −98 to −112 dBFS on the 6581.
 
-Score64 uses `$00`. The test bit doesn't only silence: it resets the oscillator and holds it at zero, and it resets the noise generator, while set (MOS 6581 datasheet, control register bit 3). `$00` leaves both alone, and the next note's own waveform takes over from there.
+  Treat the table as typical rather than as a bound.
+
+Score64 uses `$00`. The test bit does more than silence: while it's set, it resets the oscillator and holds it at zero, and it resets the noise generator (MOS 6581 datasheet, control register bit 3). `$00` leaves both alone, and the next note's own waveform takes over from there.
 
 `crates/score64-adapters/tests/silence_after_release.rs` checks this end to end, through an exported song packed by gt2reloc 2.73:
 - **Without the setting,** the gap after a key-off keeps the ghost: −60 to −73 dBFS.
 - **With it,** the gap is exactly silent in most runs. Otherwise, it's −98 dBFS or lower on the 6581, and −90 dBFS or lower on the 8580, over the gap's last 3 s.
 - **Its checks:** below −85 dBFS, and 15 dB under the ghost, on both chips.
 
-**When it's written.** A release lasts at most 756 envelope rate periods: 255 steps, the lower ones slowed by the exponential counter. Add one wrap of the 15-bit rate counter, which the "ADSR bug" can add before the first step. The periods (9, 32, 63, … 31,251 cycles by nibble) are reSIDfp's, as in reSID. That's 300.8 ms for release 8, against the datasheet's 300.
+**When it's written.** A release from full level lasts 756 envelope rate periods: 255 steps, the lower ones slowed by the exponential counter (162 × 1, 39 × 2, 28 × 4, 12 × 8, 8 × 16 and 6 × 30). The periods are reSIDfp's: 9, 32, 63, … 31,251 cycles by nibble, as in reSID.
+
+Before the first step, the "ADSR bug" can add up to one wrap of the 15-bit rate counter, 32,767 cycles. The export allows a little more: 756 × (period + 1) + 32,768 cycles. For release 8 that is 334.8 ms (17 PAL frames), against the datasheet's 300 ms.
 
 GoatTracker clears the gate when it fetches the key-off row, the instrument's gate timer of frames before that row (`gplay.c`, the early fetch), so the count starts there.
 
