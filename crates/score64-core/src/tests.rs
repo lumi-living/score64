@@ -375,4 +375,5 @@ fn schemas_carry_ranges_and_reject_unknown_fields() {
         .unwrap()
         .to_string();
     assert!(d.contains("\"llm\"") && d.contains("\"loop_row\""), "{d}");
+    assert!(d.contains("\"keep_note\""), "{d}");
 }

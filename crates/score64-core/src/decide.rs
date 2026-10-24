@@ -66,8 +66,8 @@ pub struct Checked {
 ///
 /// The rules make only decisions that pass, about notes that start inside the subtune; parts should be clipped to
 /// the subtune before they are reduced, or a rule's decision about a note past the end comes back `past_end`. What
-/// only a reduction can see is left to it: whether the note a `trim_note`, `drop_note` or `retrigger` names is
-/// there, and whether a trim fits.
+/// only a reduction can see is left to it: whether the note a `trim_note`, `drop_note`, `retrigger` or `keep_note`
+/// names is there, and whether a trim fits.
 pub fn check(
     decisions: impl IntoIterator<Item = Decision>,
     song: &Song,
@@ -128,10 +128,14 @@ fn why_not(d: &Decision, song: &Song, sources: &[ContentHash]) -> Option<Unappli
         Proposal::LoopRow { row } => in_bar(*row),
         Proposal::TrimNote { row, .. }
         | Proposal::DropNote { row, .. }
-        | Proposal::Retrigger { row, .. } => in_bar(*row),
+        | Proposal::Retrigger { row, .. }
+        | Proposal::KeepNote { row, .. } => in_bar(*row),
         Proposal::VoiceRole { .. } | Proposal::FramesPerRow { .. } => None,
     }
 }
+
+/// A note by subtune, voice, row and pitch, as a keep names it.
+pub(crate) type NoteAt<'a> = (&'a SubtuneName, Voice, u32, Pitch);
 
 /// What a decision is about: two decisions with the same slot compete, and only one applies.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -216,6 +220,18 @@ pub enum Slot {
         /// Its pitch.
         pitch: Pitch,
     },
+    /// Whether the note on a row and pitch is kept. It competes with every [`Slot::DropNote`] of a note there, as one
+    /// slot: see [`resolve`].
+    KeepNote {
+        /// The subtune.
+        subtune: SubtuneName,
+        /// The voice.
+        voice: Voice,
+        /// The note's row.
+        row: u32,
+        /// Its pitch.
+        pitch: Pitch,
+    },
 }
 
 impl Decision {
@@ -267,6 +283,12 @@ impl Decision {
                 row,
                 pitch,
             },
+            Proposal::KeepNote { voice, row, pitch } => Slot::KeepNote {
+                subtune,
+                voice,
+                row,
+                pitch,
+            },
         }
     }
 
@@ -294,6 +316,27 @@ impl Slot {
             } => Some((subtune.clone(), 0, Some(*voice), *bar)),
             Slot::LeadSource { subtune, bar } => Some((subtune.clone(), 1, None, *bar)),
             Slot::FramesPerRow { subtune, bar } => Some((subtune.clone(), 2, None, *bar)),
+            _ => None,
+        }
+    }
+
+    /// For a drop or a keep, the note whose staying it decides (subtune, voice, row and pitch), and whether it is a
+    /// keep. A keep and the drops of notes on its row and pitch, whatever their length, compete as one slot.
+    pub(crate) fn stays(&self) -> Option<(NoteAt<'_>, bool)> {
+        match self {
+            Slot::DropNote {
+                subtune,
+                voice,
+                row,
+                pitch,
+                ..
+            } => Some(((subtune, *voice, *row, *pitch), false)),
+            Slot::KeepNote {
+                subtune,
+                voice,
+                row,
+                pitch,
+            } => Some(((subtune, *voice, *row, *pitch), true)),
             _ => None,
         }
     }
@@ -347,9 +390,32 @@ pub struct Resolution {
 /// `choose_lead` treats lead sources: a decision made at a bar where a stronger one is already in force (made at that
 /// bar or earlier, for the same voice) is overruled by it. So a person's choice holds over any later model's or
 /// rules', until the person decides again.
+///
+/// A `keep_note` competes for the same slot as the drops of notes on its row and pitch (ADR-014 §8). A keep names no
+/// length, so it competes with the drops of every length there: the strongest of them all decides. When that is a
+/// keep, every drop there loses to it; when it is a drop, every keep there loses to it, and drops of different
+/// lengths still don't compete with each other, since they are about different notes.
 pub fn resolve(decisions: impl IntoIterator<Item = Decision>) -> Resolution {
     let mut all: Vec<(Slot, Decision)> = decisions.into_iter().map(|d| (d.slot(), d)).collect();
     all.sort_by(|(sa, a), (sb, b)| sa.cmp(sb).then_with(|| strength(a, b)));
+    // Of each note's keeps and drops, the strongest: whether it is a keep, and its id.
+    let mut stays: BTreeMap<(SubtuneName, Voice, u32, Pitch), (bool, &Decision)> = BTreeMap::new();
+    for (slot, d) in &all {
+        if let Some(((subtune, voice, row, pitch), keep)) = slot.stays() {
+            stays
+                .entry((subtune.clone(), voice, row, pitch))
+                .and_modify(|best| {
+                    if strength(d, best.1).is_lt() {
+                        *best = (keep, d);
+                    }
+                })
+                .or_insert((keep, d));
+        }
+    }
+    let stays: BTreeMap<_, (bool, DecisionId)> = stays
+        .into_iter()
+        .map(|(note, (keep, d))| (note, (keep, d.id.clone())))
+        .collect();
     // One pass in slot order. In a slot the strongest comes first and wins. For the kinds that hold from a bar,
     // slots sort by subtune and then bar, so each kind's bars come in order: one record per kind (and voice) of the
     // decision in force so far, which overrules anything weaker after it, so every loser names what actually beat it.
@@ -362,7 +428,17 @@ pub fn resolve(decisions: impl IntoIterator<Item = Decision>) -> Resolution {
             .holds_from_bar()
             .map(|(subtune, kind, voice, _)| (subtune, kind, voice));
         let force = family.as_ref().and_then(|f| in_force.get(f));
-        if let Some((_, by)) = force.filter(|(rank, _)| *rank > d.rank()) {
+        // A keep or a drop where the strongest decision about its note is of the other kind.
+        let against = slot
+            .stays()
+            .and_then(|((subtune, voice, row, pitch), keep)| {
+                stays
+                    .get(&(subtune.clone(), voice, row, pitch))
+                    .filter(|(strongest, _)| *strongest != keep)
+            });
+        if let Some((_, by)) = against {
+            overruled.push((d, by.clone()));
+        } else if let Some((_, by)) = force.filter(|(rank, _)| *rank > d.rank()) {
             overruled.push((d, by.clone()));
         } else if let Some((_, winner)) = chosen.last().filter(|(s, _)| *s == slot) {
             overruled.push((d, winner.id.clone()));

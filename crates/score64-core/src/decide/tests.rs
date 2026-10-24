@@ -159,15 +159,21 @@ fn every_kind_has_its_slot() {
             pitch: p,
             source: None,
         },
+        // Another pitch than the drop's: a keep of the dropped note itself competes with it.
+        Proposal::KeepNote {
+            voice: voice(1),
+            row: 4,
+            pitch: "D-4".parse().unwrap(),
+        },
     ];
     let decisions: Vec<_> = kinds
         .iter()
         .enumerate()
         .map(|(i, k)| decision(&format!("d{i}"), 0, k.clone(), rules()))
         .collect();
-    // Nine kinds, nine slots: even the trim, drop and retrigger of one note are about different things.
+    // Ten kinds, ten slots: even the trim, drop and retrigger of one note are about different things.
     let r = resolve(decisions.clone());
-    assert_eq!(r.chosen.len(), 9);
+    assert_eq!(r.chosen.len(), 10);
     // The loop row is the subtune's, whatever bar a decision names; the chord is its row's.
     let mut other_bar = decisions[4].clone();
     other_bar.bar = 3;
@@ -381,6 +387,133 @@ fn every_slot_field_tells_decisions_apart() {
     }
 }
 
+fn keep_of(pitch: &str) -> Proposal {
+    Proposal::KeepNote {
+        voice: voice(1),
+        row: 4,
+        pitch: pitch.parse().unwrap(),
+    }
+}
+
+fn drop_of(pitch: &str, length: u32, reason: DropReason) -> Proposal {
+    Proposal::DropNote {
+        voice: voice(1),
+        row: 4,
+        pitch: pitch.parse().unwrap(),
+        length: NonZeroU32::new(length).unwrap(),
+        source: None,
+        reason,
+    }
+}
+
+fn lost(r: &Resolution) -> Vec<(&str, &str)> {
+    r.overruled
+        .iter()
+        .map(|(d, by)| (d.id.as_str(), by.as_str()))
+        .collect()
+}
+
+/// ADR-014 §8: a keep competes for the same slot as the drops of its note, and the stronger wins.
+#[test]
+fn a_keep_competes_with_the_drops_of_its_note() {
+    // A person's keep beats the rules' drop.
+    let r = resolve([
+        decision(
+            "rules-drop",
+            0,
+            drop_of("C-4", 2, DropReason::Ghost),
+            rules(),
+        ),
+        decision("keep", 0, keep_of("C-4"), Provenance::Manual),
+    ]);
+    assert_eq!(ids(&r), ["keep"]);
+    assert_eq!(lost(&r), [("rules-drop", "keep")]);
+    // A person's drop beats a model's keep.
+    let r = resolve([
+        decision("model-keep", 0, keep_of("C-4"), model()),
+        decision(
+            "drop",
+            0,
+            drop_of("C-4", 2, DropReason::Overlap),
+            Provenance::Manual,
+        ),
+    ]);
+    assert_eq!(ids(&r), ["drop"]);
+    assert_eq!(lost(&r), [("model-keep", "drop")]);
+    // Of one rank, the lower id; the drop's length doesn't matter, since a keep names its note by row and pitch.
+    let r = resolve([
+        decision(
+            "b-drop",
+            0,
+            drop_of("C-4", 3, DropReason::Overlap),
+            Provenance::Manual,
+        ),
+        decision("a-keep", 0, keep_of("C-4"), Provenance::Manual),
+    ]);
+    assert_eq!(ids(&r), ["a-keep"]);
+    assert_eq!(lost(&r), [("b-drop", "a-keep")]);
+    // A keep beats the drops of every repeat of its note, and of two keeps of one note the stronger wins.
+    let r = resolve([
+        decision("short", 0, drop_of("C-4", 1, DropReason::Repeat), rules()),
+        decision("long", 0, drop_of("C-4", 4, DropReason::Ghost), model()),
+        decision("keep", 0, keep_of("C-4"), Provenance::Manual),
+        decision("model-keep", 0, keep_of("C-4"), model()),
+    ]);
+    assert_eq!(ids(&r), ["keep"]);
+    assert_eq!(
+        sorted(lost(&r)),
+        [("long", "keep"), ("model-keep", "keep"), ("short", "keep")]
+    );
+    // When a drop is the strongest, every keep of its note loses to it, and the drops of other lengths still don't
+    // compete with each other: they're about different notes.
+    let r = resolve([
+        decision(
+            "p-drop",
+            0,
+            drop_of("C-4", 1, DropReason::Overlap),
+            Provenance::Manual,
+        ),
+        decision("m-keep", 0, keep_of("C-4"), model()),
+        decision("r-drop", 0, drop_of("C-4", 4, DropReason::Ghost), rules()),
+    ]);
+    assert_eq!(ids(&r), ["p-drop", "r-drop"]);
+    assert_eq!(lost(&r), [("m-keep", "p-drop")]);
+    // A keep of another pitch, row, voice or subtune is about another note.
+    let elsewhere = |id: &str, f: &dyn Fn(&mut Decision)| {
+        let mut d = decision(id, 0, keep_of("C-4"), Provenance::Manual);
+        f(&mut d);
+        d
+    };
+    let r = resolve([
+        decision("drop", 0, drop_of("C-4", 2, DropReason::Ghost), rules()),
+        elsewhere("pitch", &|d| d.proposal = keep_of("D-4")),
+        elsewhere("row", &|d| {
+            d.proposal = Proposal::KeepNote {
+                voice: voice(1),
+                row: 5,
+                pitch: "C-4".parse().unwrap(),
+            }
+        }),
+        elsewhere("voice", &|d| {
+            d.proposal = Proposal::KeepNote {
+                voice: voice(2),
+                row: 4,
+                pitch: "C-4".parse().unwrap(),
+            }
+        }),
+        elsewhere("subtune", &|d| {
+            d.subtune = SubtuneName::new("title").unwrap()
+        }),
+    ]);
+    assert_eq!(r.chosen.len(), 5);
+    assert!(r.overruled.is_empty());
+}
+
+fn sorted<'a>(mut v: Vec<(&'a str, &'a str)>) -> Vec<(&'a str, &'a str)> {
+    v.sort();
+    v
+}
+
 /// Decisions that compete: two subtunes, a few bars, rows, voices, pitches and ids, every rank.
 fn competing() -> impl Strategy<Value = Decision> {
     let voice = (1u8..=2).prop_map(|v| Voice::new(v).unwrap());
@@ -424,11 +557,18 @@ fn competing() -> impl Strategy<Value = Decision> {
                 reason: DropReason::Repeat,
             }
         }),
-        (voice, 0u32..3, pitch).prop_map(|(voice, row, pitch)| Proposal::Retrigger {
+        (voice.clone(), 0u32..3, pitch.clone()).prop_map(|(voice, row, pitch)| {
+            Proposal::Retrigger {
+                voice,
+                row,
+                pitch,
+                source: None,
+            }
+        }),
+        (voice, 0u32..3, pitch).prop_map(|(voice, row, pitch)| Proposal::KeepNote {
             voice,
             row,
-            pitch,
-            source: None
+            pitch
         }),
     ];
     let provenance = prop_oneof![Just(rules()), Just(model()), Just(Provenance::Manual)];
@@ -474,9 +614,21 @@ proptest! {
         prop_assert!(r.chosen.windows(2).all(|w| w[0].slot() < w[1].slot()));
         // The decision that beat each loser: in its slot or, for the kinds that hold from a bar, of its kind at the
         // same bar or earlier.
+        // A keep and the drops of notes on its row and pitch compete as one slot: a loser there may name a winner of
+        // the other kind, which must be the strongest of them all.
+        // Ids may repeat here, so of the chosen decisions with that id about the note, the strongest.
+        let by_stays = |lost: &Decision, by: &DecisionId| {
+            r.chosen
+                .iter()
+                .filter(|d| {
+                    &d.id == by
+                        && matches!((d.slot().stays(), lost.slot().stays()), (Some((w, wk)), Some((l, lk))) if w == l && wk != lk)
+                })
+                .min_by(|a, b| strength(a, b))
+        };
         let beat = |lost: &Decision, by: &DecisionId| {
             let same_slot = r.chosen.iter().find(|d| &d.id == by && d.slot() == lost.slot());
-            same_slot.or_else(|| {
+            same_slot.or_else(|| by_stays(lost, by)).or_else(|| {
                 // The latest of its kind at or before the loser's bar with that id.
                 r.chosen.iter().rev().find(|d| {
                     &d.id == by
@@ -509,7 +661,7 @@ proptest! {
         }
         for (lost, by) in &r.overruled {
             let same_slot = r.chosen.iter().any(|d| &d.id == by && d.slot() == lost.slot());
-            if !same_slot {
+            if !same_slot && by_stays(lost, by).is_none() {
                 let in_force = in_force_at(lost);
                 prop_assert!(in_force.is_some_and(|f| &f.id == by), "{lost:?} names {by:?}, not what is in force");
             }
@@ -522,6 +674,23 @@ proptest! {
             // A person's decision is overruled only by another person's.
             if lost.rank() == Rank::Person {
                 prop_assert_eq!(winner.rank(), Rank::Person);
+            }
+        }
+        // Of a keep and the drops of its note, the strongest of them all is chosen, and every decision of the other
+        // kind there lost to it.
+        for d in &decisions {
+            let slot = d.slot();
+            let Some((key, keep)) = slot.stays() else { continue };
+            let strongest = decisions
+                .iter()
+                .filter(|o| o.slot().stays().is_some_and(|(k, _)| k == key))
+                .min_by(|a, b| strength(a, b))
+                .unwrap();
+            if strongest.slot().stays().is_some_and(|(_, k)| k != keep) {
+                prop_assert!(
+                    r.overruled.iter().any(|(l, by)| l == d && by == &strongest.id),
+                    "{d:?} should lose to {strongest:?}"
+                );
             }
         }
         let mut shuffled = decisions;
@@ -600,6 +769,14 @@ fn fresh(row: u32) -> Proposal {
     }
 }
 
+fn keep(row: u32) -> Proposal {
+    Proposal::KeepNote {
+        voice: voice(1),
+        row,
+        pitch: "C-4".parse().unwrap(),
+    }
+}
+
 fn chord(row: u32, root: u8, intervals: &[u8]) -> Proposal {
     Proposal::Chord {
         row,
@@ -621,6 +798,8 @@ fn check_keeps_what_can_apply() {
         (2, trim(39)),
         (1, dropping(16)),
         (0, fresh(15)),
+        (2, keep(39)),
+        (1, keep(16)),
         (
             0,
             Proposal::VoiceRole {
@@ -648,6 +827,10 @@ fn check_says_why_a_decision_cant_apply() {
         (0, dropping(16), Unapplied::WrongBar),
         (1, fresh(15), Unapplied::WrongBar),
         (2, dropping(40), Unapplied::PastEnd),
+        (0, keep(16), Unapplied::WrongBar),
+        (2, keep(31), Unapplied::WrongBar),
+        (2, keep(40), Unapplied::PastEnd),
+        (3, keep(48), Unapplied::PastEnd),
         (1, Proposal::LoopRow { row: 8 }, Unapplied::WrongBar),
         (0, chord(16, 0, &[0, 4, 7]), Unapplied::WrongBar),
         (2, chord(40, 0, &[0, 4, 7]), Unapplied::PastEnd),
@@ -785,7 +968,8 @@ fn about(song: Song) -> impl Strategy<Value = (Song, Vec<Decision>, Sources)> {
                         | Proposal::LoopRow { row: r }
                         | Proposal::TrimNote { row: r, .. }
                         | Proposal::DropNote { row: r, .. }
-                        | Proposal::Retrigger { row: r, .. } => *r = row,
+                        | Proposal::Retrigger { row: r, .. }
+                        | Proposal::KeepNote { row: r, .. } => *r = row,
                         Proposal::LeadSource { source } => *source = pool[k],
                         _ => {}
                     }

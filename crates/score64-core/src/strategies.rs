@@ -305,6 +305,11 @@ pub fn proposal() -> impl Strategy<Value = Proposal> {
                 pitch,
                 source
             }),
+        (voice(), 0u32..1024, pitch()).prop_map(|(voice, row, pitch)| Proposal::KeepNote {
+            voice,
+            row,
+            pitch
+        }),
     ]
 }
 

@@ -342,6 +342,18 @@ pub enum Proposal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<SourceRef>,
     },
+    /// Keep the note on this row and pitch that a rule would leave out (monophonise): the reject case of
+    /// [`Proposal::DropNote`] (ADR-014 §8). It competes with the drops of notes on its row and pitch, whatever their
+    /// length, and the stronger decision wins (`docs/TAD.md` §3.3). No rule makes one. Only `monophonise_with`
+    /// applies it for now: the drum rules take no overrides yet.
+    KeepNote {
+        /// The voice.
+        voice: Voice,
+        /// The note's start row, in the decision's bar.
+        row: u32,
+        /// Its pitch.
+        pitch: Pitch,
+    },
 }
 
 /// Why a [`Proposal::DropNote`] leaves a note out.
