@@ -159,11 +159,10 @@ fn every_kind_has_its_slot() {
             pitch: p,
             source: None,
         },
-        // Another pitch than the drop's: a keep of the dropped note itself competes with it.
         Proposal::KeepNote {
             voice: voice(1),
             row: 4,
-            pitch: "D-4".parse().unwrap(),
+            pitch: p,
         },
     ];
     let decisions: Vec<_> = kinds
@@ -171,7 +170,7 @@ fn every_kind_has_its_slot() {
         .enumerate()
         .map(|(i, k)| decision(&format!("d{i}"), 0, k.clone(), rules()))
         .collect();
-    // Ten kinds, ten slots: even the trim, drop and retrigger of one note are about different things.
+    // Ten kinds, ten slots: even the trim, drop, retrigger and keep of one note are about different things.
     let r = resolve(decisions.clone());
     assert_eq!(r.chosen.len(), 10);
     // The loop row is the subtune's, whatever bar a decision names; the chord is its row's.
@@ -413,10 +412,11 @@ fn lost(r: &Resolution) -> Vec<(&str, &str)> {
         .collect()
 }
 
-/// ADR-014 §8: a keep competes for the same slot as the drops of its note, and the stronger wins.
+/// ADR-014 §8: a keep and the drops of notes on its row and pitch are separate slots. Whether they conflict depends on
+/// the notes there, so the reduction that applies them settles it; `resolve` keeps the strongest of each.
 #[test]
-fn a_keep_competes_with_the_drops_of_its_note() {
-    // A person's keep beats the rules' drop.
+fn a_keep_and_the_drops_of_its_note_are_separate_slots() {
+    // A person's keep and the rules' drop, a model's keep and a person's drop: both are chosen.
     let r = resolve([
         decision(
             "rules-drop",
@@ -426,9 +426,8 @@ fn a_keep_competes_with_the_drops_of_its_note() {
         ),
         decision("keep", 0, keep_of("C-4"), Provenance::Manual),
     ]);
-    assert_eq!(ids(&r), ["keep"]);
-    assert_eq!(lost(&r), [("rules-drop", "keep")]);
-    // A person's drop beats a model's keep.
+    assert_eq!(ids(&r), ["rules-drop", "keep"]);
+    assert!(r.overruled.is_empty());
     let r = resolve([
         decision("model-keep", 0, keep_of("C-4"), model()),
         decision(
@@ -438,54 +437,41 @@ fn a_keep_competes_with_the_drops_of_its_note() {
             Provenance::Manual,
         ),
     ]);
-    assert_eq!(ids(&r), ["drop"]);
-    assert_eq!(lost(&r), [("model-keep", "drop")]);
-    // Of one rank, the lower id; the drop's length doesn't matter, since a keep names its note by row and pitch.
-    let r = resolve([
-        decision(
-            "b-drop",
-            0,
-            drop_of("C-4", 3, DropReason::Overlap),
-            Provenance::Manual,
-        ),
-        decision("a-keep", 0, keep_of("C-4"), Provenance::Manual),
-    ]);
-    assert_eq!(ids(&r), ["a-keep"]);
-    assert_eq!(lost(&r), [("b-drop", "a-keep")]);
-    // A keep beats the drops of every repeat of its note, and of two keeps of one note the stronger wins.
+    assert_eq!(ids(&r), ["drop", "model-keep"]);
+    assert!(r.overruled.is_empty());
+    // Keeps of one note compete with each other, and drops with the drops of their note's length, whatever the
+    // other kind holds there.
     let r = resolve([
         decision("short", 0, drop_of("C-4", 1, DropReason::Repeat), rules()),
         decision("long", 0, drop_of("C-4", 4, DropReason::Ghost), model()),
+        decision(
+            "p-long",
+            0,
+            drop_of("C-4", 4, DropReason::Overlap),
+            Provenance::Manual,
+        ),
         decision("keep", 0, keep_of("C-4"), Provenance::Manual),
         decision("model-keep", 0, keep_of("C-4"), model()),
     ]);
-    assert_eq!(ids(&r), ["keep"]);
+    assert_eq!(ids(&r), ["short", "p-long", "keep"]);
     assert_eq!(
         sorted(lost(&r)),
-        [("long", "keep"), ("model-keep", "keep"), ("short", "keep")]
+        [("long", "p-long"), ("model-keep", "keep")]
     );
-    // When a drop is the strongest, every keep of its note loses to it, and the drops of other lengths still don't
-    // compete with each other: they're about different notes.
+    // Of one rank, the lower id.
     let r = resolve([
-        decision(
-            "p-drop",
-            0,
-            drop_of("C-4", 1, DropReason::Overlap),
-            Provenance::Manual,
-        ),
-        decision("m-keep", 0, keep_of("C-4"), model()),
-        decision("r-drop", 0, drop_of("C-4", 4, DropReason::Ghost), rules()),
+        decision("b-keep", 0, keep_of("C-4"), Provenance::Manual),
+        decision("a-keep", 0, keep_of("C-4"), Provenance::Manual),
     ]);
-    assert_eq!(ids(&r), ["p-drop", "r-drop"]);
-    assert_eq!(lost(&r), [("m-keep", "p-drop")]);
-    // A keep of another pitch, row, voice or subtune is about another note.
+    assert_eq!(lost(&r), [("b-keep", "a-keep")]);
+    // A keep of another pitch, row, voice or subtune is another slot.
     let elsewhere = |id: &str, f: &dyn Fn(&mut Decision)| {
         let mut d = decision(id, 0, keep_of("C-4"), Provenance::Manual);
         f(&mut d);
         d
     };
     let r = resolve([
-        decision("drop", 0, drop_of("C-4", 2, DropReason::Ghost), rules()),
+        elsewhere("keep", &|_| {}),
         elsewhere("pitch", &|d| d.proposal = keep_of("D-4")),
         elsewhere("row", &|d| {
             d.proposal = Proposal::KeepNote {
@@ -614,21 +600,9 @@ proptest! {
         prop_assert!(r.chosen.windows(2).all(|w| w[0].slot() < w[1].slot()));
         // The decision that beat each loser: in its slot or, for the kinds that hold from a bar, of its kind at the
         // same bar or earlier.
-        // A keep and the drops of notes on its row and pitch compete as one slot: a loser there may name a winner of
-        // the other kind, which must be the strongest of them all.
-        // Ids may repeat here, so of the chosen decisions with that id about the note, the strongest.
-        let by_stays = |lost: &Decision, by: &DecisionId| {
-            r.chosen
-                .iter()
-                .filter(|d| {
-                    &d.id == by
-                        && matches!((d.slot().stays(), lost.slot().stays()), (Some((w, wk)), Some((l, lk))) if w == l && wk != lk)
-                })
-                .min_by(|a, b| strength(a, b))
-        };
         let beat = |lost: &Decision, by: &DecisionId| {
             let same_slot = r.chosen.iter().find(|d| &d.id == by && d.slot() == lost.slot());
-            same_slot.or_else(|| by_stays(lost, by)).or_else(|| {
+            same_slot.or_else(|| {
                 // The latest of its kind at or before the loser's bar with that id.
                 r.chosen.iter().rev().find(|d| {
                     &d.id == by
@@ -661,7 +635,7 @@ proptest! {
         }
         for (lost, by) in &r.overruled {
             let same_slot = r.chosen.iter().any(|d| &d.id == by && d.slot() == lost.slot());
-            if !same_slot && by_stays(lost, by).is_none() {
+            if !same_slot {
                 let in_force = in_force_at(lost);
                 prop_assert!(in_force.is_some_and(|f| &f.id == by), "{lost:?} names {by:?}, not what is in force");
             }
@@ -676,22 +650,18 @@ proptest! {
                 prop_assert_eq!(winner.rank(), Rank::Person);
             }
         }
-        // Of a keep and the drops of its note, the strongest of them all is chosen, and every decision of the other
-        // kind there lost to it.
+        // A keep and the drops of notes on its row and pitch are separate slots: each is chosen exactly when it is
+        // the strongest of its own, whatever the other kind holds there.
         for d in &decisions {
-            let slot = d.slot();
-            let Some((key, keep)) = slot.stays() else { continue };
+            if !matches!(d.proposal, Proposal::KeepNote { .. } | Proposal::DropNote { .. }) {
+                continue;
+            }
             let strongest = decisions
                 .iter()
-                .filter(|o| o.slot().stays().is_some_and(|(k, _)| k == key))
+                .filter(|o| o.slot() == d.slot())
                 .min_by(|a, b| strength(a, b))
                 .unwrap();
-            if strongest.slot().stays().is_some_and(|(_, k)| k != keep) {
-                prop_assert!(
-                    r.overruled.iter().any(|(l, by)| l == d && by == &strongest.id),
-                    "{d:?} should lose to {strongest:?}"
-                );
-            }
+            prop_assert_eq!(r.chosen.contains(d), strongest == d, "{:?}", d);
         }
         let mut shuffled = decisions;
         let mut x = seed | 1;

@@ -342,10 +342,11 @@ pub enum Proposal {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<SourceRef>,
     },
-    /// Keep the note on this row and pitch that a rule would leave out (monophonise): the reject case of
-    /// [`Proposal::DropNote`] (ADR-014 §8). It competes with the drops of notes on its row and pitch, whatever their
-    /// length, and the stronger decision wins (`docs/TAD.md` §3.3). No rule makes one. Only `monophonise_with`
-    /// applies it for now: the drum rules take no overrides yet.
+    /// Keep a note on this row and pitch that a rule would leave out (monophonise): the reject case of
+    /// [`Proposal::DropNote`] (ADR-014 §8). Any note the drops in force leave there meets it, and it keeps the longest;
+    /// only when they take out every note there does it compete with them, and the stronger decision wins
+    /// (`docs/TAD.md` §3.2–§3.3). No rule makes one. Only `monophonise_with` applies it for now: one about a drum
+    /// voice is not applied yet.
     KeepNote {
         /// The voice.
         voice: Voice,
