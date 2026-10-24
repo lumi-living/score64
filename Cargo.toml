@@ -66,8 +66,9 @@ insta = "1.49.0"
 blake3 = "1.8.7"
 # score64-adapters: kill a sidecar and everything it starts (process group on Unix, Job object on Windows), #126.
 process-wrap = { version = "10.0.1", default-features = false, features = ["std", "process-group", "job-object"] }
-# score64-project: the rebuildable index (#28). `bundled` compiles SQLite (public domain) in, so no system library is needed.
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# score64-project: the rebuildable index (#28). `bundled` compiles SQLite (public domain) in, so no system library is needed;
+# `backup` is SQLite's online backup API, which copies a rebuilt index into place (no extra dependencies).
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

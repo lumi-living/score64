@@ -53,8 +53,8 @@ pub trait Command {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
-    /// Changes no project file. Starting the helper, rendering and filling the stage cache count as reading: the
-    /// cache is rebuildable (ADR-004).
+    /// Changes no project file. Starting the helper, rendering, filling the stage cache and rebuilding the index
+    /// (`.score64/index.db`) count as reading: the cache and the index are rebuildable from the files (ADR-004).
     ReadOnly,
     /// Changes project files (track files, decisions, approvals, `audio.lock`); recorded with provenance, undoable.
     WritesProject,
@@ -106,8 +106,8 @@ pub enum ErrorKind {
     InvalidArgs,
     /// A file the command was given cannot be read or is not valid (missing, unknown fields, a newer schema, …).
     InvalidInput,
-    /// Reading, writing or removing a file failed on a file that is itself fine: no permission, a full disk, a file
-    /// in use.
+    /// A file Score64 keeps for itself, such as the stage cache or the index under `.score64/`, can't be read or
+    /// written (permissions, a full disk, a lock held too long) or is damaged. The project's own files are fine.
     Io,
     /// The emulator helper binary was not found.
     HelperMissing,

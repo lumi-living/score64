@@ -410,3 +410,79 @@ fn config_keys_sort_at_every_depth() {
     let b = json!({ "a": 0, "b": { "x": [ { "p": 2, "q": 1 } ], "y": 1 } });
     assert_eq!(Cache::key("s", "1", &a, &[]), Cache::key("s", "1", &b, &[]));
 }
+
+#[test]
+fn put_records_when_it_was_written_and_the_manifest_keeps_it() {
+    let (c, dir) = cache("created");
+    let before = crate::UtcTime::now();
+    let put = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    let after = crate::UtcTime::now();
+    let created = put.manifest.created;
+    assert!(before <= created && created <= after, "{created}");
+    let text = std::fs::read_to_string(put.dir.join("manifest.json")).unwrap();
+    assert!(
+        text.contains(&format!("\"created\": \"{created}\"")),
+        "{text}"
+    );
+    assert_eq!(
+        c.get("transcribe", key()).unwrap().manifest.created,
+        created
+    );
+    assert_eq!(c.entries().unwrap()[0].manifest.created, created);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn entries_lists_each_entry_once_under_its_own_name() {
+    let (c, dir) = cache("listing");
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    // A copy under the key's uppercase spelling: a second folder on a case-sensitive file system, the same one on
+    // others. Either way the entry is listed once, at its lowercase name.
+    let upper = entry
+        .dir
+        .with_file_name(entry.manifest.key.to_string().to_ascii_uppercase());
+    let distinct = std::fs::create_dir(&upper).is_ok();
+    if distinct {
+        for name in ["a.bin", "manifest.json"] {
+            std::fs::copy(entry.dir.join(name), upper.join(name)).unwrap();
+        }
+    }
+    let listed = c.entries().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].dir, entry.dir);
+    // Under its uppercase spelling alone, it isn't listed: `get` looks for the lowercase name.
+    if distinct {
+        std::fs::remove_dir_all(&upper).unwrap();
+    }
+    let aside = dir.join("aside");
+    std::fs::rename(&entry.dir, &aside).unwrap();
+    std::fs::rename(&aside, &upper).unwrap();
+    assert_eq!(c.entries().unwrap(), []);
+    std::fs::rename(&upper, &aside).unwrap();
+    std::fs::rename(&aside, &entry.dir).unwrap();
+    assert_eq!(c.entries().unwrap().len(), 1);
+
+    // A whole entry in a folder whose name isn't a valid stage name is not listed, even if its manifest agrees.
+    let other = c.put("ab", &[("a.bin", b"x")], run()).unwrap();
+    let root = dir.join("cache");
+    std::fs::rename(root.join("ab"), root.join("a b")).unwrap();
+    let manifest = root
+        .join("a b")
+        .join(other.manifest.key.to_string())
+        .join("manifest.json");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("\"stage\": \"ab\"", "\"stage\": \"a b\""),
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(&manifest)
+            .unwrap()
+            .contains("\"a b\"")
+    );
+    let listed = c.entries().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].manifest.stage, "transcribe");
+    let _ = std::fs::remove_dir_all(dir);
+}
