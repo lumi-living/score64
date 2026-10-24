@@ -15,8 +15,9 @@ use serde_json::Value;
 
 use score64_core::ContentHash;
 
-/// The manifest layout version this build reads and writes.
-pub const MANIFEST_SCHEMA: u32 = 1;
+/// The manifest layout version this build reads and writes: 2 added `created` (#28). An entry of another layout is a
+/// miss, and is replaced when its key is put again.
+pub const MANIFEST_SCHEMA: u32 = 2;
 
 /// The cache under a project's `.score64/cache/`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +76,9 @@ pub struct Manifest {
     pub stage: String,
     /// The entry's key: [`Cache::key`] of the stage and its run.
     pub key: ContentHash,
+    /// When it was written, in UTC. Not part of the key: the same work written later is the same entry.
+    #[serde(with = "crate::history::as_string")]
+    pub created: crate::UtcTime,
     /// How it was made.
     pub run: Run,
     /// What it holds, by name.
@@ -147,12 +151,33 @@ impl std::error::Error for Error {
     }
 }
 
-const MANIFEST: &str = "manifest.json";
+pub(crate) const MANIFEST: &str = "manifest.json";
+
+/// How many times [`Cache::put`] writes an entry whose copy a collector disturbed before it gives up.
+const PUT_TRIES: usize = 3;
+
+/// The outcome of one try at [`Cache::put`].
+enum Try {
+    /// The entry, whole.
+    Done(Box<Entry>),
+    /// Disturbed (a collector took or moved something); this error if no try succeeds.
+    Again(Error),
+}
+
+/// A test's hook on an entry's folder.
+#[cfg(test)]
+type Hook = Option<Box<dyn FnMut(&Path)>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Called with the entry's folder right after `put` renames its copy into place, so a test can disturb it.
+    pub(crate) static AFTER_RENAME: std::cell::RefCell<Hook> = const { std::cell::RefCell::new(None) };
+}
 
 /// Names that stay inside their directory on every system: letters, digits, `-`, `_` and `.`; not starting with `.`
 /// (which also keeps clear of the temporary directories) or ending with one; not a Windows device name (`con`,
 /// `nul.json`, `com1`, ...); not the manifest.
-fn check_name(name: &str) -> Result<(), Error> {
+pub(crate) fn check_name(name: &str) -> Result<(), Error> {
     let device = crate::textfile::is_device_name(name);
     let ok = !name.is_empty()
         && name.len() <= 128
@@ -234,7 +259,9 @@ impl Cache {
     /// ([`Cache::key`]), so an entry can't claim inputs or config it wasn't made from. Written whole and synced into a
     /// temporary directory, then renamed into place. If another writer got there first, its entry is kept and
     /// returned; an entry already there but not whole (damaged, or from an older layout) is replaced, and one from a
-    /// newer Score64 is left alone ([`Error::Newer`]).
+    /// newer Score64 is left alone ([`Error::Newer`]). After the rename the entry's manifest and sizes are checked
+    /// again. If a cache GC took the copy as it went into place, or moved what was in the way as this moved it, it is
+    /// written again, up to three times, and then the last error is returned: never an entry that isn't whole.
     pub fn put(&self, stage: &str, artifacts: &[(&str, &[u8])], run: Run) -> Result<Entry, Error> {
         check_name(stage)?;
         let mut names: Vec<String> = Vec::with_capacity(artifacts.len());
@@ -248,8 +275,33 @@ impl Cache {
             names.push(folded);
         }
         let key = Self::key(stage, &run.stage_version, &run.config, &run.inputs);
+        // A collector can take the temporary copy, or what was just renamed into place, while this runs (#29): then
+        // write it again, a few times at most.
+        let mut last = None;
+        for _ in 0..PUT_TRIES {
+            match self.write(stage, key, artifacts, run.clone())? {
+                Try::Done(entry) => return Ok(*entry),
+                Try::Again(error) => last = Some(error),
+            }
+        }
+        Err(last.expect("at least one try"))
+    }
+
+    /// One try at [`Cache::put`].
+    fn write(
+        &self,
+        stage: &str,
+        key: ContentHash,
+        artifacts: &[(&str, &[u8])],
+        run: Run,
+    ) -> Result<Try, Error> {
         if let Some(entry) = self.get(stage, key) {
-            return Ok(entry);
+            return Ok(Try::Done(Box::new(entry)));
+        }
+        // One from a newer Score64 stays, so don't write a copy only to throw it away (#29).
+        let dir = self.entry_dir(stage, key);
+        if newer_layout(&dir) {
+            return Err(Error::Newer(dir));
         }
         let stage_dir = self.root.join(stage);
         let io = |path: &Path| {
@@ -275,6 +327,7 @@ impl Cache {
                 schema: MANIFEST_SCHEMA,
                 stage: stage.to_owned(),
                 key,
+                created: crate::UtcTime::now(),
                 run,
                 artifacts: listed,
             };
@@ -300,12 +353,8 @@ impl Cache {
             && std::fs::symlink_metadata(&dir).is_ok()
         {
             // Something that isn't a whole entry is in the way. One from a newer Score64 is left alone.
-            let newer = std::fs::read(dir.join(MANIFEST))
-                .ok()
-                .and_then(|t| serde_json::from_slice::<Value>(&t).ok())
-                .and_then(|v| v.get("schema").and_then(Value::as_u64))
-                .is_some_and(|v| v > u64::from(MANIFEST_SCHEMA));
-            if newer {
+            // It may have appeared since the check above.
+            if newer_layout(&dir) {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(Error::Newer(dir));
             }
@@ -314,14 +363,23 @@ impl Cache {
             if let Ok(aside) = temp_dir(&stage_dir) {
                 let _ = std::fs::remove_dir(&aside);
                 if std::fs::rename(&dir, &aside).is_ok() {
-                    if whole(&aside, stage, key).is_some() {
+                    // What was moved may not be what was checked: another writer's whole entry, or a newer one, put
+                    // there in between. It goes back.
+                    let newer = newer_layout(&aside);
+                    if newer || whole(&aside, stage, key).is_some() {
                         let _ = std::fs::rename(&aside, &dir);
                         let _ = std::fs::remove_dir_all(&tmp);
-                        return self.get(stage, key).ok_or(Error::Io {
-                            path: dir,
-                            error: std::io::Error::other(
-                                "another writer's entry moved while replacing",
-                            ),
+                        if newer {
+                            return Err(Error::Newer(dir));
+                        }
+                        return Ok(match self.get(stage, key) {
+                            Some(entry) => Try::Done(Box::new(entry)),
+                            None => Try::Again(Error::Io {
+                                path: dir,
+                                error: std::io::Error::other(
+                                    "another writer's entry moved while replacing",
+                                ),
+                            }),
                         });
                     }
                     if std::fs::remove_dir_all(&aside).is_err() {
@@ -334,20 +392,110 @@ impl Cache {
         match result {
             Ok(()) => {
                 sync(&stage_dir);
-                Ok(Entry { dir, manifest })
+                #[cfg(test)]
+                AFTER_RENAME.with(|hook| {
+                    if let Some(hook) = hook.borrow_mut().as_mut() {
+                        hook(&dir);
+                    }
+                });
+                // Check it is still as written: a collector that took files from the copy as it was renamed would
+                // show here. Sizes are enough to see that; nothing is hashed again.
+                if sized(&dir, stage, key).as_ref() != Some(&manifest) {
+                    return Ok(Try::Again(Error::Io {
+                        path: dir,
+                        error: std::io::Error::other(
+                            "the entry was changed just after it was written; is a cache GC running?",
+                        ),
+                    }));
+                }
+                Ok(Try::Done(Box::new(Entry { dir, manifest })))
             }
             Err(error) => {
                 let _ = std::fs::remove_dir_all(&tmp);
-                // Another writer's entry won the race: keep it, since a pure stage gives the same output.
-                self.get(stage, key).ok_or(Error::Io { path: dir, error })
+                // Another writer's entry won the race: keep it, since a pure stage gives the same output. Otherwise a
+                // collector took the copy (not found) or moved what was in the way as this did (not empty): try again,
+                // and give this error if it keeps happening.
+                Ok(match self.get(stage, key) {
+                    Some(entry) => Try::Done(Box::new(entry)),
+                    None => Try::Again(Error::Io { path: dir, error }),
+                })
             }
         }
     }
 }
 
-/// The manifest of the entry in `dir`, if it is whole: it reads, is this layout, names `stage` and `key`, and every
-/// artifact's bytes still hash to what it says.
-fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
+impl Cache {
+    /// Every whole entry, by stage and then key: what the index lists (#28). Left out, as [`Cache::get`] would miss
+    /// them: folders whose name isn't a valid stage name or a key's lowercase hex (temporary `.tmp-*` directories
+    /// among them), and anything that isn't a whole entry of its stage and key (damaged, half-written, another
+    /// layout). No cache yet is no entries.
+    pub fn entries(&self) -> Result<Vec<Entry>, Error> {
+        let mut out = Vec::new();
+        for stage in sorted_names(&self.root)? {
+            if check_name(&stage).is_err() {
+                continue;
+            }
+            let stage_dir = self.root.join(&stage);
+            if !stage_dir.is_dir() {
+                continue;
+            }
+            for name in sorted_names(&stage_dir)? {
+                // Only the canonical (lowercase) spelling of a key names its entry: on a case-insensitive file system
+                // `ABC…` and `abc…` are one folder, and on any other an `ABC…` copy is not one `get` would find.
+                let Some(key) = ContentHash::from_hex(&name).filter(|k| k.to_string() == name)
+                else {
+                    continue;
+                };
+                let dir = stage_dir.join(&name);
+                if let Some(manifest) = whole(&dir, &stage, key) {
+                    out.push(Entry { dir, manifest });
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The names in `dir`, sorted; none when it doesn't exist.
+fn sorted_names(dir: &Path) -> Result<Vec<String>, Error> {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => {
+            return Err(Error::Io {
+                path: dir.to_path_buf(),
+                error,
+            });
+        }
+    };
+    let mut names = Vec::new();
+    for item in listing {
+        let item = item.map_err(|error| Error::Io {
+            path: dir.to_path_buf(),
+            error,
+        })?;
+        if let Some(name) = item.file_name().to_str() {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+/// Whether the entry in `dir` says it is of a newer layout than this build's: it is left alone, never replaced or
+/// collected.
+pub(crate) fn newer_layout(dir: &Path) -> bool {
+    std::fs::read(dir.join(MANIFEST))
+        .ok()
+        .and_then(|t| serde_json::from_slice::<Value>(&t).ok())
+        .and_then(|v| v.get("schema").and_then(Value::as_u64))
+        .is_some_and(|v| v > u64::from(MANIFEST_SCHEMA))
+}
+
+/// The manifest of the entry in `dir`, if it looks whole without reading its artifacts: the manifest reads, is this
+/// layout, names `stage` and `key`, and every artifact is a file of the size it says. Nothing is hashed, so a file
+/// changed in place without changing its size passes; [`whole`] is the full check.
+pub(crate) fn sized(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
     let text = std::fs::read(dir.join(MANIFEST)).ok()?;
     let manifest: Manifest = serde_json::from_slice(&text).ok()?;
     if manifest.schema != MANIFEST_SCHEMA || manifest.stage != stage || manifest.key != key {
@@ -355,6 +503,19 @@ fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
     }
     for a in &manifest.artifacts {
         check_name(&a.name).ok()?;
+        let m = std::fs::metadata(dir.join(&a.name)).ok()?;
+        if !m.is_file() || m.len() != a.bytes {
+            return None;
+        }
+    }
+    Some(manifest)
+}
+
+/// The manifest of the entry in `dir`, if it is whole: it is [`sized`] (checked first, so a missing or resized file
+/// costs no reading), and every artifact's bytes still hash to what it says.
+pub(crate) fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
+    let manifest = sized(dir, stage, key)?;
+    for a in &manifest.artifacts {
         let bytes = std::fs::read(dir.join(&a.name)).ok()?;
         if bytes.len() as u64 != a.bytes || ContentHash(*blake3::hash(&bytes).as_bytes()) != a.hash
         {
@@ -364,28 +525,76 @@ fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
     Some(manifest)
 }
 
-/// A new, empty temporary directory under `stage_dir`, named so no other writer (another process, another container
-/// with the same pid, a crashed run's leftovers) is using it.
-fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
+/// `<prefix><pid>-<counter>-<nanoseconds><suffix>`: a name no other writer (another process, another container with
+/// the same pid, a crashed run's leftovers) is likely to be using. Callers still create it exclusively and try the
+/// next name if it is taken.
+pub(crate) fn unique_name(prefix: &str, suffix: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    temp_dir_named(stage_dir, || {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        format!(
-            ".tmp-{}-{}-{nanos}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )
-    })
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!(
+        "{prefix}{}-{}-{nanos}{suffix}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A new, empty temporary directory under `stage_dir`, named so no other writer (another process, another container
+/// with the same pid, a crashed run's leftovers) is using it: [`temp_name`] with the prefix `.tmp-`.
+fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
+    temp_dir_named(stage_dir, || temp_name(".tmp-"))
+}
+
+/// A temporary name: `prefix`, then `t` and the whole seconds since the Unix epoch when it was made, then the pid, a
+/// counter and the clock's nanoseconds, so no two writers share one (`.tmp-t1761300000-4242-0-123456789`). The time in
+/// the name says how old the directory is, which its modification time doesn't: renaming a directory aside keeps that
+/// ([`made_at`]).
+pub(crate) fn temp_name(prefix: &str) -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{prefix}t{}-{}-{}-{}",
+        since.as_secs(),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+        since.subsec_nanos()
+    )
+}
+
+/// When a temporary directory named by [`temp_name`] (`.tmp-t<secs>-...` or `.tmp-gc-t<secs>-...`) was made; `None`
+/// for any other name, such as an older build's `.tmp-<pid>-...`.
+pub(crate) fn made_at(name: &str) -> Option<std::time::SystemTime> {
+    let rest = name.strip_prefix(".tmp-")?;
+    let rest = rest.strip_prefix("gc-").unwrap_or(rest);
+    let (secs, tail) = rest.strip_prefix('t')?.split_once('-')?;
+    if secs.is_empty() || !secs.bytes().all(|b| b.is_ascii_digit()) || tail.is_empty() {
+        return None;
+    }
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs.parse().ok()?))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Temporary directories this thread has created, so a test can tell whether `put` wrote a copy.
+    pub(crate) static TEMP_DIRS_MADE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// [`temp_dir`] with its names from `name`: a taken name is skipped for the next, up to 64 tries.
-fn temp_dir_named(stage_dir: &Path, mut name: impl FnMut() -> String) -> Result<PathBuf, Error> {
+pub(crate) fn temp_dir_named(
+    stage_dir: &Path,
+    mut name: impl FnMut() -> String,
+) -> Result<PathBuf, Error> {
     for _ in 0..64 {
         let path = stage_dir.join(name());
         match std::fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
+            Ok(()) => {
+                #[cfg(test)]
+                TEMP_DIRS_MADE.with(|n| n.set(n.get() + 1));
+                return Ok(path);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(Error::Io { path, error }),
         }

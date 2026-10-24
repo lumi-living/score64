@@ -487,7 +487,14 @@ fn rules_round_trip_and_read_with_defaults() {
 }
 
 fn any_parts() -> impl Strategy<Value = Vec<QuantisedPart>> {
-    proptest::collection::vec((strategies::content_hash(), strategies::note_soup()), 0..4).prop_map(
+    parts_of(0..4)
+}
+
+/// Parts with distinct sources, `size` of them before any repeated source is left out.
+fn parts_of(
+    size: impl Into<proptest::collection::SizeRange>,
+) -> impl Strategy<Value = Vec<QuantisedPart>> {
+    proptest::collection::vec((strategies::content_hash(), strategies::note_soup()), size).prop_map(
         |parts| {
             let mut seen = std::collections::BTreeSet::new();
             parts
@@ -536,13 +543,12 @@ proptest! {
     /// A person's override is obeyed from its bar to the end (with no later one), whatever a model says.
     #[test]
     fn a_persons_override_is_obeyed(
-        parts in any_parts(),
+        parts in parts_of(1..4),
         at_bar in 0u32..20,
         model_bar in 0u32..20,
         pick in any::<prop::sample::Index>(),
         other in any::<prop::sample::Index>(),
     ) {
-        prop_assume!(!parts.is_empty());
         let source = parts[pick.index(parts.len())].source;
         let rival = parts[other.index(parts.len())].source;
         let overrides = [
