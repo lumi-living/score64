@@ -11,5 +11,5 @@ pub mod version;
 
 pub use cache::Cache;
 pub use decisions::DecisionsFile;
-pub use history::{History, Run, RunProvenance, UtcTime};
+pub use history::{CacheRef, Entry, History, Run, RunProvenance, UtcTime};
 pub use project::{Project, ProjectFile, SourceProblem, Timestamp, Track, TrackFile};
