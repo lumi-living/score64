@@ -72,6 +72,8 @@ expendable_long_rows = 4
 # ranges = { ... }            role pitch ranges, as the validator's RoleRanges
 ```
 
+The `[pack] window` is refused where it overlaps memory the tune can't have: zero page, the CPU port and the stack (`$0000`–`$01FF`), the I/O area (`$D000`–`$DFFF`) and the CPU's vectors (`$FFFA`–`$FFFF`). The reasons are reference facts (`docs/reference/player.md`, Memory the tune may use); the rules for the window follow §3's example.
+
 **3. `track.toml` holds one track's intent.**
 
 ```toml
@@ -104,7 +106,7 @@ switch = { every_bars = 2 }   # optional; every bar by default
 - **`[pack] window`** (amended 2026-10-24, #198) replaces `player_page`. It's the target's memory for the tune, `start` to `end` inclusive.
   - `start` must be page-aligned, since gt2reloc places the player on a page boundary (`-W`), and the player is packed there.
   - `end` must be at least `start`.
-  - The window must stay clear of the I/O area, `$D000`–`$DFFF`, and of the CPU's vectors, `$FFFA`–`$FFFF`. This check applies the reference facts in `docs/reference/player.md`, Memory the tune may use: the player writes the SID directly, so I/O is banked in while it plays and a tune under it can't be read, and the game's interrupts need the vectors. The ROMs aren't checked, since that depends on the target's banking.
+  - The window must stay clear of zero page, the CPU port and the stack, `$0000`–`$01FF`, of the I/O area, `$D000`–`$DFFF`, and of the CPU's vectors, `$FFFA`–`$FFFF`. This check applies the reference facts in `docs/reference/player.md`, Memory the tune may use: the CPU and the game need zero page and the stack (the player's own zero-page pair is `[pack] zero_page`), the player writes the SID directly, so I/O is banked in while it plays and a tune under it can't be read, and the game's interrupts need the vectors. The ROMs aren't checked, since that depends on the target's banking.
   - The budget gate (rule 8, #51) checks that the packed player, its data and everything it writes outside the zero page stay inside the window.
   - **`max_play_cycles`**, when set, is the raster budget: the longest play call measured by the helper's trace must not exceed it. The VICE harness stays the final word on raster time (TAD §7).
 - **Overrides:** a track may override `[target] video` and any `[pack]` key under its own `[target]` and `[pack]` tables. An overridden `window` replaces the whole window. The project's values apply otherwise. Nothing else in `score64.toml` can be overridden per track, so the voice plan is one per target.

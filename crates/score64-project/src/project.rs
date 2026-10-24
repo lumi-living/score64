@@ -330,11 +330,13 @@ impl Target {
 }
 
 /// `[pack] window`: the memory the target gives the tune, `start` to `end` inclusive (ADR-014 §2, #198). The player
-/// is packed at `start` (gt2reloc `-W`, which takes a page), so `start` is on a page boundary, at `$0200` or above to
-/// stay clear of zero page and the stack; `end` is at least `start`. The window stays clear of the I/O area
-/// (`$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it plays, and RAM under it can't be read)
-/// and of the CPU's vectors (`$FFFA`–`$FFFF`, which the game's interrupts need). The budget gate (rule 8) checks that
-/// the packed tune, and everything it writes outside zero page and the SID, stays inside.
+/// is packed at `start` (gt2reloc `-W`, which takes a page), so `start` is on a page boundary; `end` is at least
+/// `start`. The window stays clear of three ranges (`docs/reference/player.md`, Memory the tune may use): zero page
+/// and the stack (`$0000`–`$01FF`, the CPU port at `$00`/`$01` included; the player's own zero-page pair is
+/// [`Pack::zero_page`]), the I/O area (`$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it
+/// plays, and RAM under it can't be read) and the CPU's vectors (`$FFFA`–`$FFFF`, which the game's interrupts need).
+/// The budget gate (rule 8) checks that the packed tune, and everything it writes outside zero page and the SID,
+/// stays inside.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "WindowFields", into = "WindowFields")]
 pub struct Window {
@@ -342,6 +344,9 @@ pub struct Window {
     end: u16,
 }
 
+/// The last address of zero page (the CPU port at `$00`/`$01` included) and the stack, which a window may not
+/// overlap.
+const LOW_LAST: u16 = 0x01FF;
 /// The I/O area, which a window may not overlap.
 const IO_FIRST: u16 = 0xD000;
 const IO_LAST: u16 = 0xDFFF;
@@ -391,15 +396,18 @@ impl Window {
                 "[pack] window start ${start:04X} isn't on a page boundary: gt2reloc places the player at a page (-W)"
             ));
         }
-        if start < 0x0200 {
-            return Err(format!(
-                "[pack] window start ${start:04X}: the player must start at $0200 or above, clear of zero page and the \
-                 stack"
-            ));
-        }
         if end < start {
             return Err(format!(
                 "[pack] window ends at ${end:04X}, before it starts at ${start:04X}"
+            ));
+        }
+        // It doesn't end before it starts, so it overlaps $0000–$01FF exactly when it starts there.
+        if start <= LOW_LAST {
+            return Err(format!(
+                "[pack] window ${start:04X}–${end:04X} overlaps zero page, the CPU port and the stack at \
+                 $0000–${LOW_LAST:04X}, which the CPU and the game need (the player's own zero-page pair is \
+                 [pack] zero_page); start it at ${:04X} or above",
+                LOW_LAST + 1
             ));
         }
         if start <= IO_LAST && end >= IO_FIRST {

@@ -365,7 +365,7 @@ tracks/<id>/history/         its recorded runs (ADR-014 §7; #27, not built yet)
   - adaptive layers are the track's subtunes;
   - profiles are built in or the project's;
   - `[pack]` is in range:
-    - the window is a table, `{ start, end }`, of 16-bit addresses. Its `start` is page-aligned and at `$0200` or above, and its `end` is at least `start`. It stays clear of the I/O area, `$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it plays and a tune under it can't be read. It also stays clear of the CPU's vectors at `$FFFA`–`$FFFF`, which the game's interrupts need;
+    - the window is a table, `{ start, end }`, of 16-bit addresses. Its `start` is page-aligned and its `end` is at least `start`. It stays clear of zero page, the CPU port and the stack, `$0000`–`$01FF`, which the CPU and the game need (the player's own pair is `zero_page`). It stays clear of the I/O area, `$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it plays and a tune under it can't be read. It also stays clear of the CPU's vectors at `$FFFA`–`$FFFF`, which the game's interrupts need;
     - `zero_page` is in `$02`–`$FE`;
     - `max_play_cycles` is 1 to one frame of the video standard (19,656 cycles PAL, 17,095 NTSC);
     - a range error points at its key's line. When a track's own video standard makes the project's raster budget longer than a frame, the error points at the track's `[target] video` line and says the budget comes from `score64.toml`. An old `player_page` gets a hint that `window` replaced it.

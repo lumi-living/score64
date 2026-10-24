@@ -872,6 +872,11 @@ fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
         );
         assert_eq!(pack.window.player_page(), (start >> 8) as u8, "{window}");
     }
+    // The boundaries of zero page and the stack: a window holding $01FF is refused, one from $0200 accepted.
+    assert!(Window::new(0x0100, 0x01FF).is_err());
+    assert!(Window::new(0x0100, 0x0200).is_err());
+    assert!(Window::new(0x0200, 0x0200).is_ok());
+    assert!(Window::new(0x0200, 0x02FF).is_ok());
     for (window, why) in [
         (
             "{ start = 0x1080, end = 0x1FFF }",
@@ -885,7 +890,18 @@ fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
             "{ start = 0x1000, end = 0x0FFF }",
             "ends at $0FFF, before it starts at $1000",
         ),
-        ("{ start = 0x0100, end = 0x1FFF }", "start $0100"),
+        (
+            "{ start = 0x0100, end = 0x1FFF }",
+            "window $0100–$1FFF overlaps zero page, the CPU port and the stack at $0000–$01FF",
+        ),
+        (
+            "{ start = 0x0100, end = 0x01FF }",
+            "window $0100–$01FF overlaps zero page, the CPU port and the stack at $0000–$01FF",
+        ),
+        (
+            "{ start = 0x0100, end = 0x0200 }",
+            "window $0100–$0200 overlaps zero page, the CPU port and the stack at $0000–$01FF",
+        ),
         (
             "{ start = 0xC000, end = 0xD000 }",
             "window $C000–$D000 overlaps the I/O area $D000–$DFFF",
@@ -910,7 +926,14 @@ fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
             "{ start = 0xFF00, end = 0xFFFF }",
             "window $FF00–$FFFF reaches the CPU's vectors at $FFFA–$FFFF",
         ),
-        ("{ start = 0x0000, end = 0x1FFF }", "start $0000"),
+        (
+            "{ start = 0x0000, end = 0x0000 }",
+            "window $0000–$0000 overlaps zero page, the CPU port and the stack at $0000–$01FF",
+        ),
+        (
+            "{ start = 0x0000, end = 0x1FFF }",
+            "start it at $0200 or above",
+        ),
         ("{ start = 0x1000, end = 0x10000 }", "65536"),
         ("{ start = -1, end = 0x1FFF }", "-1"),
         ("{ start = 0x1000 }", "missing field `end`"),
