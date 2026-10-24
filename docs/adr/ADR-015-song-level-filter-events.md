@@ -75,6 +75,8 @@ A song filter means giving one instrument the program.
 
 ## Trade-off analysis
 
+**Prior art.** SID Factory II makes the same split in its Driver 11.03 and later. A channel is filtered only if both the instrument's "enable filter" flag (`$20`) and the filter program's channel bitmask say so, so routing is kept apart from the filter program (`dist/documentation/notes_driver11.txt`; `docs/research/2026-10-24-sid-factory-ii.md` §2.5).
+
 A is the most general, but it rebuilds GoatTracker's filtertable in a new shape. Without a second player target, nothing is gained for the extra validation and compilation. B keeps programs as the table data the export already handles, and adds only what the validator needs to see: the row and the routing. C is what we have, and #187's measurements show where it falls short.
 
 ## Consequences

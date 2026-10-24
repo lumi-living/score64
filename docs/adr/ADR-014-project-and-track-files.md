@@ -72,6 +72,8 @@ expendable_long_rows = 4
 # ranges = { ... }            role pitch ranges, as the validator's RoleRanges
 ```
 
+The `[pack] window` is refused where it overlaps memory the tune can't have: zero page, the CPU port and the stack (`$0000`–`$01FF`), the I/O area (`$D000`–`$DFFF`) and the CPU's vectors (`$FFFA`–`$FFFF`). The reasons are reference facts (`docs/reference/player.md`, Memory the tune may use); the rules for the window follow §3's example.
+
 **3. `track.toml` holds one track's intent.**
 
 ```toml
@@ -104,6 +106,7 @@ switch = { every_bars = 2 }   # optional; every bar by default
 - **`[pack] window`** (amended 2026-10-24, #198) replaces `player_page`. It's the target's memory for the tune, `start` to `end` inclusive.
   - `start` must be page-aligned, since gt2reloc places the player on a page boundary (`-W`), and the player is packed there.
   - `end` must be at least `start`.
+  - The window must stay clear of zero page, the CPU port and the stack, `$0000`–`$01FF`, of the I/O area, `$D000`–`$DFFF`, and of the CPU's vectors, `$FFFA`–`$FFFF`. This check applies the reference facts in `docs/reference/player.md`, Memory the tune may use: the CPU and the game need zero page and the stack (the player's own zero-page pair is `[pack] zero_page`), the player writes the SID directly, so I/O is banked in while it plays and a tune under it can't be read, and the game's interrupts need the vectors. The ROMs aren't checked, since that depends on the target's banking.
   - The budget gate (rule 8, #51) checks that the packed player, its data and everything it writes outside the zero page stay inside the window.
   - **`max_play_cycles`**, when set, is the raster budget: the longest play call measured by the helper's trace must not exceed it. The VICE harness stays the final word on raster time (TAD §7).
 - **Overrides:** a track may override `[target] video` and any `[pack]` key under its own `[target]` and `[pack]` tables. An overridden `window` replaces the whole window. The project's values apply otherwise. Nothing else in `score64.toml` can be overridden per track, so the voice plan is one per target.
@@ -138,29 +141,44 @@ ADR-013's provisional context file goes once this lands. The packer's options an
 
 A change to `score64.toml` therefore makes a new version of every track that uses the changed values.
 
-**7. Run history** (amended 2026-10-24, #27) is a separate record from the version id, because a content-addressed id gives a restored intent its old id back.
-- **Where.** One file per recorded run, in `tracks/<track>/history/`, committed with the track. The name is the run's UTC time, then the first 12 hex digits of its version, for example `2026-10-24T091502Z-1a2b3c4d5e6f.toml`. It sorts by time and holds no characters Windows refuses. A second run in the same second gets `-2`, `-3`, and so on.
+**7. Run history** (amended 2026-10-24, #27; the graph, parent runs, true times and `uses` amended again in #211, approved 2026-10-24) is a separate record from the version id, because a content-addressed id gives a restored intent its old id back.
+- **Where.** One file per recorded run, in `tracks/<track>/history/`, committed with the track. The name is the run's UTC time, then the first 12 hex digits of its version, for example `2026-10-24T091502Z-1a2b3c4d5e6f.toml`. It holds no characters Windows refuses. Further runs in the same second, whatever their versions, get `-2`, `-3`, … up to `-9999`. The name without `.toml` is the run's id.
 - **What it holds:**
 
   ```toml
   schema = 1
   version = "…"                 # the full version id (§6)
-  parent = "…"                  # the version recorded before it on this track; absent for the first
-  time = 2026-10-24T09:15:02Z   # UTC
+  parent = "2026-10-24T091001Z-0f0e0d0c0b0a"  # the run it came after, by its id; absent for the first
+  time = 2026-10-24T09:15:02Z   # UTC, whole seconds: the recording machine's clock, as it was
   restore = true                # only on a restore
   [provenance]                  # who made the change, tagged by `by`, as decisions' provenance is
   by = "manual"                 # "rules", "llm" or "manual"
   # model = "…"                 # for "llm": the model id
   # name = "…"                  # for "manual": the person's git user.name
+  [[uses]]                      # optional: the cache entries the version was made from and into
+  stage = "transcribe"          # sorted by stage and key, no repeats
+  key = "…"
   ```
 
+  Run provenance has its own fields (`model` and `name`), unlike a decision's (`rule`, `prompt`), because it says who started a run rather than who proposed a change.
+
 - **When.** A run is recorded only when its version differs from the track's latest recorded version, or when it restores an earlier intent. A restore is recorded even though its version was seen before, with `restore = true` and the current version as its parent. A re-run that gives the same version writes nothing, so the history only grows when the output can change.
+- **A graph, ordered by its links.** Two machines or two git branches can each add runs after the same one. Git merges the new files, which have different names, without conflict. So a history is a graph rather than one chain:
+  - an entry's parent is a run in the folder, named by its id. A run, not a version: versions repeat with restores, runs don't, so the links have no loops. The parent's version is that run's;
+  - parent links give the order: each run comes after the run it came after. Runs the links don't order, such as forks, are sorted by time, then run id; that is the only use of the clock in ordering. The latest is the last;
+  - recording reads the folder again first, and again if another writer takes its name, and names the latest run as the parent.
+
+  Two branches recording the same version in the same second can still clash on a name, which git reports as a conflict.
+- **Times are provenance.** A run's time is the recording machine's clock, as it was, even if it is wrong. It is never adjusted, and a run is never refused because another machine's clock is ahead.
+- **The current version** needs no history and no clock: it is whatever the track's files resolve to now (ADR-004, §6). The history only records how versions came about.
+- **`uses`** links a version to the cache entries it was made from and into. The link is in committed files, so the index (#28) can be rebuilt with it and GC (#29) keeps what it names.
 - **Provenance** says what started the change. A person who edited the track or its decisions is `manual`, with their git `user.name`. A model decider is `llm`, with the model id. A re-run that only picks up new tool or rule versions is `rules`.
 - **The index** (#28) is rebuilt from these files, and GC (#29) keeps whatever a recorded version refers to.
 
 **8. `KeepNote`** (amended 2026-10-24, #167) is a decision kind in `decisions.toml`: `change = "keep_note"`, with `voice`, `row` (inside the decision's bar) and `pitch`.
 - It keeps the note there that a rule would drop: the reject case of `DropNote`.
-- It competes with a `DropNote` of the note it would keep, so the stronger decision wins as for every other kind: a person's `KeepNote` over the rules' drop, and a person's `DropNote` over a model's keep. It names no length, so any note that the drops leave on its row and pitch meets it, and it keeps the longest. A person can therefore keep a shorter repeat by keeping its row and pitch and dropping the longer ones, whatever their ids, and bring back a longer repeat a model dropped by dropping the shorter ones too. A `DropNote` names its note by length, so of twins of one length it takes one only, and the other meets the keep. Only when the drops take out every note there does the keep compete with them; since that depends on the notes, the reduction that applies them settles it (`docs/TAD.md` §3.2–§3.3). (clarified 2026-10-24 in #212's review)
+- It competes with a `DropNote` of the note it would keep, so the stronger decision wins as for every other kind: a person's `KeepNote` over the rules' drop, and a person's `DropNote` over a model's keep. It names no length, so any note that the drops leave on its row and pitch meets it, and it keeps the longest of the notes the drops leave. A person can therefore keep a shorter repeat by keeping its row and pitch and dropping the longer ones, whatever their ids, and bring back a longer repeat a model dropped by dropping the shorter ones too. A `DropNote` names its note by length, so of twins of one length it takes one only, and the other meets the keep. Only when the drops take out every note there does the keep compete with them; since that depends on the notes, the reduction that applies them settles it (`docs/TAD.md` §3.2–§3.3). (clarified 2026-10-24 in #212's review)
+- When the drops would take every repeat there, they apply strongest first while a note is left, and the one that would take the last loses to a stronger keep, so the keep keeps the note whose drop came last (#217).
 - A `KeepNote` for a note that isn't there is reported as unapplied, as other overrides are.
 
 ## Options considered
@@ -229,9 +247,9 @@ Option A costs one override rule, plus the need to show resolved values in the a
 - [x] `score64_project::ProjectFile` and `TrackFile` with the shared conventions, plus a `Project` that loads both and resolves overrides (#25).
 - [ ] Build the validator `Context` from the files; remove ADR-013's provisional file (#192).
 - [ ] Take the pack options and the `gt2reloc` pin from `[pack]` and `[tools]`, with the reference pack cached per binary in `.score64/tools/` (pack stage, E7).
-- [ ] `[pack] window` and `max_play_cycles` in `ProjectFile`, replacing `player_page`, and the budget gate fed from them (#198, #51).
+- [x] `[pack] window` and `max_play_cycles` in `ProjectFile`, replacing `player_page`, and the budget gate fed from them (#198, #51): `score64_engine::pack`, which the pack stage's command will run.
 - [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [x] Version identity from the resolved intent (#27).
-- [ ] Run history in `tracks/<id>/history/` (#27).
+- [x] Run history in `tracks/<id>/history/` (#27, #211).
 - [x] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
 - [x] TAD §4: the layout and both files (#25).

@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use score64_core::{AdaptiveSet, Profile, ProfileName, Profiles, SubtuneName, VideoStandard};
 
+use score64_core::PackBudget;
 use score64_core::validate::RoleRanges;
 
 use crate::decisions::DecisionsFile;
@@ -328,13 +329,143 @@ impl Target {
     }
 }
 
-/// `[pack]`: how gt2reloc packs the player (#50). Where it sits and its zero page come from the target's memory map,
-/// so they have no defaults.
+/// `[pack] window`: the memory the target gives the tune, `start` to `end` inclusive (ADR-014 §2, #198). The player
+/// is packed at `start` (gt2reloc `-W`, which takes a page), so `start` is on a page boundary; `end` is at least
+/// `start`. The window stays clear of three ranges (`docs/reference/player.md`, Memory the tune may use): zero page
+/// and the stack (`$0000`–`$01FF`, the CPU port at `$00`/`$01` included; the player's own zero-page pair is
+/// [`Pack::zero_page`]), the I/O area (`$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it
+/// plays, and RAM under it can't be read) and the CPU's vectors (`$FFFA`–`$FFFF`, which the game's interrupts need).
+/// The budget gate (rule 8) checks that the packed tune, and everything it writes outside zero page and the SID,
+/// stays inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "WindowFields", into = "WindowFields")]
+pub struct Window {
+    start: u16,
+    end: u16,
+}
+
+/// The last address of zero page (the CPU port at `$00`/`$01` included) and the stack, which a window may not
+/// overlap.
+const LOW_LAST: u16 = 0x01FF;
+/// The I/O area, which a window may not overlap.
+const IO_FIRST: u16 = 0xD000;
+const IO_LAST: u16 = 0xDFFF;
+/// The first of the CPU's vectors (NMI, reset, IRQ/BRK), which a window may not reach.
+const VECTORS: u16 = 0xFFFA;
+
+/// [`Window`] as written in files: a table, `{ start = …, end = … }`, and never a bare pair of numbers, so the file
+/// says which end is which.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+struct WindowFields {
+    start: u16,
+    end: u16,
+}
+
+impl<'de> Deserialize<'de> for WindowFields {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Table {
+            start: u16,
+            end: u16,
+        }
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = WindowFields;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a table `{ start = …, end = … }`")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<WindowFields, A::Error> {
+                let Table { start, end } =
+                    Table::deserialize(serde::de::value::MapAccessDeserializer::new(map))?;
+                Ok(WindowFields { start, end })
+            }
+        }
+        d.deserialize_map(Visitor)
+    }
+}
+
+impl Window {
+    /// The window from `start` to `end` inclusive, if it is valid (see the type's docs).
+    pub fn new(start: u16, end: u16) -> Result<Self, String> {
+        if !start.is_multiple_of(0x100) {
+            return Err(format!(
+                "[pack] window start ${start:04X} isn't on a page boundary: gt2reloc places the player at a page (-W)"
+            ));
+        }
+        if end < start {
+            return Err(format!(
+                "[pack] window ends at ${end:04X}, before it starts at ${start:04X}"
+            ));
+        }
+        // It doesn't end before it starts, so it overlaps $0000–$01FF exactly when it starts there.
+        if start <= LOW_LAST {
+            return Err(format!(
+                "[pack] window ${start:04X}–${end:04X} overlaps zero page, the CPU port and the stack at \
+                 $0000–${LOW_LAST:04X}, which the CPU and the game need (the player's own zero-page pair is \
+                 [pack] zero_page); start it at ${:04X} or above",
+                LOW_LAST + 1
+            ));
+        }
+        if start <= IO_LAST && end >= IO_FIRST {
+            return Err(format!(
+                "[pack] window ${start:04X}–${end:04X} overlaps the I/O area ${IO_FIRST:04X}–${IO_LAST:04X}: the \
+                 player writes the SID there, so while it plays a tune there can't be read; give the tune memory \
+                 below $D000 or from $E000"
+            ));
+        }
+        if end >= VECTORS {
+            return Err(format!(
+                "[pack] window ${start:04X}–${end:04X} reaches the CPU's vectors at ${VECTORS:04X}–$FFFF, which \
+                 the game's interrupts need; end it at ${:04X} or below",
+                VECTORS - 1
+            ));
+        }
+        Ok(Window { start, end })
+    }
+
+    /// Its first address, where the player is packed.
+    pub fn start(self) -> u16 {
+        self.start
+    }
+
+    /// Its last address (inclusive).
+    pub fn end(self) -> u16 {
+        self.end
+    }
+
+    /// The page the player is packed at: `start`'s high byte (gt2reloc `-W`).
+    pub fn player_page(self) -> u8 {
+        self.start.to_be_bytes()[0]
+    }
+}
+
+impl TryFrom<WindowFields> for Window {
+    type Error = String;
+    fn try_from(f: WindowFields) -> Result<Self, String> {
+        Window::new(f.start, f.end)
+    }
+}
+
+impl From<Window> for WindowFields {
+    fn from(w: Window) -> Self {
+        WindowFields {
+            start: w.start,
+            end: w.end,
+        }
+    }
+}
+
+/// `[pack]`: how gt2reloc packs the player (#50), and what the budget gate (rule 8, #51) holds it to. The window and
+/// the zero page come from the target's memory map, so they have no defaults.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Pack {
-    /// The player's start address, high byte (`$10` puts it at `$1000`).
-    pub player_page: u8,
+    /// The memory the target gives the tune; the player is packed at its start.
+    pub window: Window,
     /// The first of the player's two zero-page bytes.
     pub zero_page: u8,
     /// Sound-effect support (`-D1`).
@@ -342,34 +473,84 @@ pub struct Pack {
     /// The hard-restart ADSR value; gt2reloc's default (`$0F00`) when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hard_restart_adsr: Option<u16>,
+    /// The raster budget: the longest play call the target allows, in CPU cycles, at most one frame of the target's
+    /// video standard. Unchecked when absent. The VICE harness stays the final word on raster time (TAD §7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_play_cycles: Option<u32>,
 }
 
 impl Pack {
-    fn check(&self) -> Result<(), String> {
-        if self.player_page < 0x02 {
-            return Err(format!(
-                "[pack] player_page ${:02X}: the player must start at $0200 or above, clear of zero page and the stack",
-                self.player_page
+    /// What's out of range for a target on `video`, as the offending key and a message. The window checks itself
+    /// as it is read.
+    fn check(&self, video: VideoStandard) -> Result<(), (&'static str, String)> {
+        if !(0x02..=0xFE).contains(&self.zero_page) {
+            return Err((
+                "zero_page",
+                format!(
+                    "[pack] zero_page ${:02X}: the pair must start in $02–$FE, clear of the 6510 port at $00–$01 and \
+                     with both bytes in zero page",
+                    self.zero_page
+                ),
             ));
         }
-        if !(0x02..=0xFE).contains(&self.zero_page) {
-            return Err(format!(
-                "[pack] zero_page ${:02X}: the pair must start in $02–$FE, clear of the 6510 port at $00–$01 and with both \
-                 bytes in zero page",
-                self.zero_page
-            ));
+        if let Some(cycles) = self.max_play_cycles {
+            let frame = video.cycles_per_frame();
+            if cycles == 0 {
+                return Err((
+                    "max_play_cycles",
+                    "[pack] max_play_cycles 0: a play call takes at least one cycle".into(),
+                ));
+            }
+            if cycles > frame {
+                return Err((
+                    "max_play_cycles",
+                    format!(
+                        "[pack] max_play_cycles {cycles} is longer than {} ({frame} cycles): the play routine runs \
+                         once a frame",
+                        a_frame(video)
+                    ),
+                ));
+            }
         }
         Ok(())
     }
+
+    /// The budget rule 8 checks a pack against (`score64_core::check_pack`): the window, the zero-page pair, whether
+    /// the jump table needs the sound-effect entry, and the raster budget.
+    pub fn budget(&self) -> PackBudget {
+        PackBudget {
+            first: self.window.start(),
+            last: self.window.end(),
+            zero_page: self.zero_page,
+            sound_effects: self.sound_effects,
+            max_play_cycles: self.max_play_cycles,
+        }
+    }
 }
 
-/// A track's `[pack]`: any of the project's keys, overridden.
+/// "a PAL frame" or "an NTSC frame".
+fn a_frame(video: VideoStandard) -> &'static str {
+    match video {
+        VideoStandard::Pal => "a PAL frame",
+        VideoStandard::Ntsc => "an NTSC frame",
+    }
+}
+
+/// The line of `[pack]`'s `key` in `text`, else of its `[pack]` header, else of `[target]` (whose video standard the
+/// raster budget is checked against), for an error about a resolved `[pack]`.
+fn pack_line(text: &str, key: &str) -> Option<usize> {
+    line_of(text, key)
+        .or_else(|| line_of(text, "[pack]"))
+        .or_else(|| line_of(text, "[target]"))
+}
+
+/// A track's `[pack]`: any of the project's keys, overridden. An overridden window replaces the whole window.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PackOverride {
-    /// Overrides `player_page`.
+    /// Overrides `window`, as a whole.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub player_page: Option<u8>,
+    pub window: Option<Window>,
     /// Overrides `zero_page`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zero_page: Option<u8>,
@@ -379,6 +560,9 @@ pub struct PackOverride {
     /// Overrides `hard_restart_adsr`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hard_restart_adsr: Option<u16>,
+    /// Overrides `max_play_cycles`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_play_cycles: Option<u32>,
 }
 
 /// A track's `[target]`: the project's, overridden.
@@ -534,12 +718,22 @@ pub struct TrackFile {
     pub pack: Option<PackOverride>,
 }
 
-/// Parse `text` as `T`, with errors at their line and column in `path`.
+/// Parse `text` as `T`, with errors at their line and column in `path`. A key from an older file format gets a hint
+/// at what replaced it.
 fn parse<T: for<'de> Deserialize<'de>>(text: &str, path: &Path) -> Result<T, Error> {
-    toml::from_str(text).map_err(|e| Error::Invalid {
-        path: path.to_path_buf(),
-        at: e.span().map(|s| line_col(text, s.start)),
-        message: e.message().to_string(),
+    toml::from_str(text).map_err(|e| {
+        let mut message = e.message().to_string();
+        if message.starts_with("unknown field `player_page`") {
+            message.push_str(
+                "; `player_page` is now `[pack] window = { start, end }`, the memory the target gives the tune, \
+                 with the player packed at `start`",
+            );
+        }
+        Error::Invalid {
+            path: path.to_path_buf(),
+            at: e.span().map(|s| line_col(text, s.start)),
+            message,
+        }
     })
 }
 
@@ -598,8 +792,8 @@ impl ProjectFile {
     pub fn parse(text: &str, path: &Path) -> Result<Self, Error> {
         let file: ProjectFile = parse(text, path)?;
         if let Some(pack) = &file.pack {
-            pack.check()
-                .map_err(|m| invalid(path, line_of(text, "[pack]"), m))?;
+            pack.check(file.target.video)
+                .map_err(|(key, m)| invalid(path, pack_line(text, key), m))?;
         }
         if let Err(m) = file.profiles() {
             // Point at the first profile that makes the list invalid.
@@ -1024,14 +1218,34 @@ impl Project {
             .as_ref()
             .and_then(|t| t.video)
             .unwrap_or(self.file.target.video);
-        let pack = resolve_pack(self.file.pack.as_ref(), file.pack.as_ref())
-            .map_err(|m| invalid(path, line_of(text, "[pack]"), m))?;
+        let pack = resolve_pack(self.file.pack.as_ref(), file.pack.as_ref(), video).map_err(
+            |(key, m)| {
+                let line = if key == "video" {
+                    line_of(text, "video")
+                        .or_else(|| line_of(text, "[target]"))
+                        .or_else(|| line_of(text, "target"))
+                } else {
+                    pack_line(text, key)
+                };
+                invalid(path, line, m)
+            },
+        )?;
         Ok((video, pack))
     }
 
     /// `tracks/<id>/`.
     pub fn track_dir(&self, id: &Id) -> PathBuf {
         self.root.join("tracks").join(id.as_str())
+    }
+
+    /// The project's stage cache folder, `.score64/cache/` (ADR-004): not committed, and rebuildable from the files.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join(".score64").join("cache")
+    }
+
+    /// Track `id`'s run history, from `tracks/<id>/history/` (ADR-014 §7): empty when the track has none yet.
+    pub fn history(&self, id: &Id) -> Result<crate::History, crate::history::Error> {
+        crate::History::read(&self.track_dir(id).join("history"))
     }
 
     /// Every source of `track` that is missing, unreadable, or whose content changed since the track recorded its
@@ -1142,33 +1356,71 @@ fn create_new(path: &Path, text: &str) -> Result<(), Error> {
     crate::textfile::create_atomic(path, text).map_err(|(path, error)| Error::Io { path, error })
 }
 
-/// The project's `[pack]` with a track's overrides: none if neither has one; an error if the track overrides keys
-/// but the result lacks a required one.
+/// The project's `[pack]` with a track's overrides, checked for a target on `video`: none if neither has one; an
+/// error, with the key it is about, if the result lacks a required key or is out of range. A track that overrides
+/// nothing still has the project's pack checked against its own video standard, which it may override. A project
+/// raster budget too long for the track's frame is an error about `video`, the track's key that makes it so.
 fn resolve_pack(
     project: Option<&Pack>,
     track: Option<&PackOverride>,
-) -> Result<Option<Pack>, String> {
-    let Some(o) = track else {
-        return Ok(project.cloned());
+    video: VideoStandard,
+) -> Result<Option<Pack>, (&'static str, String)> {
+    let needs = |key: &'static str| {
+        move || {
+            (
+                key,
+                format!("[pack] needs {key}: the project has no [pack] to take it from"),
+            )
+        }
     };
-    let pack = Pack {
-        player_page: o
-            .player_page
-            .or(project.map(|p| p.player_page))
-            .ok_or("[pack] needs player_page: the project has no [pack] to take it from")?,
-        zero_page: o
-            .zero_page
-            .or(project.map(|p| p.zero_page))
-            .ok_or("[pack] needs zero_page: the project has no [pack] to take it from")?,
-        sound_effects: o
-            .sound_effects
-            .or(project.map(|p| p.sound_effects))
-            .ok_or("[pack] needs sound_effects: the project has no [pack] to take it from")?,
-        hard_restart_adsr: o
-            .hard_restart_adsr
-            .or(project.and_then(|p| p.hard_restart_adsr)),
+    let pack = match track {
+        None => match project {
+            None => return Ok(None),
+            Some(p) => p.clone(),
+        },
+        Some(o) => Pack {
+            window: o
+                .window
+                .or(project.map(|p| p.window))
+                .ok_or_else(needs("window"))?,
+            zero_page: o
+                .zero_page
+                .or(project.map(|p| p.zero_page))
+                .ok_or_else(needs("zero_page"))?,
+            sound_effects: o
+                .sound_effects
+                .or(project.map(|p| p.sound_effects))
+                .ok_or_else(needs("sound_effects"))?,
+            hard_restart_adsr: o
+                .hard_restart_adsr
+                .or(project.and_then(|p| p.hard_restart_adsr)),
+            max_play_cycles: o
+                .max_play_cycles
+                .or(project.and_then(|p| p.max_play_cycles)),
+        },
     };
-    pack.check()?;
+    pack.check(video).map_err(|(key, m)| {
+        // The project's budget fits the project's own frame (its file was checked), so a refusal of one the track
+        // didn't set comes from the track's video standard: say so, at that line.
+        match pack.max_play_cycles {
+            Some(cycles)
+                if key == "max_play_cycles"
+                    && track.is_none_or(|o| o.max_play_cycles.is_none()) =>
+            {
+                (
+                    "video",
+                    format!(
+                        "[pack] max_play_cycles {cycles}, from {PROJECT_FILE}, is longer than {} ({} cycles), \
+                         which this track's [target] video sets: the play routine runs once a frame; give the track \
+                         its own max_play_cycles under [pack]",
+                        a_frame(video),
+                        video.cycles_per_frame()
+                    ),
+                )
+            }
+            _ => (key, m),
+        }
+    })?;
     Ok(Some(pack))
 }
 

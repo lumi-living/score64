@@ -26,7 +26,7 @@ v2 = { usage = "music" }
 v3 = { usage = "effects" }
 
 [pack]
-player_page = 0x10
+window = { start = 0x1000, end = 0x1FFF }
 zero_page = 0xF8
 sound_effects = true
 
@@ -153,8 +153,8 @@ fn the_scheme_is_pinned() {
     assert_eq!(
         (SCHEME, base().to_string().as_str()),
         (
-            "version@1",
-            "0e0b0e8336d141e86f4691a5607a2e5340816a70dc39209898538f3e90941423"
+            "version@2",
+            "47eb5f471dfb940c5c538dd630dd645672e694e338b4540c53be8ea37d063df6"
         ),
         "the version scheme changed: bump SCHEME and re-pin together"
     );
@@ -165,7 +165,10 @@ fn how_the_files_are_written_doesnt_matter() {
     // Comments, key order, hex or decimal, and the decisions in another order.
     let project = format!(
         "# The target.\n{}",
-        PROJECT.replace("player_page = 0x10", "player_page = 16")
+        PROJECT.replace(
+            "window = { start = 0x1000, end = 0x1FFF }",
+            "window = { end = 8191, start = 4096 } # the slot",
+        )
     );
     let track = TRACK
         .replace(
@@ -183,7 +186,9 @@ fn how_the_files_are_written_doesnt_matter() {
 #[test]
 fn an_override_counts_only_through_what_it_resolves_to() {
     // Overriding with the project's own values is no change.
-    let same = format!("{TRACK}\n[target]\nvideo = \"pal\"\n\n[pack]\nzero_page = 0xF8\n");
+    let same = format!(
+        "{TRACK}\n[target]\nvideo = \"pal\"\n\n[pack]\nzero_page = 0xF8\nwindow = {{ start = 4096, end = 0x1FFF }}\n"
+    );
     assert_eq!(
         id_of("override-same", PROJECT, &same, Some(DECISIONS)),
         base()
@@ -192,6 +197,30 @@ fn an_override_counts_only_through_what_it_resolves_to() {
     assert_ne!(
         id_of("override-other", PROJECT, &other, Some(DECISIONS)),
         base()
+    );
+    // A track's window or raster budget is a new version, and the same one as the project setting it.
+    let window = format!("{TRACK}\n[pack]\nwindow = {{ start = 0x1000, end = 0x17FF }}\n");
+    let project_window = PROJECT.replace("end = 0x1FFF", "end = 0x17FF");
+    assert_ne!(
+        id_of("override-window", PROJECT, &window, Some(DECISIONS)),
+        base()
+    );
+    assert_eq!(
+        id_of("override-window-a", PROJECT, &window, Some(DECISIONS)),
+        id_of("override-window-b", &project_window, TRACK, Some(DECISIONS))
+    );
+    let budget = format!("{TRACK}\n[pack]\nmax_play_cycles = 3000\n");
+    let project_budget = PROJECT.replace(
+        "sound_effects = true",
+        "sound_effects = true\nmax_play_cycles = 3000",
+    );
+    assert_ne!(
+        id_of("override-budget", PROJECT, &budget, Some(DECISIONS)),
+        base()
+    );
+    assert_eq!(
+        id_of("override-budget-a", PROJECT, &budget, Some(DECISIONS)),
+        id_of("override-budget-b", &project_budget, TRACK, Some(DECISIONS))
     );
 }
 
@@ -247,6 +276,27 @@ fn whatever_can_change_the_output_changes_the_id() {
         (
             "pack",
             PROJECT.replace("zero_page = 0xF8", "zero_page = 0xFB"),
+            TRACK.into(),
+            Some(DECISIONS.into()),
+        ),
+        (
+            "window-start",
+            PROJECT.replace("start = 0x1000", "start = 0x0800"),
+            TRACK.into(),
+            Some(DECISIONS.into()),
+        ),
+        (
+            "window-end",
+            PROJECT.replace("end = 0x1FFF", "end = 0x2FFF"),
+            TRACK.into(),
+            Some(DECISIONS.into()),
+        ),
+        (
+            "raster-budget",
+            PROJECT.replace(
+                "sound_effects = true",
+                "sound_effects = true\nmax_play_cycles = 4000",
+            ),
             TRACK.into(),
             Some(DECISIONS.into()),
         ),
