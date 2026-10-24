@@ -39,6 +39,14 @@ fn run(v: u8, time: i64) -> Run {
     }
 }
 
+/// The version of the run an entry came after.
+fn parent_version(h: &History, e: &Entry) -> Option<VersionId> {
+    e.parent
+        .as_deref()
+        .and_then(|p| h.run(p))
+        .map(|p| p.version)
+}
+
 fn names(dir: &Path) -> Vec<String> {
     let mut n: Vec<String> = std::fs::read_dir(dir)
         .unwrap()
@@ -103,10 +111,14 @@ fn a_run_is_recorded_only_when_its_version_changes() {
     );
     // The same version again: nothing written.
     assert_eq!(h.record(run(1, T + 60)).unwrap(), None);
-    // A new version names the latest as its parent.
+    // A new version names the latest run as its parent.
     h.record(run(2, T + 120)).unwrap().unwrap();
     let latest = h.latest().unwrap();
-    assert_eq!(latest.parent, Some(version(1)));
+    assert_eq!(
+        latest.parent.as_deref(),
+        Some("2026-10-24T091502Z-010101010101")
+    );
+    assert_eq!(parent_version(&h, latest), Some(version(1)));
     assert_eq!(names(&dir).len(), 2);
     // Reading back gives the same history.
     assert_eq!(History::read(&dir).unwrap(), h);
@@ -126,9 +138,8 @@ fn an_entry_is_written_the_same_way_every_time() {
     assert_eq!(
         std::fs::read_to_string(path).unwrap(),
         format!(
-            "schema = 1\nversion = \"{}\"\nparent = \"{}\"\ntime = 2026-10-24T09:15:03Z\n\n[provenance]\nby = \"llm\"\nmodel = \"some-model\"\n",
+            "schema = 1\nversion = \"{}\"\nparent = \"2026-10-24T091502Z-010101010101\"\ntime = 2026-10-24T09:15:03Z\n\n[provenance]\nby = \"llm\"\nmodel = \"some-model\"\n",
             version(2),
-            version(1)
         )
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -149,7 +160,7 @@ fn a_restore_is_recorded_with_the_current_version_as_parent() {
     let latest = h.latest().unwrap();
     assert!(latest.restore);
     assert_eq!(
-        (latest.version, latest.parent),
+        (latest.version, parent_version(&h, latest)),
         (version(1), Some(version(2)))
     );
     // Restoring the version already current writes nothing.
@@ -214,22 +225,27 @@ fn some_runs_are_refused() {
 }
 
 #[test]
-fn a_clock_behind_the_latest_run_records_at_the_latest_time() {
-    // Another machine's clock was ahead: its run is at T + 1000.
+fn times_are_recorded_as_they_are_and_the_links_give_the_order() {
+    // Another machine's clock was a day and more ahead: its run is at T + 100000. This machine's run is recorded at
+    // its own time, earlier, and still comes after it: it names that run as its parent.
     let dir = folder("skew");
     let mut h = History::read(&dir).unwrap();
-    h.record(run(1, T + 1000)).unwrap();
+    h.record(run(1, T + 100_000)).unwrap();
     let path = h.record(run(2, T)).unwrap().unwrap();
-    let latest = h.latest().unwrap();
-    assert_eq!((latest.version, latest.time), (version(2), at(T + 1000)));
     assert!(
-        path.to_string_lossy().ends_with("-020202020202-2.toml"),
+        path.to_string_lossy()
+            .ends_with("T091502Z-020202020202.toml"),
         "{path:?}"
     );
-    assert_eq!(
-        History::read(&dir).unwrap().latest().unwrap().version,
-        version(2)
-    );
+    let back = History::read(&dir).unwrap();
+    let latest = back.latest().unwrap();
+    assert_eq!((latest.version, latest.time), (version(2), at(T)));
+    assert_eq!(parent_version(&back, latest), Some(version(1)));
+    // And the next run follows it, whatever the clocks say.
+    h.record(run(3, T + 5)).unwrap().unwrap();
+    let back = History::read(&dir).unwrap();
+    let order: Vec<VersionId> = back.entries().map(|(_, e)| e.version).collect();
+    assert_eq!(order, [version(1), version(2), version(3)]);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -275,7 +291,10 @@ fn two_writers_in_one_second_both_read_back() {
         path.to_string_lossy().ends_with("-020202020202-2.toml"),
         "{path:?}"
     );
-    assert_eq!(second.latest().unwrap().parent, Some(version(1)));
+    assert_eq!(
+        parent_version(&second, second.latest().unwrap()),
+        Some(version(1))
+    );
     let back = History::read(&dir).unwrap();
     assert_eq!(back.entries().count(), 2);
     // A writer recording a version another one just recorded writes nothing.
@@ -390,20 +409,11 @@ fn reading_skips_other_files_and_refuses_bad_entries() {
 }
 
 #[test]
-fn reading_checks_the_graph() {
+fn reading_checks_the_graph_and_orders_by_it() {
     // Write entries by hand: each a file with the right name for its content.
     let write = |dir: &Path, name: &str, entry: &Entry| {
         std::fs::create_dir_all(dir).unwrap();
         std::fs::write(dir.join(name), toml::to_string(entry).unwrap()).unwrap();
-    };
-    let entry = |v: u8, parent: Option<u8>, time: i64, restore: bool| Entry {
-        schema: Schema,
-        version: version(v),
-        parent: parent.map(version),
-        time: at(time),
-        restore,
-        provenance: RunProvenance::Rules {},
-        uses: vec![],
     };
     let name = |v: u8, time: i64, n: &str| {
         format!(
@@ -412,80 +422,150 @@ fn reading_checks_the_graph() {
             format!("{v:02x}").repeat(6)
         )
     };
+    let id = |v: u8, time: i64, n: &str| name(v, time, n).trim_end_matches(".toml").to_owned();
+    let entry = |v: u8, parent: Option<String>, time: i64, restore: bool| Entry {
+        schema: Schema,
+        version: version(v),
+        parent,
+        time: at(time),
+        restore,
+        provenance: RunProvenance::Rules {},
+        uses: vec![],
+    };
 
-    // Two branches each added a run after version 1, and git merged them: both read, the later one is the latest.
+    // Two branches each added a run after run 1, and git merged them: both read, the later one is the latest.
     let dir = folder("merge");
     write(&dir, &name(1, T, ""), &entry(1, None, T, false));
     write(
         &dir,
         &name(2, T + 60, ""),
-        &entry(2, Some(1), T + 60, false),
+        &entry(2, Some(id(1, T, "")), T + 60, false),
     );
     write(
         &dir,
         &name(3, T + 300, ""),
-        &entry(3, Some(1), T + 300, false),
+        &entry(3, Some(id(1, T, "")), T + 300, false),
     );
     let h = History::read(&dir).unwrap();
     assert_eq!(h.latest().unwrap().version, version(3));
     let _ = std::fs::remove_dir_all(&dir);
 
-    // Two runs with one time and number, from two machines: both read, ordered by name.
+    // A run dated before the run it came after still comes after it.
+    let dir = folder("backwards");
+    write(&dir, &name(1, T + 500, ""), &entry(1, None, T + 500, false));
+    write(
+        &dir,
+        &name(2, T, ""),
+        &entry(2, Some(id(1, T + 500, "")), T, false),
+    );
+    let order: Vec<VersionId> = History::read(&dir)
+        .unwrap()
+        .entries()
+        .map(|(_, e)| e.version)
+        .collect();
+    assert_eq!(order, [version(1), version(2)]);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Two runs at one time after one parent, from two machines: ordered by run id.
     let dir = folder("twins");
     write(&dir, &name(1, T, ""), &entry(1, None, T, false));
-    write(&dir, &name(3, T + 1, ""), &entry(3, Some(1), T + 1, false));
-    write(&dir, &name(2, T + 1, ""), &entry(2, Some(1), T + 1, false));
+    write(
+        &dir,
+        &name(3, T + 1, ""),
+        &entry(3, Some(id(1, T, "")), T + 1, false),
+    );
+    write(
+        &dir,
+        &name(2, T + 1, ""),
+        &entry(2, Some(id(1, T, "")), T + 1, false),
+    );
     assert_eq!(
         History::read(&dir).unwrap().latest().unwrap().version,
         version(3)
     );
     let _ = std::fs::remove_dir_all(&dir);
 
-    // A parent no entry records, pointing at the line.
+    // A parent run that isn't in the folder, pointing at the line.
     let dir = folder("orphan");
-    write(&dir, &name(1, T, ""), &entry(1, Some(9), T, false));
+    write(
+        &dir,
+        &name(1, T, ""),
+        &entry(1, Some(id(9, T, "")), T, false),
+    );
     let e = read_error(&dir);
     assert!(
-        e.contains("isn't a version any entry here records") && e.contains(":3:"),
+        e.contains("isn't in this folder") && e.contains(":3:"),
         "{e}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 
     // Its own parent.
     let dir = folder("self");
-    write(&dir, &name(1, T, ""), &entry(1, Some(1), T, false));
-    assert!(read_error(&dir).contains("its own version"));
+    write(
+        &dir,
+        &name(1, T, ""),
+        &entry(1, Some(id(1, T, "")), T, false),
+    );
+    assert!(read_error(&dir).contains("names itself"));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A loop: two runs each naming the other.
+    let dir = folder("loop");
+    write(
+        &dir,
+        &name(1, T, ""),
+        &entry(1, Some(id(2, T + 1, "")), T, false),
+    );
+    write(
+        &dir,
+        &name(2, T + 1, ""),
+        &entry(2, Some(id(1, T, "")), T + 1, false),
+    );
+    assert!(read_error(&dir).contains("loop"));
     let _ = std::fs::remove_dir_all(&dir);
 
     // A restore of a version no other entry records.
     let dir = folder("ghost");
     write(&dir, &name(1, T, ""), &entry(1, None, T, false));
-    write(&dir, &name(5, T + 1, ""), &entry(5, Some(1), T + 1, true));
+    write(
+        &dir,
+        &name(5, T + 1, ""),
+        &entry(5, Some(id(1, T, "")), T + 1, true),
+    );
     assert!(read_error(&dir).contains("restores a version no other entry"));
     let _ = std::fs::remove_dir_all(&dir);
 
-    // Going back to a version without saying it's a restore is allowed (A, B, A): only a restore is checked.
+    // Going back to a version without saying it's a restore is allowed (A, B, A), and the links tell the two A runs
+    // apart.
     let dir = folder("back");
     write(&dir, &name(1, T, ""), &entry(1, None, T, false));
-    write(&dir, &name(2, T + 1, ""), &entry(2, Some(1), T + 1, false));
-    write(&dir, &name(1, T + 2, ""), &entry(1, Some(2), T + 2, false));
-    assert_eq!(
-        History::read(&dir).unwrap().latest().unwrap().version,
-        version(1)
+    write(
+        &dir,
+        &name(2, T + 1, ""),
+        &entry(2, Some(id(1, T, "")), T + 1, false),
     );
+    write(
+        &dir,
+        &name(1, T + 2, ""),
+        &entry(1, Some(id(2, T + 1, "")), T + 2, false),
+    );
+    let h = History::read(&dir).unwrap();
+    let order: Vec<VersionId> = h.entries().map(|(_, e)| e.version).collect();
+    assert_eq!(order, [version(1), version(2), version(1)]);
     let _ = std::fs::remove_dir_all(&dir);
 
-    // Numbered entries order by number, -10 after -9, whatever order their names or versions would give.
+    // A chain within one second orders by its links, whatever order the names or versions would give.
     let dir = folder("ten");
     write(&dir, &name(20, T, ""), &entry(20, None, T, false));
+    let mut before = id(20, T, "");
     for k in 2..=10u8 {
         let v = 20 - k;
-        let parent = if k == 2 { 20 } else { v + 1 };
         write(
             &dir,
             &name(v, T, &format!("-{k}")),
-            &entry(v, Some(parent), T, false),
+            &entry(v, Some(before.clone()), T, false),
         );
+        before = id(v, T, &format!("-{k}"));
     }
     let h = History::read(&dir).unwrap();
     let order: Vec<VersionId> = h.entries().map(|(_, e)| e.version).collect();
@@ -495,28 +575,6 @@ fn reading_checks_the_graph() {
         .collect();
     assert_eq!(order, want);
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn a_clock_far_behind_is_refused_rather_than_pinned() {
-    // An entry dated over a day after the run: a wrong clock somewhere. Recording names it rather than pinning.
-    let dir = folder("ahead");
-    let mut h = History::read(&dir).unwrap();
-    h.record(run(1, T + MAX_AHEAD + 1)).unwrap();
-    match h.record(run(2, T)) {
-        Err(Error::Ahead { time, run, .. }) => {
-            assert_eq!((time, run), (at(T + MAX_AHEAD + 1), at(T)))
-        }
-        other => panic!("{other:?}"),
-    }
-    // Exactly a day is still clamped.
-    let dir2 = folder("ahead-day");
-    let mut h = History::read(&dir2).unwrap();
-    h.record(run(1, T + MAX_AHEAD)).unwrap();
-    h.record(run(2, T)).unwrap().unwrap();
-    assert_eq!(h.latest().unwrap().time, at(T + MAX_AHEAD));
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&dir2);
 }
 
 #[test]
@@ -559,9 +617,8 @@ fn a_full_second_is_crowded() {
     h.record(run(1, T)).unwrap();
     // A hand-made entry takes the last number in that second.
     let text = format!(
-        "schema = 1\nversion = \"{}\"\nparent = \"{}\"\ntime = 2026-10-24T09:15:02Z\n\n[provenance]\nby = \"rules\"\n",
+        "schema = 1\nversion = \"{}\"\nparent = \"2026-10-24T091502Z-010101010101\"\ntime = 2026-10-24T09:15:02Z\n\n[provenance]\nby = \"rules\"\n",
         version(2),
-        version(1)
     );
     std::fs::write(dir.join("2026-10-24T091502Z-020202020202-9999.toml"), text).unwrap();
     assert!(matches!(h.record(run(3, T)), Err(Error::Crowded(_))));

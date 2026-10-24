@@ -5,8 +5,8 @@
 //! ```toml
 //! schema = 1
 //! version = "…"                 # the full version id (ADR-014 §6)
-//! parent = "…"                  # the version that was latest when it was recorded; absent for the first
-//! time = 2026-10-24T09:15:02Z   # UTC, whole seconds
+//! parent = "2026-10-24T091001Z-0f0e0d0c0b0a" # the run it came after, by its id; absent for the first
+//! time = 2026-10-24T09:15:02Z   # UTC, whole seconds: the recording machine's clock, as it was
 //! restore = true                # only on a restore
 //!
 //! [provenance]
@@ -20,8 +20,14 @@
 //!
 //! A file is named by its run's time and the first 12 hex digits of its version,
 //! `2026-10-24T091502Z-1a2b3c4d5e6f.toml`, with `-2`, `-3`, … for further runs in the same second (whatever their
-//! versions), so entries order by time and then that number, and names hold no character Windows refuses. A run is recorded only when its version differs from the latest
-//! recorded one, or when it restores an earlier one.
+//! versions); the name without `.toml` is the run's id. Names hold no character Windows refuses.
+//!
+//! **Order comes from the graph, not the clock.** Each entry names the run it came after, so parent links give the
+//! order; two machines or branches adding runs after the same one make a fork. Times are the recording machine's
+//! clock, as it was: they are provenance, and only break ties between runs the links don't order (then the run id).
+//! The track's current version is whatever its files resolve to now (ADR-004); the history only records how versions
+//! came about. A run is recorded only when its version differs from the latest recorded one, or when it restores an
+//! earlier one.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -40,11 +46,6 @@ const LAST_SECOND: i64 = 253_402_300_799;
 
 /// Characters of the time at the start of a file's name, `2026-10-24T091502Z`.
 const TIME_CHARS: usize = 18;
-
-/// How far ahead of a run's clock the latest entry may be before recording refuses, in seconds: one day. Within it,
-/// the run is recorded at the latest entry's time, so the order holds; beyond it, the latest entry's clock was surely
-/// wrong, and pinning every later run to its time would hide when they happened.
-pub const MAX_AHEAD: i64 = 86_400;
 
 /// Hex digits of the version in a file's name.
 const NAME_DIGITS: usize = 12;
@@ -233,11 +234,11 @@ pub struct Entry {
     schema: Schema,
     /// The run's version id.
     pub version: VersionId,
-    /// The version that was latest when it was recorded (on this machine or branch); `None` for the first. Versions
-    /// repeat with restores, so following parents can come back to a version: it is a history, not a tree.
+    /// The run it came after, by its id (its file's name without `.toml`); `None` for the first. A run, not a version:
+    /// versions repeat with restores, runs don't, so the links form a graph without loops.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent: Option<VersionId>,
-    /// When it ran, or the latest entry's time if that was later (by under [`MAX_AHEAD`]), so entries keep their order.
+    pub parent: Option<String>,
+    /// When it ran, by the recording machine's clock, as it was: for display, and to break ties the links leave.
     pub time: UtcTime,
     /// Whether it restored an earlier version.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -265,7 +266,7 @@ pub struct Run {
     pub uses: Vec<CacheRef>,
 }
 
-/// A track's recorded runs, oldest first.
+/// A track's recorded runs, in graph order: every run after the run it came after, ties broken by time, then run id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct History {
     dir: PathBuf,
@@ -299,15 +300,6 @@ pub enum Error {
     BadStage(String),
     /// Every number for runs in this second (up to [`MAX_IN_SECOND`]) is taken.
     Crowded(String),
-    /// The latest entry is dated more than [`MAX_AHEAD`] after the run: a clock was wrong when it was recorded.
-    Ahead {
-        /// The latest entry's file.
-        path: PathBuf,
-        /// Its time.
-        time: UtcTime,
-        /// The run's.
-        run: UtcTime,
-    },
 }
 
 /// The most runs one second can hold: names number them `-2` to `-9999`.
@@ -329,12 +321,6 @@ impl fmt::Display for Error {
                 write!(f, "`uses` names a stage `{stage}` the cache can't hold")
             }
             Error::Crowded(second) => write!(f, "{second} already holds {MAX_IN_SECOND} runs"),
-            Error::Ahead { path, time, run } => write!(
-                f,
-                "{}: the latest run is dated {time}, more than a day after this run ({run}); a clock was wrong when it \
-                 was recorded. Fix that entry's time and name, or this machine's clock",
-                path.display()
-            ),
         }
     }
 }
@@ -354,12 +340,12 @@ impl History {
     /// Every `.toml` file in it must be an entry named for its time and version. Files whose names start with `.`
     /// (`.DS_Store`, editors' swap files) and files that don't end in `.toml` (`Thumbs.db`, writers' `.part` files,
     /// `x.toml~`) are skipped. The entries form a graph, not a single chain, because two machines or two git branches
-    /// can each add runs after the same version:
-    /// - each entry's parent, if it has one, is a version some entry in the folder records;
-    /// - no entry is its own parent;
+    /// can each add runs after the same one:
+    /// - each entry's parent, if it has one, is a run in the folder, and the links have no loop;
     /// - a restore's version is one another entry records.
     ///
-    /// The entries are ordered by time, then by same-second number, then by name. The latest is the last of them.
+    /// The entries are put in graph order: each after the run it came after, with runs the links don't order sorted
+    /// by time, then run id. The latest is the last of them.
     pub fn read(dir: &Path) -> Result<Self, Error> {
         let listing = match std::fs::read_dir(dir) {
             Ok(l) => l,
@@ -469,34 +455,38 @@ impl History {
             texts.push(text);
             entries.push((name, entry));
         }
-        let recorded: std::collections::BTreeSet<VersionId> =
-            entries.iter().map(|(_, e)| e.version).collect();
-        for ((name, entry), text) in entries.iter().zip(&texts) {
+        // Parent links: each must name a run here, and the links must have no loop.
+        let ids: std::collections::BTreeMap<&str, usize> = entries
+            .iter()
+            .enumerate()
+            .map(|(i, (name, _))| (run_id(name), i))
+            .collect();
+        let mut parent_of = vec![None; entries.len()];
+        for (i, ((name, entry), text)) in entries.iter().zip(&texts).enumerate() {
             let invalid = |key: &str, message: String| Error::Invalid {
                 path: dir.join(name),
                 at: key_line(text, key),
                 message,
             };
-            if let Some(parent) = entry.parent {
-                if parent == entry.version {
-                    return Err(invalid(
-                        "parent",
-                        "it names its own version as its parent".into(),
-                    ));
-                }
-                if !recorded.contains(&parent) {
-                    return Err(invalid(
-                        "parent",
-                        format!("its parent {parent} isn't a version any entry here records"),
-                    ));
+            if let Some(parent) = &entry.parent {
+                match ids.get(parent.as_str()) {
+                    Some(&j) if j == i => {
+                        return Err(invalid("parent", "it names itself as its parent".into()));
+                    }
+                    Some(&j) => parent_of[i] = Some(j),
+                    None => {
+                        return Err(invalid(
+                            "parent",
+                            format!("its parent run `{parent}` isn't in this folder"),
+                        ));
+                    }
                 }
             }
             if entry.restore
-                && entries
+                && !entries
                     .iter()
-                    .filter(|(_, e)| e.version == entry.version)
-                    .count()
-                    < 2
+                    .enumerate()
+                    .any(|(j, (_, e))| j != i && e.version == entry.version)
             {
                 return Err(invalid(
                     "restore",
@@ -504,20 +494,64 @@ impl History {
                 ));
             }
         }
+        // Graph order: a run once the run it came after is placed, the earliest by (time, run id) first.
+        let mut children = vec![Vec::new(); entries.len()];
+        for (i, p) in parent_of.iter().enumerate() {
+            if let Some(p) = p {
+                children[*p].push(i);
+            }
+        }
+        let key = |i: usize| (entries[i].1.time, run_id(&entries[i].0).to_owned());
+        let mut ready: std::collections::BTreeSet<((UtcTime, String), usize)> = parent_of
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.is_none())
+            .map(|(i, _)| (key(i), i))
+            .collect();
+        let mut order = Vec::with_capacity(entries.len());
+        while let Some(first) = ready.pop_first() {
+            order.push(first.1);
+            for &c in &children[first.1] {
+                ready.insert((key(c), c));
+            }
+        }
+        if order.len() < entries.len() {
+            let stuck = (0..entries.len())
+                .find(|i| !order.contains(i))
+                .expect("one is left");
+            return Err(Error::Invalid {
+                path: dir.join(&entries[stuck].0),
+                at: key_line(&texts[stuck], "parent"),
+                message: "its parent links go round in a loop".into(),
+            });
+        }
+        let mut slots: Vec<Option<(String, Entry)>> = entries.into_iter().map(Some).collect();
+        let entries = order
+            .into_iter()
+            .map(|i| slots[i].take().expect("placed once"))
+            .collect();
         Ok(History {
             dir: dir.to_path_buf(),
             entries,
         })
     }
 
-    /// The recorded runs, oldest first, with their file names.
+    /// The recorded runs in graph order, with their file names.
     pub fn entries(&self) -> impl Iterator<Item = (&str, &Entry)> {
         self.entries.iter().map(|(n, e)| (n.as_str(), e))
     }
 
-    /// The latest recorded run.
+    /// The latest recorded run: the last in graph order.
     pub fn latest(&self) -> Option<&Entry> {
         self.entries.last().map(|(_, e)| e)
+    }
+
+    /// The run `id` (a file name without `.toml`), if the history holds it: for instance an entry's parent.
+    pub fn run(&self, id: &str) -> Option<&Entry> {
+        self.entries
+            .iter()
+            .find(|(name, _)| run_id(name) == id)
+            .map(|(_, e)| e)
     }
 
     /// Record `run`, unless it changes nothing. First the folder is read again, so runs other writers recorded
@@ -525,9 +559,8 @@ impl History {
     ///
     /// A run whose version is the latest recorded one writes nothing (a restore of it included) and returns `None`.
     /// Otherwise its entry is created in the folder (made if needed), never replacing a file, and its path returned:
-    /// - the entry's parent is the latest version;
-    /// - its time is the run's, or the latest entry's if that is later (by at most [`MAX_AHEAD`]), so a clock a little
-    ///   behind another machine's never puts a new run before the latest;
+    /// - the entry's parent is the latest run;
+    /// - its time is the run's own, as this machine's clock gave it, never adjusted;
     /// - its number in its second is one past any already there.
     ///
     /// If another writer takes the name first, the folder is read again and the run decided afresh. Under a race the
@@ -537,8 +570,7 @@ impl History {
     /// - a restore of a version never recorded;
     /// - a provenance with an empty model or name;
     /// - a `uses` stage the cache can't hold;
-    /// - a second already holding [`MAX_IN_SECOND`] runs;
-    /// - a latest entry dated more than [`MAX_AHEAD`] after the run ([`Error::Ahead`]).
+    /// - a second already holding [`MAX_IN_SECOND`] runs.
     pub fn record(&mut self, run: Run) -> Result<Option<PathBuf>, Error> {
         run.provenance.check().map_err(Error::NoOne)?;
         if let Some(bad) = run
@@ -560,20 +592,11 @@ impl History {
             if run.restore && !self.entries.iter().any(|(_, e)| e.version == run.version) {
                 return Err(Error::NotRecorded(run.version));
             }
-            if let Some((name, l)) = self.entries.last()
-                && l.time.unix() - run.time.unix() > MAX_AHEAD
-            {
-                return Err(Error::Ahead {
-                    path: self.dir.join(name),
-                    time: l.time,
-                    run: run.time,
-                });
-            }
             let entry = Entry {
                 schema: Schema,
                 version: run.version,
-                parent: latest.map(|l| l.version),
-                time: latest.map_or(run.time, |l| run.time.max(l.time)),
+                parent: self.entries.last().map(|(name, _)| run_id(name).to_owned()),
+                time: run.time,
                 restore: run.restore,
                 provenance: run.provenance.clone(),
                 uses: uses.clone(),
@@ -642,6 +665,11 @@ fn key_line(text: &str, key: &str) -> Option<(usize, usize)> {
             }
         })
         .map(|i| (i + 1, 1))
+}
+
+/// A run's id: its entry's file name without `.toml`.
+fn run_id(name: &str) -> &str {
+    name.strip_suffix(".toml").unwrap_or(name)
 }
 
 /// The time part and version prefix of an entry's file name, if it is one: `<time>-<12 lowercase hex digits>`, then
