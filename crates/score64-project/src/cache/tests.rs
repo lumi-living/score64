@@ -179,7 +179,7 @@ fn a_manifest_for_another_stage_or_key_is_a_miss() {
     let text = std::fs::read_to_string(entry.dir.join("manifest.json")).unwrap();
     std::fs::write(
         entry.dir.join("manifest.json"),
-        text.replace("\"schema\": 1", "\"schema\": 2"),
+        text.replace("\"schema\": 2", "\"schema\": 3"),
     )
     .unwrap();
     assert_eq!(c.get("transcribe", key()), None);
@@ -309,13 +309,99 @@ fn an_entry_from_a_newer_score64_is_left_alone() {
     let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
     let path = entry.dir.join("manifest.json");
     let text = std::fs::read_to_string(&path).unwrap();
-    let newer = text.replace("\"schema\": 1", "\"schema\": 2");
+    let newer = text.replace("\"schema\": 2", "\"schema\": 3");
     std::fs::write(&path, &newer).unwrap();
     assert!(matches!(
         c.put("transcribe", &[("a.bin", b"x")], run()),
         Err(Error::Newer(_))
     ));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), newer, "untouched");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_put_over_a_newer_entry_writes_no_copy() {
+    let (c, dir) = cache("newer-nocopy");
+    let made = || TEMP_DIRS_MADE.with(std::cell::Cell::get);
+    let before = made();
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    assert_eq!(made(), before + 1, "a put writes one temporary copy");
+    let path = entry.dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("\"schema\": 2", "\"schema\": 3")).unwrap();
+    let before = made();
+    assert!(matches!(
+        c.put("transcribe", &[("a.bin", b"x")], run()),
+        Err(Error::Newer(_))
+    ));
+    assert_eq!(made(), before, "found before writing anything");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// Run `f` with `hook` called right after each of this thread's `put`s renames its copy into place.
+fn after_rename<T>(hook: impl FnMut(&Path) + 'static, f: impl FnOnce() -> T) -> T {
+    AFTER_RENAME.with(|h| *h.borrow_mut() = Some(Box::new(hook)));
+    let out = f();
+    AFTER_RENAME.with(|h| *h.borrow_mut() = None);
+    out
+}
+
+#[test]
+fn a_put_disturbed_right_after_its_rename_writes_again() {
+    let (c, dir) = cache("disturbed-once");
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = calls.clone();
+    let entry = after_rename(
+        move |entry| {
+            seen.set(seen.get() + 1);
+            if seen.get() == 1 {
+                // A collector takes a file from the copy as it goes into place.
+                std::fs::remove_file(entry.join("a.bin")).unwrap();
+            }
+        },
+        || c.put("transcribe", &[("a.bin", b"x")], run()),
+    )
+    .unwrap();
+    assert_eq!(calls.get(), 2, "written again once");
+    assert_eq!(c.get("transcribe", key()), Some(entry));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_put_disturbed_every_time_fails_rather_than_return_a_broken_entry() {
+    let (c, dir) = cache("disturbed-always");
+    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let seen = calls.clone();
+    let got = after_rename(
+        move |entry| {
+            seen.set(seen.get() + 1);
+            std::fs::write(entry.join("a.bin"), b"longer").unwrap();
+        },
+        || c.put("transcribe", &[("a.bin", b"x")], run()),
+    );
+    let e = got.unwrap_err();
+    assert!(
+        e.to_string().contains("changed just after it was written"),
+        "{e}"
+    );
+    assert_eq!(calls.get(), PUT_TRIES);
+    assert_eq!(c.get("transcribe", key()), None);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn temporary_directories_are_named_with_when_they_were_made() {
+    let (c, dir) = cache("tmpname");
+    let stage = dir.join("cache").join("transcribe");
+    std::fs::create_dir_all(&stage).unwrap();
+    let tmp = temp_dir(&stage).unwrap();
+    let name = tmp.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with(".tmp-t"), "{name}");
+    let made = made_at(name).unwrap();
+    let age = std::time::SystemTime::now().duration_since(made).unwrap();
+    assert!(age < std::time::Duration::from_secs(5), "{name}");
+    assert_ne!(temp_dir(&stage).unwrap(), tmp);
+    drop(c);
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -374,4 +460,80 @@ fn config_keys_sort_at_every_depth() {
     let a = json!({ "b": { "y": 1, "x": [ { "q": 1, "p": 2 } ] }, "a": 0 });
     let b = json!({ "a": 0, "b": { "x": [ { "p": 2, "q": 1 } ], "y": 1 } });
     assert_eq!(Cache::key("s", "1", &a, &[]), Cache::key("s", "1", &b, &[]));
+}
+
+#[test]
+fn put_records_when_it_was_written_and_the_manifest_keeps_it() {
+    let (c, dir) = cache("created");
+    let before = crate::UtcTime::now();
+    let put = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    let after = crate::UtcTime::now();
+    let created = put.manifest.created;
+    assert!(before <= created && created <= after, "{created}");
+    let text = std::fs::read_to_string(put.dir.join("manifest.json")).unwrap();
+    assert!(
+        text.contains(&format!("\"created\": \"{created}\"")),
+        "{text}"
+    );
+    assert_eq!(
+        c.get("transcribe", key()).unwrap().manifest.created,
+        created
+    );
+    assert_eq!(c.entries().unwrap()[0].manifest.created, created);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn entries_lists_each_entry_once_under_its_own_name() {
+    let (c, dir) = cache("listing");
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    // A copy under the key's uppercase spelling: a second folder on a case-sensitive file system, the same one on
+    // others. Either way the entry is listed once, at its lowercase name.
+    let upper = entry
+        .dir
+        .with_file_name(entry.manifest.key.to_string().to_ascii_uppercase());
+    let distinct = std::fs::create_dir(&upper).is_ok();
+    if distinct {
+        for name in ["a.bin", "manifest.json"] {
+            std::fs::copy(entry.dir.join(name), upper.join(name)).unwrap();
+        }
+    }
+    let listed = c.entries().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].dir, entry.dir);
+    // Under its uppercase spelling alone, it isn't listed: `get` looks for the lowercase name.
+    if distinct {
+        std::fs::remove_dir_all(&upper).unwrap();
+    }
+    let aside = dir.join("aside");
+    std::fs::rename(&entry.dir, &aside).unwrap();
+    std::fs::rename(&aside, &upper).unwrap();
+    assert_eq!(c.entries().unwrap(), []);
+    std::fs::rename(&upper, &aside).unwrap();
+    std::fs::rename(&aside, &entry.dir).unwrap();
+    assert_eq!(c.entries().unwrap().len(), 1);
+
+    // A whole entry in a folder whose name isn't a valid stage name is not listed, even if its manifest agrees.
+    let other = c.put("ab", &[("a.bin", b"x")], run()).unwrap();
+    let root = dir.join("cache");
+    std::fs::rename(root.join("ab"), root.join("a b")).unwrap();
+    let manifest = root
+        .join("a b")
+        .join(other.manifest.key.to_string())
+        .join("manifest.json");
+    let text = std::fs::read_to_string(&manifest).unwrap();
+    std::fs::write(
+        &manifest,
+        text.replace("\"stage\": \"ab\"", "\"stage\": \"a b\""),
+    )
+    .unwrap();
+    assert!(
+        std::fs::read_to_string(&manifest)
+            .unwrap()
+            .contains("\"a b\"")
+    );
+    let listed = c.entries().unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].manifest.stage, "transcribe");
+    let _ = std::fs::remove_dir_all(dir);
 }
