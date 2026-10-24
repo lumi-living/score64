@@ -163,6 +163,56 @@ rule = "stray"
     );
 }
 
+/// ADR-014 §8: `change = "keep_note"`, with `voice`, `row` and `pitch`.
+#[test]
+fn a_keep_note_reads_and_writes_as_the_adr_shows_it() {
+    let text = r#"schema = 1
+
+[[decision]]
+id = "keep-high-g"
+subtune = "main"
+bar = 2
+confidence = 1.0
+reviewed = true
+
+[decision.proposal]
+change = "keep_note"
+voice = 1
+row = 36
+pitch = "G-5"
+
+[decision.provenance]
+by = "manual"
+"#;
+    let file = DecisionsFile::parse(text).unwrap();
+    assert_eq!(
+        file.decision[0].proposal,
+        Proposal::KeepNote {
+            voice: score64_core::Voice::new(1).unwrap(),
+            row: 36,
+            pitch: "G-5".parse().unwrap(),
+        }
+    );
+    assert_eq!(file.to_toml().unwrap(), text);
+    // Unknown keys stay errors: a keep names its note by row and pitch only, not by length or source.
+    for extra in [
+        "length = 4",
+        "source = { content = \"00\", start_us = 0, end_us = 1 }",
+        "reason = \"ghost\"",
+    ] {
+        let bad = text.replace("pitch = \"G-5\"\n", &format!("pitch = \"G-5\"\n{extra}\n"));
+        let err = DecisionsFile::parse(&bad).unwrap_err().to_string();
+        assert!(err.contains("unknown field"), "{extra}: {err}");
+    }
+    // And each of its fields is needed.
+    for gone in ["voice = 1\n", "row = 36\n", "pitch = \"G-5\"\n"] {
+        assert!(
+            DecisionsFile::parse(&text.replace(gone, "")).is_err(),
+            "without {gone}"
+        );
+    }
+}
+
 #[test]
 fn a_duplicate_read_from_a_file_names_both_lines() {
     let one = r#"[[decision]]

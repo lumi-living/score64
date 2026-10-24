@@ -190,8 +190,8 @@ public:
         n(1.4),
 #endif
         nVddt_Vw_2(0),
-        nVddt(new_fmc.getNormalizedValue(new_fmc.getVddt())),
-        nVt(new_fmc.getNormalizedValue(new_fmc.getVth())),
+        nVddt(new_fmc.getNormalizedValueAt(new_fmc.getVddt(), 0)), // Score64 patch 2
+        nVt(new_fmc.getNormalizedValueAt(new_fmc.getVth(), 1)),
         nVmin(new_fmc.getNVmin()),
         fmc(new_fmc) {}
 
