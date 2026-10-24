@@ -858,7 +858,9 @@ fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
         ("{ start = 0x1000, end = 0x1FFF }", 0x1000, 0x1FFF),
         ("{ end = 0x2FFF, start = 0x2000 }", 0x2000, 0x2FFF),
         ("{ start = 0x0200, end = 0x0200 }", 0x0200, 0x0200),
-        ("{ start = 0xFF00, end = 0xFFFF }", 0xFF00, 0xFFFF),
+        ("{ start = 0xFF00, end = 0xFFF9 }", 0xFF00, 0xFFF9),
+        ("{ start = 0xE000, end = 0xFFF9 }", 0xE000, 0xFFF9),
+        ("{ start = 0x0200, end = 0xCFFF }", 0x0200, 0xCFFF),
         ("{ start = 49152, end = 53247 }", 0xC000, 0xCFFF),
     ] {
         let text = PROJECT.replace(WINDOW, &format!("window = {window}"));
@@ -884,6 +886,30 @@ fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
             "ends at $0FFF, before it starts at $1000",
         ),
         ("{ start = 0x0100, end = 0x1FFF }", "start $0100"),
+        (
+            "{ start = 0xC000, end = 0xD000 }",
+            "window $C000–$D000 overlaps the I/O area $D000–$DFFF",
+        ),
+        (
+            "{ start = 0xD000, end = 0xD0FF }",
+            "window $D000–$D0FF overlaps the I/O area $D000–$DFFF",
+        ),
+        (
+            "{ start = 0xDF00, end = 0xE0FF }",
+            "window $DF00–$E0FF overlaps the I/O area $D000–$DFFF",
+        ),
+        (
+            "{ start = 0x0200, end = 0xFFFF }",
+            "window $0200–$FFFF overlaps the I/O area $D000–$DFFF",
+        ),
+        (
+            "{ start = 0xE000, end = 0xFFFA }",
+            "window $E000–$FFFA reaches the CPU's vectors at $FFFA–$FFFF",
+        ),
+        (
+            "{ start = 0xFF00, end = 0xFFFF }",
+            "window $FF00–$FFFF reaches the CPU's vectors at $FFFA–$FFFF",
+        ),
         ("{ start = 0x0000, end = 0x1FFF }", "start $0000"),
         ("{ start = 0x1000, end = 0x10000 }", "65536"),
         ("{ start = -1, end = 0x1FFF }", "-1"),
@@ -916,6 +942,10 @@ fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
     let text = PROJECT.replace(WINDOW, "player_page = 0x10");
     let (at, m) = error(ProjectFile::parse(&text, p("x")));
     assert!(m.contains("unknown field `player_page`"), "{m}");
+    assert!(
+        m.contains("`player_page` is now `[pack] window = { start, end }`"),
+        "{m}"
+    );
     assert_eq!(at.unwrap().0, key_line(&text, "player_page"));
 }
 
@@ -1044,22 +1074,35 @@ fn a_track_replaces_the_whole_window_and_may_set_its_own_raster_budget() {
     std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
     let (at, m) = error(pr.track(&id("main")));
     assert!(
-        m.contains("max_play_cycles 19000") && m.contains("NTSC"),
+        m.contains(
+            "max_play_cycles 19000, from score64.toml, is longer than an NTSC frame (17095 cycles)"
+        ) && m.contains("this track's [target] video"),
         "{m}"
     );
-    assert_eq!(at.unwrap().0, line_of(&text, "[target]").unwrap(), "{m}");
+    assert_eq!(at.unwrap().0, key_line(&text, "video"), "{m}");
+    // ... also when the track's [pack] overrides other keys.
+    let text = track_text("\n[target]\nvideo = \"ntsc\"\n\n[pack]\nzero_page = 0xFB\n");
+    std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
+    let (at, m) = error(pr.track(&id("main")));
+    assert!(m.contains("from score64.toml"), "{m}");
+    assert_eq!(at.unwrap().0, key_line(&text, "video"), "{m}");
     // ... and the track's own budget on its own line.
     let text = track_text("\n[target]\nvideo = \"ntsc\"\n\n[pack]\nmax_play_cycles = 17096\n");
     std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
     let (at, m) = error(pr.track(&id("main")));
-    assert!(m.contains("max_play_cycles 17096"), "{m}");
+    assert!(
+        m.contains("max_play_cycles 17096 is longer than an NTSC frame (17095 cycles)"),
+        "{m}"
+    );
+    assert!(!m.contains("score64.toml"), "the track's own: {m}");
     assert_eq!(at.unwrap().0, key_line(&text, "max_play_cycles"), "{m}");
     // The old key is unknown in a track too.
     let text = track_text("\n[pack]\nplayer_page = 0x20\n");
+    let m = error(TrackFile::parse(&text, p("x"))).1;
+    assert!(m.contains("unknown field `player_page`"), "{m}");
     assert!(
-        error(TrackFile::parse(&text, p("x")))
-            .1
-            .contains("unknown field `player_page`")
+        m.contains("`player_page` is now `[pack] window = { start, end }`"),
+        "{m}"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -1112,13 +1155,19 @@ fn the_pack_is_the_budget_gates_budget() {
 }
 
 proptest! {
-    /// A window is accepted exactly when it starts on a page at $0200 or above and doesn't end before it starts, in
-    /// code and in a file alike; an accepted one reads back from the text a new file gets.
+    /// A window is accepted exactly when it starts on a page at $0200 or above, doesn't end before it starts, and
+    /// stays clear of the I/O area and the CPU's vectors, in code and in a file alike; an accepted one reads back
+    /// from the text a new file gets.
     #[test]
-    fn a_window_is_accepted_exactly_when_it_is_valid(start in any::<u16>(), len in any::<u16>(), aligned in any::<bool>()) {
+    fn a_window_is_accepted_exactly_when_it_is_valid(
+        start in any::<u16>(),
+        len in prop_oneof![any::<u16>(), 0u16..0x2000],
+        aligned in any::<bool>(),
+    ) {
         let start = if aligned { start & 0xFF00 } else { start };
         let end = start.wrapping_add(len);
-        let valid = start.is_multiple_of(0x100) && start >= 0x0200 && end >= start;
+        let clear_of_io = end < 0xD000 || start > 0xDFFF;
+        let valid = start.is_multiple_of(0x100) && start >= 0x0200 && end >= start && clear_of_io && end < 0xFFFA;
         prop_assert_eq!(Window::new(start, end).is_ok(), valid);
         let text = PROJECT.replace(WINDOW, &format!("window = {{ start = {start}, end = {end} }}"));
         match ProjectFile::parse(&text, p("x")) {

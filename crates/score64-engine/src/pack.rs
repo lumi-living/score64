@@ -1,16 +1,20 @@
 //! The pack stage's budget gate (rule 8; #51, #198): pack the song, read the packed bytes back, trace the player in
 //! the emulator helper, and check the measured facts against the project's `[pack]` budget.
 //!
-//! There is no pack command yet. These functions are what one runs, so it stays a thin layer over the engine
-//! (ADR-005):
+//! **Not a front-end surface.** Front-ends never call this module: every user-visible action is a command (ADR-005),
+//! and the app, CLI and MCP server go through [`crate::REGISTRY`] or the command types. There is no pack command
+//! yet; these functions are what it will run, inside this crate:
 //! - [`options`] maps a resolved `[pack]` to gt2reloc's options; [`Pack::budget`] gives rule 8's budget;
-//! - [`TracePlan::for_song`] works out what to trace from the score: every subtune through its loop once, and an
-//!   effect call on each voice its profile gives to effects;
+//! - [`TracePlan::for_song`] works out what to trace from the score: every subtune through its loop once and one row
+//!   more, and an effect call on each voice its profile gives to effects;
 //! - [`gate`] reads a packed file, traces it and runs `check_pack`; [`pack_and_gate`] packs first.
+//!
+//! The module is public, and hidden from the docs, only so that the end-to-end tests (`tests/pack_gate.rs`) can run
+//! the gate against the real gt2reloc and helper.
 //!
 //! **How a subtune is traced.** The packed bytes are loaded fresh, with a trace armed for the budget's window, and
 //! init is called with the subtune number. Play is then called once a frame for the plan's frames. The helper calls
-//! a three-byte driver outside the window, `JMP start+3`, rather than play itself, so that the driver can be pointed
+//! a three-byte driver, `JMP start+3`, rather than play itself, so that the driver can be pointed
 //! at an effect call between two play calls. On such a frame the driver calls the sound-effect entry (start+6) with
 //! the effect's address in A/Y and the voice's channel offset in X, as a game's main loop would, *in place of* play.
 //! The trace sees everything either call reads or writes. Each play call's time is the helper's measurement less the
@@ -18,8 +22,19 @@
 //! driver and the effect data are only read, never written, and the host's own writes (`Load`, `Poke`) aren't traced,
 //! so none of them shows up as a write outside the window.
 //!
-//! A tune whose init or play entry doesn't jump into it isn't traced, and the effect entry is only called when it
-//! jumps into the tune: rule 8 then reports the jump table, where the helper would only report a CPU jam.
+//! The driver and the effect data go outside the window when there is room, and otherwise inside it, past the
+//! tune's end: GoatTracker's packed player keeps its variables in its own bytes, so it doesn't write there. Then the
+//! trace watches the driver, and a player that writes over it anyway gets a problem saying so.
+//!
+//! A tune whose init or play entry doesn't jump into it, past the jump table, isn't traced, and the effect entry is
+//! only called when it does: rule 8 then reports the jump table, where the helper would only report a CPU jam or a
+//! timeout. A call that fails while the trace runs (a CPU jam, or a call that doesn't return in time) stops that
+//! subtune's trace, but what was measured up to it is kept: the facts hold it, and the report adds a problem naming
+//! the call. So when a relocation bug makes the player write over the driver and crash, that write is still reported.
+//!
+//! **What isn't traced.** Each subtune is traced from a fresh load. A game with an adaptive set inits one layer
+//! while another is playing; that path isn't traced, so zero page and writes outside the window are measured only
+//! for subtunes started from a freshly loaded player (TAD §1.3, rule 8).
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -32,10 +47,11 @@ use score64_adapters::emu::{DynHelper, HelperError};
 use score64_adapters::gt2reloc::{
     Format, Gt2Reloc, PackError, PackOptions, Packed, Timing, ZeroPage,
 };
-use score64_core::validate::{Problem, has_errors};
+use score64_core::validate::{Problem, Severity, has_errors};
 use score64_core::{
-    PackBudget, PackFacts, Profiles, Song, VideoStandard, Voice, VoiceUse, check_pack,
+    PackBudget, PackFacts, Profiles, Rule, Song, VideoStandard, Voice, VoiceUse, check_pack,
 };
+use score64_formats::emu_protocol::ErrorCode;
 use score64_formats::packed::Payload;
 use score64_formats::psid::Psid;
 use score64_project::project::Pack;
@@ -45,10 +61,13 @@ use crate::{CommandError, Engine, ErrorKind};
 /// gt2reloc's own hard-restart ADSR, used when `[pack]` sets none.
 pub const DEFAULT_HARD_RESTART_ADSR: u16 = 0x0F00;
 
-/// The play calls a plan adds to a subtune's rows. Row 0 starts on the eighth play call after init (frame 7,
-/// `docs/reference/player.md` §Timing marks), so with these the last play call is the first one after the loop's
-/// last row.
+/// The play calls a plan adds to a subtune's rows before they start. Row 0 starts on the eighth play call after init
+/// (frame 7, `docs/reference/player.md` §Timing marks). With these, the plan's play calls run to the first one after
+/// the loop's last row, and [`TracePlan::for_song`] adds the loop row's frames once more as a margin.
 pub const START_FRAMES: u64 = 8;
+
+/// How many play calls are rendered at a time: one PAL second. A call that fails is reported within this many.
+const CHUNK_FRAMES: u32 = 50;
 
 /// How often an effect is fired while a subtune plays, in play calls: every two PAL seconds, cycling through the
 /// voices that take effects. A subtune too short for one on each voice gets them closer together.
@@ -102,7 +121,8 @@ pub struct SubtunePlan {
 impl TracePlan {
     /// The plan for `song`, with its subtunes' profiles from `profiles` and `effect` to fire. Each subtune plays its
     /// rows once from the start and its loop once more, after the player's start ([`START_FRAMES`]), following its
-    /// tempo changes; effects go on every voice its profile doesn't keep for music alone.
+    /// tempo changes, and then its loop row once more, so the plan doesn't end exactly on the jump back. Effects go
+    /// on every voice its profile doesn't keep for music alone.
     pub fn for_song(
         song: &Song,
         profiles: &Profiles,
@@ -123,7 +143,8 @@ impl TracePlan {
                     )
                 })?;
                 let end = s.length.get();
-                let frames = START_FRAMES + s.frames(0, end) + s.frames(s.loop_row, end);
+                let margin = s.frames(s.loop_row, s.loop_row + 1);
+                let frames = START_FRAMES + s.frames(0, end) + s.frames(s.loop_row, end) + margin;
                 let frames = u32::try_from(frames).map_err(|_| {
                     CommandError::new(
                         ErrorKind::InvalidInput,
@@ -218,7 +239,8 @@ pub fn pack_and_gate(
 }
 
 /// The gate on a packed file: read its bytes back (checked against what gt2reloc reported), trace every subtune of
-/// `plan` in the engine's helper, and run rule 8 against `budget`.
+/// `plan` in the engine's helper, and run rule 8 against `budget`. A call that fails during the trace is a problem in
+/// the report, after rule 8's, with what was measured up to it in the facts; a helper that breaks is an error.
 pub fn gate(
     engine: &mut Engine,
     packed: &Packed,
@@ -227,26 +249,37 @@ pub fn gate(
 ) -> Result<GateReport, CommandError> {
     let payload = packed.payload().map_err(pack_error)?;
     check_plan(packed, budget, plan)?;
-    // Only a tune whose init and play entries jump into it can run, and the effect entry is called only where it
-    // does too; otherwise the trace is skipped (or fires nothing) and rule 8 reports the jump table instead of the
-    // helper refusing a CPU jam. An inverted window is rule 8's to report too; there is nothing to trace writes
-    // outside of.
-    let tune = u32::from(payload.load)..u32::from(payload.load) + payload.data.len() as u32;
+    // Only a tune whose init and play entries jump into it, past the jump table, can run, and the effect entry is
+    // called only where it does too; otherwise the trace is skipped (or fires nothing) and rule 8 reports the jump
+    // table instead of the helper refusing a CPU jam or a call that never returns. An inverted window is rule 8's to
+    // report too; there is nothing to trace writes outside of.
+    let load = u32::from(payload.load);
+    let tune = load..load + payload.data.len() as u32;
+    let table_end = load + 3 * if budget.sound_effects { 3 } else { 2 };
     let jumps = payload.jump_table();
-    let into_tune = |i: usize| jumps[i].is_some_and(|to| tune.contains(&u32::from(to)));
+    let into_tune = |i: usize| {
+        jumps[i].is_some_and(|to| tune.contains(&u32::from(to)) && u32::from(to) >= table_end)
+    };
     let window = (budget.first <= budget.last).then_some((budget.first, budget.last));
     let (mut zero_page_used, mut pages_written_outside) = (BTreeSet::new(), BTreeSet::new());
     let mut max_play_cycles: Option<u32> = None;
+    let mut stopped = Vec::new();
     let traced = into_tune(0) && into_tune(1);
     if traced {
         let effects = budget.sound_effects
             && into_tune(2)
             && plan.subtunes.iter().any(|s| !s.effect_voices.is_empty());
         let effect = if effects { plan.effect.clone() } else { vec![] };
-        let scratch = scratch(&payload, window, DRIVER_BYTES + effect.len()).ok_or_else(|| {
+        let len = DRIVER_BYTES + effect.len();
+        let scratch = scratch(&payload, window, len).ok_or_else(|| {
             CommandError::new(
                 ErrorKind::InvalidInput,
-                "no room outside the window and the tune for the trace's driver and effect data",
+                format!(
+                    "no room for the trace's driver and effect data ({len} bytes): it goes outside the window and \
+                     the tune, clear of zero page, the stack, the I/O area and the CPU's vectors, or else inside the \
+                     window past the tune's end, and the tune leaves neither; leave {len} bytes free outside the \
+                     window, or inside it after the tune"
+                ),
             )
         })?;
         for (n, sub) in plan.subtunes.iter().enumerate() {
@@ -271,6 +304,23 @@ pub fn gate(
             zero_page_used.extend(measured.zero_page);
             pages_written_outside.extend(measured.outside);
             max_play_cycles = max_play_cycles.max(measured.max_play_cycles);
+            if let Some((call, why)) = measured.failure {
+                stopped.push(pack_problem(
+                    format!("subtune {}'s trace stopped: {call} failed: {why}", n + 1),
+                    "check the packer's start address, and what the player writes outside its window (gt2reloc -W)",
+                ));
+            }
+            if let Some(at) = measured.overwrote_driver {
+                stopped.push(pack_problem(
+                    format!(
+                        "subtune {} wrote over the trace's driver at ${at:04X}, inside the window past the tune's \
+                         end, where it went for want of room outside the window; what was measured after that \
+                         can't be trusted",
+                        n + 1
+                    ),
+                    "leave room outside the window for the trace, or check what the player writes past its end",
+                ));
+            }
         }
     }
     let facts = PackFacts {
@@ -282,8 +332,23 @@ pub fn gate(
         traced_window: window.filter(|_| traced),
         max_play_cycles,
     };
-    let problems = check_pack(&facts, budget);
+    let mut problems = check_pack(&facts, budget);
+    problems.extend(stopped);
     Ok(GateReport { facts, problems })
+}
+
+/// A rule 8 error found by the gate itself rather than by `check_pack`.
+fn pack_problem(message: String, hint: &str) -> Problem {
+    Problem {
+        rule: Rule::Pack,
+        severity: Severity::Error,
+        subtune: None,
+        bar: None,
+        row: None,
+        voice: None,
+        message,
+        hint: hint.into(),
+    }
 }
 
 /// The plan must name at least one subtune, each played at least once, an effect when one is to be fired, and, for a
@@ -336,31 +401,57 @@ fn check_plan(packed: &Packed, budget: &PackBudget, plan: &TracePlan) -> Result<
 /// The driver: `JMP` (3 bytes), then the effect call (`LDA #`, `LDY #`, `LDX #`, `JMP`: 9 bytes), then 4 spare, then
 /// the effect data.
 const DRIVER_BYTES: usize = 16;
+/// The driver's code: the `JMP` and the effect call.
+const DRIVER_CODE: usize = 12;
 /// Where in the driver the effect call starts, and where its `LDX #` operand is.
 const FIRE: u16 = 3;
 const FIRE_CHANNEL: u16 = FIRE + 5;
 
-/// A page-aligned place for `len` bytes of driver and effect data that the trace can read without counting as the
-/// tune's: outside the window and the tune, clear of zero page, the stack, the I/O area (`$D000`–`$DFFF`) and the
-/// CPU's vectors. `$C000` first, as a game's free RAM usually is; then the lowest page that fits.
-fn scratch(payload: &Payload, window: Option<(u16, u16)>, len: usize) -> Option<u16> {
+/// Where the driver and effect data go: their address, and whether it is inside the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Scratch {
+    at: u16,
+    in_window: bool,
+}
+
+/// A place for `len` bytes of driver and effect data that the trace can read without counting as the tune's, clear
+/// of the tune, zero page, the stack, the I/O area (`$D000`–`$DFFF`) and the CPU's vectors. Outside the window when
+/// there is room, page-aligned: `$C000` first, as a game's free RAM usually is, then the lowest page that fits.
+/// Otherwise inside the window, past the tune's end, where GoatTracker's player doesn't write: the first address
+/// after the tune, else the lowest page above it.
+fn scratch(payload: &Payload, window: Option<(u16, u16)>, len: usize) -> Option<Scratch> {
     let len = len as u32;
     let tune = (
         u32::from(payload.load),
         u32::from(payload.load) + payload.data.len() as u32,
     );
-    let clear = |base: u32| {
-        let (a, b) = (base, base + len);
-        let apart = |(x, y): (u32, u32)| b <= x || a >= y;
-        b <= 0xFFFA
-            && apart((0xD000, 0xE000))
-            && apart(tune)
-            && window.is_none_or(|(f, l)| apart((u32::from(f), u32::from(l) + 1)))
+    let span = |a: u32| (a, a + len);
+    let apart = |(a, b): (u32, u32), (x, y): (u32, u32)| b <= x || a >= y;
+    let usable = |base: u32| {
+        let s = span(base);
+        s.1 <= 0xFFFA && apart(s, (0xD000, 0xE000)) && apart(s, tune)
     };
-    std::iter::once(0xC000)
-        .chain((0x02..=0xFF).map(|p| p << 8))
-        .find(|&base| clear(base))
-        .map(|base| base as u16)
+    let outside =
+        |base: u32| window.is_none_or(|(f, l)| apart(span(base), (u32::from(f), u32::from(l) + 1)));
+    let pages = || (0x02..=0xFF).map(|p: u32| p << 8);
+    if let Some(at) = std::iter::once(0xC000)
+        .chain(pages())
+        .find(|&base| usable(base) && outside(base))
+    {
+        return Some(Scratch {
+            at: at as u16,
+            in_window: false,
+        });
+    }
+    let (first, last) = window?;
+    let inside = |base: u32| base >= u32::from(first) && span(base).1 <= u32::from(last) + 1;
+    std::iter::once(tune.1)
+        .chain(pages().filter(|&p| p > tune.1))
+        .find(|&base| usable(base) && inside(base))
+        .map(|at| Scratch {
+            at: at as u16,
+            in_window: true,
+        })
 }
 
 /// When to fire an effect while `frames` play calls run, and on which voice: every [`EFFECT_EVERY`] play calls,
@@ -383,7 +474,7 @@ fn fires(frames: u32, voices: &[Voice]) -> Vec<(u32, Voice)> {
 struct Job {
     payload: Payload,
     window: Option<(u16, u16)>,
-    scratch: u16,
+    scratch: Scratch,
     effect: Vec<u8>,
     subtune: u8,
     frames: u32,
@@ -391,15 +482,20 @@ struct Job {
 }
 
 /// What one subtune's trace measured.
+#[derive(Default)]
 struct Measured {
     zero_page: BTreeSet<u8>,
     outside: BTreeSet<u8>,
     max_play_cycles: Option<u32>,
+    /// The call that failed and stopped the trace, and the helper's reason.
+    failure: Option<(String, String)>,
+    /// The first driver address the player wrote a new value to, when the driver is inside the window.
+    overwrote_driver: Option<u16>,
 }
 
 /// The driver for a tune at `start` whose effect data is at `fx`: `JMP play`, then the effect call that [`fire`]
 /// points it at.
-fn driver_code(start: u16, fx: u16) -> [u8; 12] {
+fn driver_code(start: u16, fx: u16) -> [u8; DRIVER_CODE] {
     let [play_lo, play_hi] = start.wrapping_add(3).to_le_bytes();
     let [fx_lo, fx_hi] = fx.to_le_bytes();
     let [entry_lo, entry_hi] = start.wrapping_add(6).to_le_bytes();
@@ -425,10 +521,22 @@ fn fire(h: &mut DynHelper, driver: u16, start: u16, voice: Voice) -> Result<(), 
     h.poke(driver + 2, play_hi)
 }
 
+/// The helper's reason when `e` is the tune's own failure (a CPU jam, or a call that didn't return within its
+/// budget), which the session survives; anything else is the helper's failure, and stays an error.
+fn tune_failure(e: HelperError) -> Result<String, HelperError> {
+    match e {
+        HelperError::Refused {
+            code: ErrorCode::CpuJam | ErrorCode::Timeout,
+            message,
+        } => Ok(message),
+        e => Err(e),
+    }
+}
+
 impl Job {
     fn run(self, h: &mut DynHelper) -> Result<Measured, HelperError> {
         let start = self.payload.load;
-        let driver = self.scratch;
+        let driver = self.scratch.at;
         let fx = driver + DRIVER_BYTES as u16;
         let code = driver_code(start, fx);
         h.load(start, &self.payload.data)?;
@@ -436,34 +544,69 @@ impl Job {
         if !self.effect.is_empty() {
             h.load(fx, &self.effect)?;
         }
-        h.trace(true, self.window, &[])?;
-        h.init(start, driver, self.subtune)?;
-        let chunk = h.max_render_frames(false).max(1);
-        let mut max: Option<u32> = None;
+        // Inside the window, a write over the driver wouldn't count as outside it: watch the driver instead.
+        let watch: Vec<u16> = if self.scratch.in_window {
+            (0..DRIVER_CODE as u16).map(|i| driver + i).collect()
+        } else {
+            vec![]
+        };
+        h.trace(true, self.window, &watch)?;
+        let mut m = Measured::default();
+        if let Err(e) = h.init(start, driver, self.subtune) {
+            // A failed init leaves nothing to report.
+            m.failure = Some(("its init call".into(), tune_failure(e)?));
+            return Ok(m);
+        }
+        let chunk = h.max_render_frames(false).clamp(1, CHUNK_FRAMES);
         let mut played = 0;
         let mut fires = self.fires.iter().peekable();
-        while played < self.frames {
+        'trace: while played < self.frames {
             let until = fires
                 .peek()
                 .map_or(self.frames, |(at, _)| *at)
                 .min(self.frames);
             while played < until {
                 let n = (until - played).min(chunk);
-                let r = h.render(n, false)?;
-                max = max.max(Some(r.max_play_cycles.saturating_sub(DRIVER_CYCLES)));
+                match h.render(n, false) {
+                    Ok(r) => {
+                        let cycles = r.max_play_cycles.saturating_sub(DRIVER_CYCLES);
+                        m.max_play_cycles = m.max_play_cycles.max(Some(cycles));
+                    }
+                    Err(e) => {
+                        let calls = if n == 1 {
+                            format!("play call {}", played + 1)
+                        } else {
+                            format!("one of play calls {}–{}", played + 1, played + n)
+                        };
+                        m.failure = Some((calls, tune_failure(e)?));
+                        break 'trace;
+                    }
+                }
                 played += n;
             }
             while let Some(&&(_, voice)) = fires.peek().filter(|(at, _)| *at <= played) {
                 fires.next();
-                fire(h, driver, start, voice)?;
+                if let Err(e) = fire(h, driver, start, voice) {
+                    let call = format!(
+                        "the sound-effect call on voice {} after play call {played}",
+                        voice.get()
+                    );
+                    m.failure = Some((call, tune_failure(e)?));
+                    break 'trace;
+                }
             }
         }
+        // What was collected up to a failed play call can still be reported (emu-protocol.md, `Report`).
         let traced = h.report()?;
-        Ok(Measured {
-            zero_page: traced.zero_page,
-            outside: traced.pages_written_outside,
-            max_play_cycles: max,
-        })
+        m.zero_page = traced.zero_page;
+        m.outside = traced.pages_written_outside;
+        m.overwrote_driver = traced
+            .watched
+            .iter()
+            .zip(code)
+            .find(|(w, byte)| w.start != *byte || !w.changes.is_empty())
+            .map(|(w, _)| w.address);
+        Ok(m)
     }
 }
 

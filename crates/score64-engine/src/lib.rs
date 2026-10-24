@@ -10,6 +10,7 @@
 
 mod commands;
 mod helper;
+#[doc(hidden)]
 pub mod pack;
 mod validate;
 

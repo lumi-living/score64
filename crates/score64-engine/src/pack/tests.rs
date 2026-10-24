@@ -94,27 +94,34 @@ fn the_plan_plays_each_subtune_through_its_loop_and_fires_where_its_profile_allo
             subtune("title", Some("full"), 64, 0),
             subtune("level", None, 64, 16),
             subtune("boss", Some("sfx-owns-v2-v3"), 16, 0),
+            subtune("chase", Some("full"), 64, 40),
         ],
     };
     let plan = TracePlan::for_song(&song, &Profiles::builtin(), vec![1, 2, 3]).unwrap();
     let v = |n| Voice::new(n).unwrap();
     // 64 rows: 32 at 6 frames and 32 at 3 = 288 frames a pass. The title loops to row 0 (288 more), the level to row
-    // 16 (16 × 6 + 32 × 3 = 192 more), and the boss's 16 rows at 6 are 96 a pass; each after 8 start-up frames.
+    // 16 (16 × 6 + 32 × 3 = 192 more), and the boss's 16 rows at 6 are 96 a pass; each after 8 start-up frames, and
+    // each with its loop row once more as a margin: 6 frames at rows 0 and 16 (the level's last row is at 3). The
+    // chase loops to row 40, at 3 frames a row: 24 × 3 = 72 a loop, and a margin of 3.
     assert_eq!(
         plan,
         TracePlan {
             subtunes: vec![
                 SubtunePlan {
-                    frames: 8 + 288 + 288,
+                    frames: 8 + 288 + 288 + 6,
                     effect_voices: vec![],
                 },
                 SubtunePlan {
-                    frames: 8 + 288 + 192,
+                    frames: 8 + 288 + 192 + 6,
                     effect_voices: vec![v(3)],
                 },
                 SubtunePlan {
-                    frames: 8 + 96 + 96,
+                    frames: 8 + 96 + 96 + 6,
                     effect_voices: vec![v(2), v(3)],
+                },
+                SubtunePlan {
+                    frames: 8 + 288 + 72 + 3,
+                    effect_voices: vec![],
                 },
             ],
             effect: vec![1, 2, 3],
@@ -162,43 +169,86 @@ fn the_driver_goes_outside_the_window_the_tune_and_the_io_area() {
         load,
         data: vec![0; len],
     };
+    let outside = |at| {
+        Some(Scratch {
+            at,
+            in_window: false,
+        })
+    };
+    let inside = |at| {
+        Some(Scratch {
+            at,
+            in_window: true,
+        })
+    };
     // $C000 when it's free.
     assert_eq!(
         scratch(&tune(0x1000, 2000), Some((0x1000, 0x1FFF)), 64),
-        Some(0xC000)
+        outside(0xC000)
     );
     // Otherwise the lowest page that is.
     assert_eq!(
         scratch(&tune(0xC000, 2000), Some((0xC000, 0xCFFF)), 64),
-        Some(0x0200)
+        outside(0x0200)
     );
     assert_eq!(
         scratch(&tune(0x0200, 0x100), Some((0x0200, 0x02FF)), 64),
-        Some(0xC000)
+        outside(0xC000)
     );
     assert_eq!(
         scratch(&tune(0x0200, 0x100), Some((0x0200, 0xCFFF)), 64),
-        Some(0xE000),
+        outside(0xE000),
         "past the I/O area"
     );
     // A tune that runs out of its window is avoided too.
     assert_eq!(
         scratch(&tune(0xBF00, 0x200), Some((0xBF00, 0xBFFF)), 64),
-        Some(0x0200)
+        outside(0x0200)
     );
-    // Room is needed for the whole driver and effect; none at all is None.
+    // Room is needed for the whole driver and effect, clear of the vectors.
+    assert_eq!(
+        scratch(&tune(0x0200, 0xFD00), Some((0x0200, 0xFEFF)), 0xFA),
+        outside(0xFF00)
+    );
+    assert_eq!(
+        scratch(&tune(0x0200, 0xFD00), Some((0x0200, 0xFEFF)), 0xFB),
+        None,
+        "clear of the vectors"
+    );
+    // With no room outside, inside the window right after the tune.
     assert_eq!(
         scratch(&tune(0x0200, 0x100), Some((0x0200, 0xFFFF)), 16),
-        None
-    );
-    assert_eq!(
-        scratch(&tune(0x0200, 0x100), Some((0x0200, 0xFEFF)), 16),
-        Some(0xFF00)
+        inside(0x0300)
     );
     assert_eq!(
         scratch(&tune(0x0200, 0x100), Some((0x0200, 0xFEFF)), 0xFB),
-        None,
-        "clear of the vectors"
+        inside(0x0300)
+    );
+    // ... or the first page after it that is clear of the I/O area and the vectors.
+    assert_eq!(
+        scratch(&tune(0x0200, 0xCE00), Some((0x0200, 0xFFFF)), 16),
+        inside(0xE000),
+        "past the I/O area"
+    );
+    assert_eq!(
+        scratch(&tune(0x0200, 0xCDF8), Some((0x0200, 0xFFFF)), 8),
+        inside(0xCFF8),
+        "right up to it"
+    );
+    // Not before the tune.
+    assert_eq!(
+        scratch(&tune(0x0300, 0xFCF0), Some((0x0200, 0xFFFF)), 16),
+        None
+    );
+    assert_eq!(
+        scratch(&tune(0x0200, 0x0DF8), None, 16),
+        outside(0xC000),
+        "no window: anywhere clear of the tune"
+    );
+    // Nowhere at all: the tune fills the window up to the vectors.
+    assert_eq!(
+        scratch(&tune(0x0200, 0xFDF8), Some((0x0200, 0xFFFF)), 16),
+        None
     );
 }
 
@@ -235,7 +285,8 @@ fn the_driver_plays_the_tune_and_fires_the_effect() {
         Some((0x1000, 0x1FFF)),
         DRIVER_BYTES + effect.len(),
     )
-    .unwrap();
+    .unwrap()
+    .at;
     let fx = driver + DRIVER_BYTES as u16;
     let mut h = Helper::spawn(&binary, 48_000).unwrap();
     // The SID writes of 50 frames of subtune 2 (0-based 1), played through `play` from a fresh load, with `before`

@@ -331,14 +331,22 @@ impl Target {
 
 /// `[pack] window`: the memory the target gives the tune, `start` to `end` inclusive (ADR-014 §2, #198). The player
 /// is packed at `start` (gt2reloc `-W`, which takes a page), so `start` is on a page boundary, at `$0200` or above to
-/// stay clear of zero page and the stack; `end` is at least `start`. The budget gate (rule 8) checks that the packed
-/// tune, and everything it writes outside zero page and the SID, stays inside.
+/// stay clear of zero page and the stack; `end` is at least `start`. The window stays clear of the I/O area
+/// (`$D000`–`$DFFF`: the player writes the SID, so I/O is banked in while it plays, and RAM under it can't be read)
+/// and of the CPU's vectors (`$FFFA`–`$FFFF`, which the game's interrupts need). The budget gate (rule 8) checks that
+/// the packed tune, and everything it writes outside zero page and the SID, stays inside.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(try_from = "WindowFields", into = "WindowFields")]
 pub struct Window {
     start: u16,
     end: u16,
 }
+
+/// The I/O area, which a window may not overlap.
+const IO_FIRST: u16 = 0xD000;
+const IO_LAST: u16 = 0xDFFF;
+/// The first of the CPU's vectors (NMI, reset, IRQ/BRK), which a window may not reach.
+const VECTORS: u16 = 0xFFFA;
 
 /// [`Window`] as written in files: a table, `{ start = …, end = … }`, and never a bare pair of numbers, so the file
 /// says which end is which.
@@ -392,6 +400,20 @@ impl Window {
         if end < start {
             return Err(format!(
                 "[pack] window ends at ${end:04X}, before it starts at ${start:04X}"
+            ));
+        }
+        if start <= IO_LAST && end >= IO_FIRST {
+            return Err(format!(
+                "[pack] window ${start:04X}–${end:04X} overlaps the I/O area ${IO_FIRST:04X}–${IO_LAST:04X}: the \
+                 player writes the SID there, so while it plays a tune there can't be read; give the tune memory \
+                 below $D000 or from $E000"
+            ));
+        }
+        if end >= VECTORS {
+            return Err(format!(
+                "[pack] window ${start:04X}–${end:04X} reaches the CPU's vectors at ${VECTORS:04X}–$FFFF, which \
+                 the game's interrupts need; end it at ${:04X} or below",
+                VECTORS - 1
             ));
         }
         Ok(Window { start, end })
@@ -472,15 +494,12 @@ impl Pack {
                 ));
             }
             if cycles > frame {
-                let name = match video {
-                    VideoStandard::Pal => "PAL",
-                    VideoStandard::Ntsc => "NTSC",
-                };
                 return Err((
                     "max_play_cycles",
                     format!(
-                        "[pack] max_play_cycles {cycles} is longer than a {name} frame ({frame} cycles): the play \
-                         routine runs once a frame"
+                        "[pack] max_play_cycles {cycles} is longer than {} ({frame} cycles): the play routine runs \
+                         once a frame",
+                        a_frame(video)
                     ),
                 ));
             }
@@ -498,6 +517,14 @@ impl Pack {
             sound_effects: self.sound_effects,
             max_play_cycles: self.max_play_cycles,
         }
+    }
+}
+
+/// "a PAL frame" or "an NTSC frame".
+fn a_frame(video: VideoStandard) -> &'static str {
+    match video {
+        VideoStandard::Pal => "a PAL frame",
+        VideoStandard::Ntsc => "an NTSC frame",
     }
 }
 
@@ -683,12 +710,22 @@ pub struct TrackFile {
     pub pack: Option<PackOverride>,
 }
 
-/// Parse `text` as `T`, with errors at their line and column in `path`.
+/// Parse `text` as `T`, with errors at their line and column in `path`. A key from an older file format gets a hint
+/// at what replaced it.
 fn parse<T: for<'de> Deserialize<'de>>(text: &str, path: &Path) -> Result<T, Error> {
-    toml::from_str(text).map_err(|e| Error::Invalid {
-        path: path.to_path_buf(),
-        at: e.span().map(|s| line_col(text, s.start)),
-        message: e.message().to_string(),
+    toml::from_str(text).map_err(|e| {
+        let mut message = e.message().to_string();
+        if message.starts_with("unknown field `player_page`") {
+            message.push_str(
+                "; `player_page` is now `[pack] window = { start, end }`, the memory the target gives the tune, \
+                 with the player packed at `start`",
+            );
+        }
+        Error::Invalid {
+            path: path.to_path_buf(),
+            at: e.span().map(|s| line_col(text, s.start)),
+            message,
+        }
     })
 }
 
@@ -1173,8 +1210,18 @@ impl Project {
             .as_ref()
             .and_then(|t| t.video)
             .unwrap_or(self.file.target.video);
-        let pack = resolve_pack(self.file.pack.as_ref(), file.pack.as_ref(), video)
-            .map_err(|(key, m)| invalid(path, pack_line(text, key), m))?;
+        let pack = resolve_pack(self.file.pack.as_ref(), file.pack.as_ref(), video).map_err(
+            |(key, m)| {
+                let line = if key == "video" {
+                    line_of(text, "video")
+                        .or_else(|| line_of(text, "[target]"))
+                        .or_else(|| line_of(text, "target"))
+                } else {
+                    pack_line(text, key)
+                };
+                invalid(path, line, m)
+            },
+        )?;
         Ok((video, pack))
     }
 
@@ -1293,7 +1340,8 @@ fn create_new(path: &Path, text: &str) -> Result<(), Error> {
 
 /// The project's `[pack]` with a track's overrides, checked for a target on `video`: none if neither has one; an
 /// error, with the key it is about, if the result lacks a required key or is out of range. A track that overrides
-/// nothing still has the project's pack checked against its own video standard, which it may override.
+/// nothing still has the project's pack checked against its own video standard, which it may override. A project
+/// raster budget too long for the track's frame is an error about `video`, the track's key that makes it so.
 fn resolve_pack(
     project: Option<&Pack>,
     track: Option<&PackOverride>,
@@ -1333,7 +1381,28 @@ fn resolve_pack(
                 .or(project.and_then(|p| p.max_play_cycles)),
         },
     };
-    pack.check(video)?;
+    pack.check(video).map_err(|(key, m)| {
+        // The project's budget fits the project's own frame (its file was checked), so a refusal of one the track
+        // didn't set comes from the track's video standard: say so, at that line.
+        match pack.max_play_cycles {
+            Some(cycles)
+                if key == "max_play_cycles"
+                    && track.is_none_or(|o| o.max_play_cycles.is_none()) =>
+            {
+                (
+                    "video",
+                    format!(
+                        "[pack] max_play_cycles {cycles}, from {PROJECT_FILE}, is longer than {} ({} cycles), \
+                         which this track's [target] video sets: the play routine runs once a frame; give the track \
+                         its own max_play_cycles under [pack]",
+                        a_frame(video),
+                        video.cycles_per_frame()
+                    ),
+                )
+            }
+            _ => (key, m),
+        }
+    })?;
     Ok(Some(pack))
 }
 
