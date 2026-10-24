@@ -361,6 +361,17 @@ fn opening_catches_up_with_every_kind_of_change() {
     let entries = Index::open(&p).unwrap().entries().unwrap();
     let edited = entries.iter().find(|e| e.entry == song).unwrap();
     assert_eq!(edited.tool_version, "0.10.0-dev");
+    // An artifact deleted from an entry: the entry isn't whole any more. Only its folder's time says so, so give the
+    // clock a moment to move past the time the entry was written (some systems tick in milliseconds).
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::remove_file(
+        p.root()
+            .join(".score64/cache/song")
+            .join(song.key.to_string())
+            .join("out.bin"),
+    )
+    .unwrap();
+    assert_eq!(summary(&p).entries, 1);
     // A track's history folder, deleted.
     std::fs::remove_dir_all(p.root().join("tracks/b/history")).unwrap();
     assert_eq!(summary(&p).versions, 2);
@@ -378,6 +389,172 @@ fn opening_catches_up_with_every_kind_of_change() {
         Index::open(&p).unwrap().tracks().unwrap(),
         [(id("b"), Some("Boss fight".to_string()))]
     );
+    // Edited again to the same size: only the modification time tells. (Set outright, so the test doesn't depend on
+    // how finely the file system keeps time.)
+    let file = p.root().join("tracks/b/track.toml");
+    let size = std::fs::metadata(&file).unwrap().len();
+    std::fs::write(&file, "schema = 1\ntitle = \"Boss night\"\n").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(UNIX_EPOCH + Duration::from_secs(1_000_000_000))
+        .unwrap();
+    assert_eq!(std::fs::metadata(&file).unwrap().len(), size);
+    assert_eq!(
+        Index::open(&p).unwrap().tracks().unwrap(),
+        [(id("b"), Some("Boss night".to_string()))]
+    );
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn another_layout_is_rebuilt_even_when_no_file_changed() {
+    let p = project("layout");
+    record(&p, "a", 1, 1_000, vec![]);
+    Index::open(&p).unwrap();
+    // A row no rebuild writes, and another layout number; the files stay as they are.
+    {
+        let conn = Connection::open(Index::path(&p)).unwrap();
+        conn.execute("INSERT INTO tracks (id, title) VALUES ('marker', NULL)", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", INDEX_SCHEMA + 1)
+            .unwrap();
+    }
+    let index = Index::open(&p).unwrap();
+    assert_eq!(
+        index.summary().unwrap().tracks,
+        2,
+        "rebuilt: the marker is gone"
+    );
+    let layout: i64 = index
+        .conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(layout, INDEX_SCHEMA);
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+/// A reader on another thread that opens the index, starts a read transaction, counts its versions, says so, holds
+/// the transaction for `hold`, counts again and ends it. Gives both counts.
+fn hold_a_read(
+    path: PathBuf,
+    hold: Duration,
+) -> (
+    std::thread::JoinHandle<(i64, i64)>,
+    std::sync::mpsc::Receiver<()>,
+) {
+    let (ready, started) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let count = || -> i64 {
+            conn.query_row("SELECT COUNT(*) FROM versions", [], |r| r.get(0))
+                .unwrap()
+        };
+        conn.execute_batch("BEGIN").unwrap();
+        let before = count();
+        ready.send(()).unwrap();
+        std::thread::sleep(hold);
+        let after = count();
+        conn.execute_batch("COMMIT").unwrap();
+        (before, after)
+    });
+    (reader, started)
+}
+
+#[test]
+fn a_reader_in_a_transaction_delays_the_copy_and_keeps_the_old_index_meanwhile() {
+    let p = project("busy");
+    Index::open(&p).unwrap();
+    record(&p, "a", 1, 1_000, vec![]);
+    let (reader, started) = hold_a_read(Index::path(&p), Duration::from_millis(1_500));
+    started.recv().unwrap();
+    let start = Instant::now();
+    let index = Index::rebuild(&p).unwrap();
+    let took = start.elapsed();
+    // The reader saw the old index throughout its transaction; the copy waited for it, then went in.
+    assert_eq!(reader.join().unwrap(), (0, 0));
+    assert!(took >= Duration::from_millis(1_000), "{took:?}");
+    assert_eq!(index.summary().unwrap().versions, 1);
+    assert_eq!(index_files(&p), ["index.db"]);
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn a_reader_holding_on_past_the_wait_fails_the_rebuild_cleanly() {
+    let p = project("timeout");
+    Index::open(&p).unwrap();
+    record(&p, "a", 1, 1_000, vec![]);
+    let (reader, started) = hold_a_read(Index::path(&p), Duration::from_millis(1_500));
+    started.recv().unwrap();
+    TEST_WAIT.set(Some(Duration::from_millis(300)));
+    let start = Instant::now();
+    let e = Index::rebuild(&p)
+        .err()
+        .expect("the reader outlasts the wait");
+    let took = start.elapsed();
+    TEST_WAIT.set(None);
+    assert!(matches!(e, Error::Sql { .. }), "{e:?}");
+    assert!(e.to_string().contains("index.db"), "{e}");
+    assert!(
+        took < Duration::from_millis(1_400),
+        "gave up at the wait, not when the reader let go: {took:?}"
+    );
+    assert_eq!(reader.join().unwrap(), (0, 0));
+    // The old index is whole, and nothing of the attempt is left.
+    assert_eq!(versions_in(&Index::path(&p)), 0);
+    assert_eq!(index_files(&p), ["index.db"]);
+    assert_eq!(Index::rebuild(&p).unwrap().summary().unwrap().versions, 1);
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+/// Leave the index as a rebuild that crashed midway through its copy would: the database half-written and its
+/// rollback journal hot. The state is made on a copy, by a write transaction that spills pages into the file, and
+/// copied over the index before that transaction ends.
+fn crash_midway(p: &Project) {
+    let path = Index::path(p);
+    let scratch = path.with_file_name("scratch.db");
+    std::fs::copy(&path, &scratch).unwrap();
+    let (half, hot) = {
+        let conn = Connection::open(&scratch).unwrap();
+        conn.execute_batch("PRAGMA cache_size = 1; BEGIN IMMEDIATE; DELETE FROM versions;")
+            .unwrap();
+        for i in 0..2_000 {
+            conn.execute(
+                "INSERT INTO tracks (id, title) VALUES (?1, ?2)",
+                params![format!("t{i}"), "x".repeat(200)],
+            )
+            .unwrap();
+        }
+        (
+            std::fs::read(&scratch).unwrap(),
+            std::fs::read(journal(&scratch)).unwrap(),
+        )
+    };
+    std::fs::remove_file(&scratch).unwrap();
+    assert_ne!(half, std::fs::read(&path).unwrap(), "pages were spilled");
+    std::fs::write(&path, &half).unwrap();
+    std::fs::write(journal(&path), &hot).unwrap();
+}
+
+#[test]
+fn after_a_crash_midway_readers_and_open_get_the_old_index_back() {
+    let p = project("crash");
+    record(&p, "a", 1, 1_000, vec![]);
+    let held = Index::open(&p).unwrap();
+    assert_eq!(held.summary().unwrap().versions, 1);
+    // A reader opened before the crash rolls the journal back at its next query.
+    crash_midway(&p);
+    assert_eq!(held.summary().unwrap().tracks, 2);
+    assert_eq!(held.versions(&id("a")).unwrap().len(), 1);
+    assert!(!journal(&Index::path(&p)).exists());
+    drop(held);
+    // So does the first `open` after one.
+    crash_midway(&p);
+    let index = Index::open(&p).unwrap();
+    assert_eq!(index.summary().unwrap().tracks, 2);
+    assert_eq!(index.summary().unwrap().versions, 1);
+    assert!(!journal(&Index::path(&p)).exists());
     let _ = std::fs::remove_dir_all(p.root());
 }
 
