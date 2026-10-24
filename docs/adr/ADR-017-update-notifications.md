@@ -22,18 +22,20 @@ Four things shape the answer:
      - Show a non-modal notice with the release notes and a download link, never during a running job.
      - Add Help › Check for updates….
      - Add `score64 version --check` (with `--json`; always exit 0).
-   - **Phase 2, with E17's signed releases: "Update now".** It uses cargo-dist installers and `axoupdater`, verifies every download, and keeps the previous version for rollback.
+   - **Phase 2, with E17's signed releases: "Update now".** Either cargo-dist installers with `axoupdater`, or swapping the installed copy in place by install kind as the ArtCraft Launcher does (design note §7), chosen with signing. Every download is verified, and the previous version is kept for rollback.
 2. **Automatic checks are opt-in.** On first launch a card asks once ("Check automatically" / "Not now"), and Settings › Updates can change it.
    - An explicit check (the Help menu, `version --check`, the MCP tool) always runs and counts as consent for that one check.
    - The CLI and the MCP server never check on their own.
    - `SCORE64_NO_UPDATE_CHECK=1` turns off every check.
    - A build without the `update-check` feature reports itself as managed by a package manager.
-3. **One request, no user data:** at most once a day, `GET api.github.com/repos/lumi-living/score64/releases`, conditional on the last `ETag`, with `User-Agent: Score64/{version}` and nothing else. Offline or failed checks are silent.
+3. **One request, no user data:** at most once a day, `GET api.github.com/repos/lumi-living/score64/releases`, conditional on the last `ETag`, with a generic `User-Agent: Score64-update-check` (no version) and nothing else. URLs in the response are never trusted; links are built from the validated tag. Offline or failed checks are silent.
 4. **Channels:** Stable by default, Pre-release as an option. Releases are tagged `v{semver}`.
 5. **Score64 updates as a set.** A release always contains all three programs at one version. The notice lists the three archives, and phase 2 installs all three or none.
 6. **An engine command, per ADR-005 and ADR-012:** `check_update`, `Effect::ReadOnly`. This ADR adds a `network` flag to command registry entries; the MCP server maps it to the tool's `openWorldHint`.
 7. **Shared code.** The logic lives in `family64-update` and the egui notice in `family64-update-egui`, in a new MIT repository under lumi-living. Score64 and Convert64 both depend on it by tag.
 8. **`SECURITY.md`** gains: "…and, if you turn it on, a once-a-day check of GitHub Releases for new versions."
+
+**Prior art:** ArtCraft's PhotoCraft (notify only, engine-owned state with an injected transport) and the ArtCraft Launcher (verified install and in-place self-update); see design note §10.
 
 ## Options considered
 
