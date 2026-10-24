@@ -164,14 +164,15 @@ pub fn monophonise(
 ///
 ///   A keep that can't keep its note is unapplied and changes nothing: an unreviewed model's keep of a note that is
 ///   too short (`out_of_range`), or one whose note a stronger keep's pushes out, on its row or closer than `min_rows`
-///   (`overruled` or `outranked`). So is one that, with its note or the note it spares from a drop, would make a
-///   stronger trim or fresh start unapplied: push its note out, or end a trimmed note before the trim's length
-///   (ADR-008: a model's keep never takes out or cuts short a note a person trimmed or restarted). A keep that the
-///   line with the stronger keeps already meets changes no note; when no other keep changes the line, it changes no
-///   decision either. Its note still stays against weaker keeps, and, like every kept note, is placed first. A kept
-///   note records its keep's id when the keep saved it, from a drop in force or from the rule (the line with only the
-///   stronger keeps doesn't have it), unless it already records one; a trim or fresh start in force on it then leaves
-///   that id.
+///   (`overruled` or `outranked`). So is one that, with its note or the note it spares from a drop, would take out
+///   the note of a stronger trim or fresh start, even one that then can't apply (as a drop gives way to it), or end a
+///   trimmed note before the length of a stronger trim that fits (ADR-008: a model's keep never takes out a note a
+///   person trimmed or restarted, nor cuts a trimmed note short). A fresh start names no length, so a kept note may
+///   still end a restarted note sooner. A keep that the line with the stronger keeps already meets changes no note;
+///   when no other keep changes the line, it changes no decision either. Its note still stays against weaker keeps,
+///   and, like every kept note, is placed first. A kept note records its keep's id when the keep saved it, from a
+///   drop in force or from the rule (the line with only the stronger keeps doesn't have it), unless it already
+///   records one; a trim or fresh start in force on it then leaves that id.
 /// - A `drop_note` gives way to a stronger trim or fresh start of the same note (`overruled` or `outranked`), even
 ///   one that then can't apply: those are separate slots, so `resolve` keeps all three, and a stronger decision about
 ///   the note means it should stay. It takes the note from its source span when it names one; of identical notes
@@ -183,6 +184,10 @@ pub fn monophonise(
 /// as `no_such_note`. The rule records no decision of its own for what an override did. A note an override changed
 /// records the override's id in place of this rule's; an id from an earlier rule stays. The order of `overrides`
 /// doesn't matter.
+///
+/// Each keep that the line doesn't already meet places the line afresh, so with keeps the cost grows with keeps times
+/// notes: 0.5 to 1.5 s for 1,300 keeps on 2,000 notes, depending on the overrides. Re-placing only the rows a keep
+/// can reach is a follow-up.
 pub fn monophonise_with(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
@@ -474,8 +479,9 @@ struct Tried<'d> {
 
 /// Try `keeps`, strongest first, on `all` the notes without those `dropping` takes, each on the line the stronger
 /// ones made and with the note it spares from its drop, if any. One the line already meets changes no note. One that
-/// can't keep its note, or that would make a stronger trim or fresh start of `held` (strongest first) unapplied, is
-/// refused, and its drop takes its note after all. A stronger keep's note needs no such check: kept notes are placed
+/// can't keep its note, or that would take out the note of a stronger trim or fresh start of `held` (strongest
+/// first), even one that then can't apply, or cut a trimmed note shorter than a trim that fits, is refused, and its
+/// drop takes its note after all. A stronger keep's note needs no such check: kept notes are placed
 /// first, the strongest keep's first, so a weaker keep can't push one out.
 fn try_keeps<'d>(
     all: &[Note],
@@ -508,14 +514,17 @@ fn try_keeps<'d>(
         let line = place(notes, keeps, rules, &mut scratch, &mut why, None);
         (sounding(&line), why)
     };
-    // Whether a trim or fresh start would apply to the line: its note is there and, for a trim, long enough once the
-    // rule ends it where the next starts.
+    // Whether a trim or fresh start's note is on the line, and whether it fits there: for a trim, long enough once
+    // the rule ends it where the next starts.
+    let there = |line: &BTreeMap<(u32, Pitch), NonZeroU32>, h: &Decision| match h.proposal {
+        Proposal::TrimNote { row, pitch, .. } | Proposal::Retrigger { row, pitch, .. } => {
+            line.get(&(row, pitch)).copied()
+        }
+        _ => None,
+    };
     let fits = |line: &BTreeMap<(u32, Pitch), NonZeroU32>, h: &Decision| match h.proposal {
-        Proposal::TrimNote {
-            row, pitch, length, ..
-        } => line.get(&(row, pitch)).is_some_and(|&l| length <= l),
-        Proposal::Retrigger { row, pitch, .. } => line.contains_key(&(row, pitch)),
-        _ => true,
+        Proposal::TrimNote { length, .. } => there(line, h).is_some_and(|l| length <= l),
+        _ => there(line, h).is_some(),
     };
     let mut taking = dropping.clone();
     let mut line = line_with(left(&taking, None), &mut BTreeMap::new()).0;
@@ -544,11 +553,15 @@ fn try_keeps<'d>(
             Some(next)
         };
         if let Some(next) = &next {
-            // A stronger trim or fresh start that applies to the line must still apply.
+            // A stronger trim or fresh start keeps its note on the line, whether or not it then applies (as against a
+            // drop), and one that fits must still fit.
             let undone = held
                 .iter()
                 .take_while(|h| strength(h, d).is_lt())
-                .find(|h| fits(&line, h) && !fits(next, h));
+                .find(|h| {
+                    (there(&line, h).is_some() && there(next, h).is_none())
+                        || (fits(&line, h) && !fits(next, h))
+                });
             if let Some(by) = undone {
                 tried.refused.push((d.id.clone(), lost_to(d, by)));
                 continue;

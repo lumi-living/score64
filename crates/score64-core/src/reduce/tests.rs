@@ -2194,6 +2194,93 @@ fn a_keep_never_cuts_a_stronger_trim_short() {
 }
 
 #[test]
+fn a_keep_never_takes_out_a_stronger_trims_note_even_one_that_cant_apply() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    // Kept, E-4 would push out C-4. The person's trim would lengthen it, and a model's would cut it below the minimum,
+    // so neither applies; each still keeps C-4 on the line against a weaker keep, as against a weaker drop.
+    let soup = vec![note(0, 4, "C-4", 0.9), note(1, 4, "E-4", 0.3)];
+    for (trim, why, lost) in [
+        (
+            person("a-trim", trim_of(0, "C-4", 6)),
+            Unapplied::Lengthens,
+            Unapplied::Overruled,
+        ),
+        (
+            as_model(person("a-trim", trim_of(0, "C-4", 1))),
+            Unapplied::OutOfRange,
+            Unapplied::Outranked,
+        ),
+    ] {
+        let r = monophonise_with(
+            soup.clone(),
+            &at(&n),
+            &rules,
+            &[trim, as_model(person("b-keep", keep_of(1, "E-4")))],
+        );
+        assert_eq!(shape(&r.notes), [(0, 4, "C-4".into())]);
+        assert_eq!(sorted(unapplied(&r)), [("a-trim", why), ("b-keep", lost)]);
+    }
+}
+
+#[test]
+fn a_keep_elsewhere_isnt_refused_for_trims_that_already_dont_apply() {
+    let n = name();
+    // The person's trims can't apply before the keep either: one would lengthen C-4, the other names a ghost the rule
+    // drops. The model's keep of the ghost G-4 far away changes neither, so it applies.
+    let r = monophonise_with(
+        [
+            note(0, 4, "C-4", 0.9),
+            note(4, 2, "D-4", 0.1),
+            note(8, 4, "G-4", 0.1),
+        ],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a-long", trim_of(0, "C-4", 6)),
+            person("a-gone", trim_of(4, "D-4", 1)),
+            as_model(person("keep", keep_of(8, "G-4"))),
+        ],
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 4, "C-4".into()), (8, 4, "G-4".into())]
+    );
+    assert_eq!(
+        unapplied(&r),
+        [
+            ("a-gone", Unapplied::NoSuchNote),
+            ("a-long", Unapplied::Lengthens)
+        ]
+    );
+}
+
+#[test]
+fn only_the_trim_that_holds_its_slot_protects_a_length() {
+    let n = name();
+    // `a` trims C-4 to 2 and holds the slot; `b`, to 5, loses it. Kept, the ghost E-4 ends C-4 at row 3: long enough
+    // for `a`, so the keep applies.
+    let r = monophonise_with(
+        [note(0, 8, "C-4", 0.9), note(3, 4, "E-4", 0.1)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("a", trim_of(0, "C-4", 2)),
+            person("b", trim_of(0, "C-4", 5)),
+            as_model(person("keep", keep_of(3, "E-4"))),
+        ],
+    );
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 2, "C-4".into()), (3, 4, "E-4".into())]
+    );
+    assert_eq!(unapplied(&r), [("b", Unapplied::Outranked)]);
+}
+
+#[test]
 fn a_keep_whose_spared_note_would_push_out_a_stronger_one_gives_it_back() {
     let n = name();
     let rules = MonoRules {
