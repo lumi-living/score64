@@ -41,14 +41,14 @@ The size gt2reloc reports is the bytes without any header or load address, so `.
 |---|---|---|
 | `-Dx` | Sound-effect support on/off (implies buffered SID writes) | `[pack] sound_effects` (ADR-014); `-D1` when the target plays effects |
 | `-Hx` | Store author info at start+$20…+$3F and enable timing marks | `-H1` for adaptive sets |
-| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | `[pack] player_page` (ADR-014) |
+| `-Wxx` | Player start address, high byte (default `10` = `$1000`) | The start page of `[pack] window` (ADR-014): `window = { start = 0x2000, … }` packs with `-W20` (`score64_engine::pack::options`; `crates/score64-engine/tests/pack_gate.rs` packs the fixture at the window's start and finds it there) |
 | `-Zxx` | Zero-page location (needs 2 consecutive bytes; default `FC`) | `[pack] zero_page` (ADR-014), from the target's zero-page map. The default `$FC–$FD` overlaps the common `$FB–$FE` pointer convention used by many C64 programs, so Score64 always passes `-Z` explicitly |
 | `-Axx` | Hard-restart ADSR value (default `0F00`) | `[pack] hard_restart_adsr` (ADR-014); gt2reloc's default when absent |
 | `-Bx` | Buffered SID writes | Implied by `-D1` |
 | `-Cx` | Zero-page ghost registers | Avoid with sound effects (shared register state can leave a wrong pulse width after an effect) |
 | `-Jx` | Full buffering | Avoid with sound effects (same reason) |
 | `-Ex` | Volume-change support | Not used (master volume would also silence effects) |
-| `-P` / `-N` | PAL (default) / NTSC timing | PAL |
+| `-P` / `-N` | PAL (default) / NTSC timing | From `[target] video` (ADR-014): `-P` for PAL, `-N` for NTSC (`score64_engine::pack::options`, unit-tested for the arguments only). No NTSC pack has been checked in VICE yet, and the helper is PAL-only (#139) |
 
 ## Timing marks
 
@@ -86,6 +86,15 @@ What this means when arranging, for any voice a profile marks expendable (for ex
 ## Sound-effect priority
 
 An effect at a higher memory address is never interrupted by one at a lower address. Effect data is therefore laid out lowest priority first.
+
+## Memory the tune may use
+
+The memory a target gives the tune (`[pack] window`, ADR-014) is RAM the player can be read from while it plays. `score64_project::project::Window` applies these facts:
+
+- **Not zero page or the stack, `$0000`–`$01FF`.** `$00`/`$01` are the 6510's own I/O port, which sets the memory banking. The rest of zero page is the game's and the KERNAL's, and the player gets only the pair it is packed with (gt2reloc `-Z`, `[pack] zero_page`). `$0100`–`$01FF` is the CPU's stack, which every `JSR`, `RTS` and interrupt uses. A window starting below `$0200` is refused; gt2reloc places the player on a page boundary, so `$0200` is the lowest start.
+- **Not the I/O area, `$D000`–`$DFFF`.** I/O must be banked in whenever play runs, because the player stores to the SID's registers directly: for example `sta SIDBASE+$00,x` in `mt_loadregs` (GoatTracker 2.72 source, `player.s` line 1345), where gt2reloc defines `SIDBASE` as the SID's address (`greloc.c` line 1059), `$D400` unless changed (`goattrk2.c` line 52). With I/O banked in, the CPU reads `$D000`–`$DFFF` as I/O, so a tune stored in the RAM underneath can't be read. The packed fixture shows the same: its play routine writes `$D400`–`$D418` every frame (34,681 writes per subtune, matched against x64sc; `fixtures/gt2-original/README.md`, Verification).
+- **Not the CPU's vectors, `$FFFA`–`$FFFF`** (NMI, reset, IRQ/BRK). With KERNAL banked out, the game's interrupt handler is reached through `$FFFE/$FFFF` (Integration rules, below), so the tune can't own them. A window reaching them is refused.
+- **BASIC and KERNAL ROM aren't checked.** Under the default banking, `$A000`–`$BFFF` and `$E000`–`$FFFF` read as ROM. Whether a tune there can be read depends on the target's banking (most games bank the ROMs out), which Score64 doesn't model, so a window over them is accepted.
 
 ## Integration rules
 
