@@ -161,7 +161,7 @@ A change to `score64.toml` therefore makes a new version of every track that use
 
 **8. `KeepNote`** (amended 2026-10-24, #167) is a decision kind in `decisions.toml`: `change = "keep_note"`, with `voice`, `row` (inside the decision's bar) and `pitch`.
 - It keeps the note there that a rule would drop: the reject case of `DropNote`.
-- It competes for the same slot as a `DropNote` of that note, so the stronger decision wins as for every other kind: a person's `KeepNote` over the rules' drop, and a person's `DropNote` over a model's keep.
+- It competes with a `DropNote` of the note it would keep, so the stronger decision wins as for every other kind: a person's `KeepNote` over the rules' drop, and a person's `DropNote` over a model's keep. It names no length, so any note that the drops leave on its row and pitch meets it, and it keeps the longest. A person can therefore keep a shorter repeat by keeping its row and pitch and dropping the longer ones, whatever their ids, and bring back a longer repeat a model dropped by dropping the shorter ones too. A `DropNote` names its note by length, so of twins of one length it takes one only, and the other meets the keep. Only when the drops take out every note there does the keep compete with them; since that depends on the notes, the reduction that applies them settles it (`docs/TAD.md` §3.2–§3.3). (clarified 2026-10-24 in #212's review)
 - A `KeepNote` for a note that isn't there is reported as unapplied, as other overrides are.
 
 ## Options considered
@@ -234,5 +234,5 @@ Option A costs one override rule, plus the need to show resolved values in the a
 - [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [x] Version identity from the resolved intent (#27).
 - [ ] Run history in `tracks/<id>/history/` (#27).
-- [ ] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
+- [x] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
 - [x] TAD §4: the layout and both files (#25).

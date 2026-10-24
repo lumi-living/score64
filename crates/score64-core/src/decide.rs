@@ -66,8 +66,8 @@ pub struct Checked {
 ///
 /// The rules make only decisions that pass, about notes that start inside the subtune; parts should be clipped to
 /// the subtune before they are reduced, or a rule's decision about a note past the end comes back `past_end`. What
-/// only a reduction can see is left to it: whether the note a `trim_note`, `drop_note` or `retrigger` names is
-/// there, and whether a trim fits.
+/// only a reduction can see is left to it: whether the note a `trim_note`, `drop_note`, `retrigger` or `keep_note`
+/// names is there, and whether a trim fits.
 pub fn check(
     decisions: impl IntoIterator<Item = Decision>,
     song: &Song,
@@ -128,7 +128,8 @@ fn why_not(d: &Decision, song: &Song, sources: &[ContentHash]) -> Option<Unappli
         Proposal::LoopRow { row } => in_bar(*row),
         Proposal::TrimNote { row, .. }
         | Proposal::DropNote { row, .. }
-        | Proposal::Retrigger { row, .. } => in_bar(*row),
+        | Proposal::Retrigger { row, .. }
+        | Proposal::KeepNote { row, .. } => in_bar(*row),
         Proposal::VoiceRole { .. } | Proposal::FramesPerRow { .. } => None,
     }
 }
@@ -216,6 +217,19 @@ pub enum Slot {
         /// Its pitch.
         pitch: Pitch,
     },
+    /// Whether a note on a row and pitch is kept. Keeps of one row and pitch compete with each other; the drops of
+    /// notes there are slots of their own, which the reduction that applies them settles with the keep: see
+    /// [`resolve`].
+    KeepNote {
+        /// The subtune.
+        subtune: SubtuneName,
+        /// The voice.
+        voice: Voice,
+        /// The note's row.
+        row: u32,
+        /// Its pitch.
+        pitch: Pitch,
+    },
 }
 
 impl Decision {
@@ -262,6 +276,12 @@ impl Decision {
             Proposal::Retrigger {
                 voice, row, pitch, ..
             } => Slot::Retrigger {
+                subtune,
+                voice,
+                row,
+                pitch,
+            },
+            Proposal::KeepNote { voice, row, pitch } => Slot::KeepNote {
                 subtune,
                 voice,
                 row,
@@ -319,6 +339,24 @@ pub(crate) fn lost_to(loser: &Decision, winner: &Decision) -> Unapplied {
     }
 }
 
+/// The slots claimed so far, for a rule that applies decisions in force one by one, each slot's strongest first (in
+/// [`strength`]'s order), as [`resolve`] chooses: the first to claim a slot holds it, whether or not it then applies.
+#[derive(Debug, Default)]
+pub(crate) struct Claims<'d>(BTreeMap<Slot, &'d Decision>);
+
+impl<'d> Claims<'d> {
+    /// Claim `d`'s slot. `None` when it was free, and `d` now holds it; otherwise why `d` lost to the one that does.
+    pub(crate) fn claim(&mut self, d: &'d Decision) -> Option<Unapplied> {
+        match self.0.entry(d.slot()) {
+            std::collections::btree_map::Entry::Occupied(held) => Some(lost_to(d, held.get())),
+            std::collections::btree_map::Entry::Vacant(free) => {
+                free.insert(d);
+                None
+            }
+        }
+    }
+}
+
 /// Who stands behind a decision, weakest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Rank {
@@ -347,6 +385,11 @@ pub struct Resolution {
 /// `choose_lead` treats lead sources: a decision made at a bar where a stronger one is already in force (made at that
 /// bar or earlier, for the same voice) is overruled by it. So a person's choice holds over any later model's or
 /// rules', until the person decides again.
+///
+/// A `keep_note` and the drops of notes on its row and pitch are separate slots, as a drop and a trim of one note
+/// are, so both are chosen (ADR-014 §8). Whether they conflict depends on the notes there, which only the reduction
+/// that applies them sees: a keep is met by any note left on its row and pitch, so it keeps the longest one no drop
+/// takes out, and only when the drops take out every note there does the stronger of the keep and those drops win.
 pub fn resolve(decisions: impl IntoIterator<Item = Decision>) -> Resolution {
     let mut all: Vec<(Slot, Decision)> = decisions.into_iter().map(|d| (d.slot(), d)).collect();
     all.sort_by(|(sa, a), (sb, b)| sa.cmp(sb).then_with(|| strength(a, b)));
