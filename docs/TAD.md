@@ -248,15 +248,15 @@ They're unique within the subtune when each voice is monophonised once, with all
 
   A keep that the line with the stronger drops and keeps already meets changes no note, and when it is the weakest of them and no other keep is in force, no decision either. Its note still stays against weaker keeps and drops and, like every kept note, is placed first, so with other keeps in force, or weaker drops after it, a drop next to it can become certain. A kept note records the keep's id when the keep saved it: from a drop (it kept the drop from taking the last note there), or from the rule (the line as it ends up, with only the stronger keeps, doesn't have it). It doesn't when it already records one, and a trim or fresh start in force on it leaves that id. Only monophonise applies keeps: a keep about a drum voice is not applied yet (see the drum rules above).
 
-  **Cost.** Notes closer than `min_rows` only ever meet within a run of notes each less than `min_rows` rows after the one before, so the line is kept run by run. A keep that changes the line places its run again. A drop only follows its change: taking a note out changes at most the note its row keeps, and from there only the notes whose placing then changes, and the notes they are too close to that come after them in step 3's order, are placed again. A drop is checked against the trims and fresh starts on the rows it changes and the notes those rows end, and against a keep only on its own row and pitch. Best of three release runs, with half as many keeps and trims each as drops (1,000 drops on 2,000 notes, 5,000 on 10,000):
+  **Cost.** Notes closer than `min_rows` only ever meet within a run of notes each less than `min_rows` rows after the one before, so the line is kept run by run. A keep that changes the line places its run again. A drop only follows its change: taking a note out changes at most the note its row keeps, and from there only the notes whose placing then changes, and the notes they are too close to that come after them in step 3's order, are placed again. A drop is checked against the trims and fresh starts on the rows it changes and the notes those rows end, and against a keep only on its own row and pitch. A test-only reference written apart from it (`reduce/reference.rs`) places the whole line again for every trial and checks every drop against every trim and fresh start; properties check that both give the same. `crates/score64-core/tests/monophonise_bench.rs` (an ignored test; run it in release with `--ignored --nocapture`) times random cases: notes on random rows, 1 to 6 rows long, at any confidence, and drops, keeps and trims of random notes, half a person's and half a model's. Best of three, with as many keeps and trims together as drops (1,000 drops on 2,000 notes, 5,000 on 10,000):
 
   | Notes, rows | `min_rows` 1 | 2 | 4 |
   |---|---|---|---|
-  | 2,000 in 4,000 | 6 ms | 3 ms | 3 ms |
-  | 10,000 in 10,000 | 32 ms | 32 ms | 33 ms |
-  | 10,000 in 2,000 | 32 ms | 113 ms | 1.3 s |
+  | 2,000 in 4,000 | 8 ms | 7 ms | 6 ms |
+  | 10,000 in 10,000 | 45 ms | 40 ms | 40 ms |
+  | 10,000 in 2,000 | 38 ms | 186 ms | 2.0 s |
 
-  The dense case at `min_rows` 4 is one run spanning the subtune, which each keep that changes the line places again in full.
+  The dense case at `min_rows` 4 is one run spanning the subtune, which each keep that changes the line places again in full; with five times as many keeps as drops there, it takes 5.4 s. Telling which keeps saved their note places the run again once per keep too: about 5 to 20% of the time, 14% in the dense `min_rows` 4 case.
 
 A note an override names that isn't there is unapplied (`no_such_note`). A note an override changed records the override's id in place of this rule's; an id from an earlier rule stays. Of several decisions for one slot, the strongest claims it whether or not it then applies, so the result is the one `resolve` and then the rule give. The rules' own decisions in the list are ignored, since the rule makes them afresh, and the order of the overrides doesn't matter.
 

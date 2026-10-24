@@ -199,28 +199,6 @@ pub fn monophonise_with(
     rules: &MonoRules,
     overrides: &[Decision],
 ) -> Reduced {
-    monophonise_in(notes, at, rules, overrides, false)
-}
-
-/// [`monophonise_with`] placing the whole line again, by the rule's own steps, for every drop and keep: the reference
-/// the windowed runs must agree with.
-#[cfg(test)]
-fn monophonise_whole(
-    notes: impl IntoIterator<Item = Note>,
-    at: &Placement,
-    rules: &MonoRules,
-    overrides: &[Decision],
-) -> Reduced {
-    monophonise_in(notes, at, rules, overrides, true)
-}
-
-fn monophonise_in(
-    notes: impl IntoIterator<Item = Note>,
-    at: &Placement,
-    rules: &MonoRules,
-    overrides: &[Decision],
-    whole: bool,
-) -> Reduced {
     let mut log = Log::new(at, MONOPHONISE, "mono");
     let mut unapplied = Vec::new();
     let mut mine: Vec<&Decision> = overrides
@@ -271,7 +249,7 @@ fn monophonise_in(
         })
         .collect();
     order.sort_by(|a, b| strength(a, b));
-    let applied = apply_in_order(&notes, &order, &held, &mut won, rules, at, whole);
+    let applied = apply_in_order(&notes, &order, &held, &mut won, rules);
     unapplied.extend(applied.refused);
     let dropping = applied.dropping;
     let saved = applied.saved;
@@ -424,8 +402,7 @@ fn monophonise_in(
 /// What applying drops and keeps one by one gives: the drops that took their note, by its index; the keeps that
 /// applied, by row and pitch, which the rule places first; the rows and pitches whose note a keep saved, from a drop
 /// (whose last note there it kept) or from the rule (the line as it ends up, with only the stronger keeps, wouldn't
-/// have the note); and
-/// the drops and keeps that couldn't apply, with why.
+/// have the note); and the drops and keeps that couldn't apply, with why.
 struct Applied<'d> {
     dropping: BTreeMap<usize, &'d Decision>,
     kept: BTreeMap<(u32, Pitch), &'d Decision>,
@@ -453,8 +430,6 @@ fn apply_in_order<'d>(
     held: &[&'d Decision],
     won: &mut Claims<'d>,
     rules: &MonoRules,
-    at: &Placement,
-    whole: bool,
 ) -> Applied<'d> {
     let mut out = Applied {
         dropping: BTreeMap::new(),
@@ -494,7 +469,7 @@ fn apply_in_order<'d>(
             held_at.entry(note).or_default().push(h);
         }
     }
-    let mut runs = Runs::new(all, rules, at, whole);
+    let mut runs = Runs::new(all, rules);
     for (&d, &found) in order.iter().zip(&note_of) {
         if let Some(why) = won.claim(d) {
             out.refused.push((d.id.clone(), why));
@@ -842,26 +817,22 @@ fn head_of_row(
 /// a run (notes each less than `min_rows` rows after the one before), so each run is placed on its own. A keep's
 /// trial places its run again; a drop's follows on from the row its note leaves, note by note, only as far as that
 /// changes which notes are placed.
-struct Runs<'a, 'p> {
+struct Runs<'a> {
     all: &'a [Note],
     /// Each run's first and last rows, and the indices of its notes.
     bounds: Vec<(u32, u32, std::ops::Range<usize>)>,
     /// Each run's line, once placed.
     lines: Vec<Option<RunLine>>,
     rules: &'a MonoRules,
-    at: &'a Placement<'p>,
-    /// One run of every note, placed again in full by the rule's own steps for every trial: the reference the
-    /// windowed runs must agree with.
-    whole: bool,
 }
 
-impl<'a, 'p> Runs<'a, 'p> {
-    fn new(all: &'a [Note], rules: &'a MonoRules, at: &'a Placement<'p>, whole: bool) -> Self {
+impl<'a> Runs<'a> {
+    fn new(all: &'a [Note], rules: &'a MonoRules) -> Self {
         let min = rules.min_rows.get();
         let mut bounds: Vec<(u32, u32, std::ops::Range<usize>)> = Vec::new();
         for (i, n) in all.iter().enumerate() {
             match bounds.last_mut() {
-                Some((_, last, range)) if whole || n.row - *last < min => {
+                Some((_, last, range)) if n.row - *last < min => {
                     *last = n.row;
                     range.end = i + 1;
                 }
@@ -874,8 +845,6 @@ impl<'a, 'p> Runs<'a, 'p> {
             bounds,
             lines,
             rules,
-            at,
-            whole,
         }
     }
 
@@ -910,20 +879,6 @@ impl<'a, 'p> Runs<'a, 'p> {
             .collect();
         let mut why = Vec::new();
         let mut line = RunLine::default();
-        if self.whole {
-            // The rule's own steps.
-            let notes = present.iter().map(|&i| self.all[i].clone()).collect();
-            let mut keeps = keeps;
-            let mut scratch = Log::new(self.at, MONOPHONISE, "mono");
-            for n in place(notes, &mut keeps, self.rules, &mut scratch, &mut why, None) {
-                let i = on_row(self.all, n.row)
-                    .find(|&i| self.all[i] == n)
-                    .expect("a placed note is one of them");
-                line.heads.insert(n.row, i);
-                line.placed.insert(n.row);
-            }
-            return (line, why);
-        }
         // Steps 1 and 2, row by row.
         let mut from = 0;
         while from < present.len() {
@@ -1033,9 +988,6 @@ impl<'a, 'p> Runs<'a, 'p> {
     /// whose placing changes can change those it is too close to that come after it in step 3's order, and only
     /// those are placed again, in that order.
     fn without(&mut self, k: usize, i: usize, taking: &Taking, keeps: &Kept<'_>) -> Patch {
-        if self.whole {
-            return Patch::Line(self.build(k, taking, Some(i), keeps).0);
-        }
         self.fresh(k, taking, keeps);
         let all = self.all;
         let line = self.lines[k].as_ref().expect("fresh");
@@ -1568,5 +1520,7 @@ impl<'a> Log<'a> {
     }
 }
 
+#[cfg(test)]
+mod reference;
 #[cfg(test)]
 mod tests;
