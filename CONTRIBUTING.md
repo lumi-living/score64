@@ -16,6 +16,7 @@ Thanks for looking. The project is early; the most useful help right now is **ri
   - `clipboard-win` and `error-code` (app, Windows): BSL-1.0;
   - `webpki-root-certs` (adapters): CDLA-Permissive-2.0, for its certificate data;
   - `epaint_default_fonts` (app): MIT OR Apache-2.0, AND OFL-1.1 and the Ubuntu Font Licence for its fonts.
+  - `resid-rs`: GPL-3.0-or-later, used by `score64-emu` only, which runs as a separate process ([ADR-002](docs/adr/ADR-002-mit-with-gpl-emulator-helper.md); CI job `licence-boundary`).
 - **Decisions are recorded.** Anything that changes architecture, formats or scope gets an ADR in `docs/adr/` (copy `ADR-000-template.md`).
 
 ## Workflow

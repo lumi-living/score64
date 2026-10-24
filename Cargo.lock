@@ -3176,6 +3176,7 @@ dependencies = [
 name = "score64-engine"
 version = "0.0.0"
 dependencies = [
+ "rusqlite",
  "schemars",
  "score64-adapters",
  "score64-core",

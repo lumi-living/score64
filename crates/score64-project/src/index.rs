@@ -38,6 +38,21 @@ pub const INDEX_SCHEMA: i64 = 1;
 /// How long a reader waits for a rebuild's copy, or a rebuild for readers, before giving up.
 const WAIT: Duration = Duration::from_secs(10);
 
+#[cfg(test)]
+thread_local! {
+    /// A shorter [`WAIT`] for tests on this thread.
+    static TEST_WAIT: std::cell::Cell<Option<Duration>> = const { std::cell::Cell::new(None) };
+}
+
+/// [`WAIT`], or a test's own on this thread.
+fn wait() -> Duration {
+    #[cfg(test)]
+    if let Some(w) = TEST_WAIT.get() {
+        return w;
+    }
+    WAIT
+}
+
 /// How old a temporary database must be before a rebuild takes it for a crashed one's and removes it.
 const LEFTOVER_AGE: Duration = Duration::from_secs(10 * 60);
 
@@ -229,10 +244,11 @@ impl Index {
     /// layout ([`INDEX_SCHEMA`]) or lacks a table, or was made from files that have changed since.
     ///
     /// The check is cheap: it lists the files the index is made from (every `track.toml`, every `history/*.toml` the
-    /// history reads, and the cache's stage and key folders with their `manifest.json`) and compares each one's name,
-    /// size and modification time with what the last rebuild recorded. It reads no file's contents and hashes
-    /// nothing, so it can miss an edit that keeps a file's size and lands within the file system's timestamp
-    /// resolution, and it doesn't see an artifact damaged in place. That is enough for showing the project. Anything
+    /// history reads, the cache's stage and key folders, and each key folder's `manifest.json`) and compares each
+    /// one's name, size and modification time (a key folder's time changes when an artifact in it is deleted) with
+    /// what the last rebuild recorded. It reads no file's contents and hashes nothing, so it can miss an edit that
+    /// keeps a file's size and lands within the file system's timestamp resolution, and an artifact rewritten in
+    /// place. That is enough for showing the project. Anything
     /// that deletes or keeps data on the index's word, such as cache GC (#29), calls [`Index::rebuild`] instead.
     pub fn open(project: &Project) -> Result<Self, Error> {
         let path = Self::path(project);
@@ -265,10 +281,20 @@ impl Index {
         (recorded == inputs(project)).then_some(index)
     }
 
-    /// A read-only connection to the index at `path`, waiting on a rebuild's copy rather than failing at once.
+    /// A connection to the index at `path` that only reads, waiting on a rebuild's copy rather than failing at once.
+    ///
+    /// It is opened read-write (never creating the file) with `query_only` on, not read-only: after a rebuild crashed
+    /// midway through its copy, the database is half-written and its rollback journal is hot, and only a connection
+    /// that may write can roll it back. So whichever reader comes first, including one opened before the crash,
+    /// restores the old index, where a read-only one would fail ("attempt to write a readonly database"). A file the
+    /// system won't let us write is opened read-only by SQLite itself.
     fn reader(path: &Path) -> rusqlite::Result<Self> {
-        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        conn.busy_timeout(WAIT)?;
+        let conn = Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.pragma_update(None, "query_only", true)?;
+        conn.busy_timeout(wait())?;
         Ok(Index {
             conn,
             path: path.to_path_buf(),
@@ -281,8 +307,10 @@ impl Index {
     /// exclusively), then copied into `index.db` with SQLite's online backup API in one step, which is a single write
     /// transaction there. So on every system a reader sees the old index or the new one, never a mix; an [`Index`]
     /// held open across a rebuild sees the new one from its next query; and a crash midway leaves the old one, which
-    /// SQLite's rollback journal restores. The copy waits for readers in the middle of a query, up to ten seconds.
-    /// Temporary databases a crashed rebuild left, over ten minutes old, are removed first.
+    /// the next reader restores from SQLite's rollback journal, since readers may write. The copy waits for readers
+    /// in the middle of a query or a read transaction for up to ten seconds; past that the rebuild fails
+    /// ([`Error::Sql`]), leaving the old index and no temporary files. Temporary databases a crashed rebuild left,
+    /// over ten minutes old, are removed first.
     ///
     /// Fails on a track file, history or cache that can't be read, naming it; the old index stays as it was.
     pub fn rebuild(project: &Project) -> Result<Self, Error> {
@@ -561,16 +589,19 @@ fn damaged(path: &Path, error: rusqlite::Error) -> Error {
 struct Input {
     /// Its path under the project root, with `/`; a folder's ends in `/`.
     path: String,
-    /// `file`, `folder` (listed, so its own size and time don't count) or `unreadable` (it couldn't be listed or
-    /// looked at, which no rebuild that succeeded saw).
+    /// `file`, `folder` (a stage folder counts by its listing only; a key folder by its listing and its time, which
+    /// changes when a file inside is added or removed) or `unreadable` (it couldn't be listed or looked at, which no
+    /// rebuild that succeeded saw).
     kind: String,
     /// A file's size.
     bytes: Option<i64>,
-    /// A file's modification time, in nanoseconds since 1970, where the system gives one.
+    /// A file's or key folder's modification time, in nanoseconds since 1970, where the system gives one.
     mtime: Option<i64>,
 }
 
 impl Input {
+    /// A folder that counts by its listing alone (a stage folder: putting an entry makes and renames a temporary
+    /// directory in it, which changes its time without changing what the index holds).
     fn folder(path: String) -> Self {
         Input {
             path,
@@ -578,6 +609,14 @@ impl Input {
             bytes: None,
             mtime: None,
         }
+    }
+
+    /// A folder that counts by its time too: a key folder, whose time changes when an artifact in it is deleted or
+    /// added, so the entry is no longer whole.
+    fn timed_folder(path: String, meta: std::io::Result<std::fs::Metadata>) -> Self {
+        let mut folder = Input::folder(path);
+        folder.mtime = meta.ok().and_then(|m| nanos(m.modified()));
+        folder
     }
 
     fn unreadable(path: String) -> Self {
@@ -593,19 +632,20 @@ impl Input {
         let Ok(meta) = meta else {
             return Input::unreadable(path);
         };
-        let mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| match t.duration_since(UNIX_EPOCH) {
-                Ok(d) => i64::try_from(d.as_nanos()).ok(),
-                Err(before) => i64::try_from(before.duration().as_nanos()).ok().map(|n| -n),
-            });
         Input {
             path,
             kind: "file".into(),
             bytes: i64::try_from(meta.len()).ok(),
-            mtime,
+            mtime: nanos(meta.modified()),
         }
+    }
+}
+
+/// A modification time in nanoseconds since 1970 (negative before), if the system gives one that fits.
+fn nanos(time: std::io::Result<SystemTime>) -> Option<i64> {
+    match time.ok()?.duration_since(UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_nanos()).ok(),
+        Err(before) => i64::try_from(before.duration().as_nanos()).ok().map(|n| -n),
     }
 }
 
@@ -681,8 +721,12 @@ fn inputs(project: &Project) -> Vec<Input> {
                     if ContentHash::from_hex(&key).is_none_or(|k| k.to_string() != key) {
                         continue;
                     }
-                    out.push(Input::folder(format!("{at}{key}/")));
-                    let manifest = stage_dir.join(&key).join("manifest.json");
+                    let key_dir = stage_dir.join(&key);
+                    out.push(Input::timed_folder(
+                        format!("{at}{key}/"),
+                        std::fs::metadata(&key_dir),
+                    ));
+                    let manifest = key_dir.join("manifest.json");
                     if let Ok(meta) = std::fs::metadata(&manifest) {
                         out.push(Input::file(format!("{at}{key}/manifest.json"), Ok(meta)));
                     }
@@ -806,16 +850,18 @@ fn copy_into(source: &Connection, path: &Path) -> Result<(), Error> {
     })
 }
 
+/// One backup of `source` into `path`, retried while readers hold the index, for up to [`WAIT`]. This loop is the only
+/// waiting: `dest`'s busy handler is off (rusqlite's default is five seconds), so a busy step returns at once.
 fn backup(source: &Connection, path: &Path) -> rusqlite::Result<()> {
     let mut dest = Connection::open(path)?;
-    dest.busy_timeout(WAIT)?;
+    dest.busy_timeout(Duration::ZERO)?;
     let backup = Backup::new(source, &mut dest)?;
     let start = Instant::now();
     loop {
         match backup.step(-1)? {
             StepResult::Done => return Ok(()),
-            // Readers are in the middle of a query; their next one sees the new index.
-            _ if start.elapsed() < WAIT => std::thread::sleep(Duration::from_millis(20)),
+            // Readers are in the middle of a query or transaction; their next one sees the new index.
+            _ if start.elapsed() < wait() => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 return Err(rusqlite::Error::SqliteFailure(
                     rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
