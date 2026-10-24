@@ -160,6 +160,9 @@ fn versions_entries_and_their_links_come_from_the_files() {
         a.iter().map(|v| (v.version, v.parent)).collect::<Vec<_>>(),
         [(version(1), None), (version(2), Some(version(1)))]
     );
+    // The parent run, by id: the first run's file name without `.toml`.
+    assert_eq!(a[1].parent_run.as_deref(), a[0].file.strip_suffix(".toml"));
+    assert_eq!(a[0].parent_run, None);
     assert_eq!(a[0].provenance, llm());
     assert_eq!(a[1].time.unix(), 2_000);
     let mut want = vec![mix.clone(), song.clone()];
