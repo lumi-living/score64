@@ -191,6 +191,7 @@ Notes held over a bar line count in the bars they sound in. Notes past the subtu
   - A line note after a drum hit always starts fresh (`Retrigger`).
   - The drums keep their own instruments.
 - **Decision ids.** `drums-…` and `inter-…` ids follow monophonise's scheme (`<prefix>-<kind>-v<voice>-r<row>`, plus `-p<semitone>` for drops). A clash between kinds is certain, because priority is fixed. A clash within one kind is as sure as the winner was more confident.
+- **No overrides yet.** Neither rule takes decisions in force, so a `drop_note`, `keep_note`, `trim_note` or `retrigger` about a drum voice doesn't apply there; only monophonise applies them (#167).
 
 **Find the loop** (`reduce::find_loop`, rule `find-loop@1`, #44) proposes where a subtune jumps back to at its end.
 - **Score.** A subtune plays to its end and carries on from `loop_row`, so a good loop row is a bar start after which the music once went the way the ending goes. The `context` bars just before it (default 2) should sound like the ending: the last `context` whole bars, up to the last bar with music in it. A part bar at the end and any trailing silence are left out. Because transcriptions often end in silence, many proposals come out half sure; trimming the subtune to its music is a separate decision for #167.
@@ -229,6 +230,13 @@ They're unique within the subtune when each voice is monophonised once, with all
 - A `drop_note` takes its note out before step 1, so the rule's other choices follow from the line without it. It takes the note from its source span when it names one; of identical notes otherwise, the one the rule would drop. A drop, a trim and a fresh start of one note are separate slots, so a drop gives way (`overruled`) to a stronger trim or fresh start of that note, even one that then can't apply: a stronger decision about the note means it stays.
 - A `trim_note` sets its note's length once the line is built, and only shortens: longer than the rule left it is unapplied (`lengthens`). It replaces the rule's own trim of that note. Shorter than `min_rows` is a person's call; an unreviewed model's is unapplied (`out_of_range`).
 - A `retrigger` makes its note fresh, so the rule records no tie of its own there.
+- A `keep_note` (ADR-014 §8) keeps the note on its row and pitch that the rule would drop. The rule runs as usual with the kept note in place, so the notes around it give way by its own logic, with its own decisions at their usual confidence:
+  - **Ghost, too short.** Where no note of the kept row and pitch passes step 1, the first (the longest) stays. Shorter than `min_rows` is a person's call: an unreviewed model's keep of it is unapplied (`out_of_range`), as for a trim.
+  - **Skyline.** The kept note is the one its row keeps; the row's other notes are dropped (`repeat` or `skyline`). A repeat isn't undone: repeats of one pitch on one row merge into the longest, which is the note kept. To keep a shorter repeat, drop the longer ones too.
+  - **Overlap.** Kept notes are placed first, so a note closer than `min_rows` to one is dropped (`overlap`) even when it's the surer. Its confidence is the gap to the note that stays, as always, so 0 when the rule alone wouldn't drop it. Then a note running into a kept note is trimmed where it starts, and a kept note running into the next is trimmed too. So keeping a note never makes two notes overlap: the other note is trimmed, or dropped when it can't keep `min_rows`.
+  - **Two kept notes that can't both sound** (on one row, or closer than `min_rows`): the stronger keep's note stays and the other is dropped as the rule would, its keep `overruled` or `outranked`.
+
+  A keep and the drops of notes on its row and pitch are one slot (§3.3), so the strongest of them decides, here as in `resolve`. A kept note records the keep's id when the keep saved it, unless it already records one, and a trim or fresh start in force on it leaves that id. Keeping a note the rule keeps anyway changes nothing, decisions included. Only monophonise applies keeps: the drum rules take no overrides yet.
 
 A note an override names that isn't there is unapplied (`no_such_note`). A note an override changed records the override's id in place of this rule's; an id from an earlier rule stays. Of several decisions for one slot, the strongest claims it whether or not it then applies, so the result is the one `resolve` and then the rule give. The rules' own decisions in the list are ignored, since the rule makes them afresh, and the order of the overrides doesn't matter.
 
@@ -276,7 +284,7 @@ In all of these, `unapplied` is sorted by id, and of several decisions for one s
 ### 3.3 Decisions
 Every judgement call is a `Decision { id, subtune /* by name */, bar, proposal, provenance, confidence, reviewed }`:
 
-- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat; no file holds decisions yet, so the kinds can still change shape), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
+- `proposal` is the change proposed, one variant per kind of decision: voice role, lead source, octave shift, chord (from a row, since chords change by the beat), loop row, frames per row, and the monophonise rule's `trim_note`, `drop_note` (with a reason: ghost, too short, repeat, skyline or overlap; for drums also clash, unmapped or interleave) and `retrigger`. Those three name their note by voice, row and pitch (a drop also by its length, to tell it from a kept repeat), plus its source span when it has one, because decisions do not point at notes. `keep_note` (ADR-014 §8) rejects a rule's drop: it names the note to keep by voice, row and pitch only. No rule makes one. A decision's id is unique within its subtune; notes refer to decisions of their own subtune.
 - `provenance` is `Rules { rule }`, `Llm { model, prompt }` (a blake3 hash of the exact prompt, which is also the cache key), or `Manual`.
 
 Manual decisions override LLM suggestions, which override rules. `score64_core::decide::resolve` (#45) applies that wherever decisions meet.
@@ -286,6 +294,7 @@ Manual decisions override LLM suggestions, which override rules. `score64_core::
   - the chord from a row;
   - the subtune's loop row;
   - a note's trim, its drop, or its fresh start, by voice, row and pitch. A drop also uses the note's length, which tells two repeats on one row apart. These are three separate slots, since one note can have all three.
+  - whether a note is kept: a `keep_note` competes for the same slot as the drops of notes on its row and pitch. It names no length, so it competes with the drops of every length there, and the strongest of them all decides. When that's a keep, every drop there loses to it: a person's keep beats the rules' drop. When it's a drop, every keep there loses to it: a person's drop beats a model's keep. Drops of different lengths still don't compete with each other, since they're about different notes.
 - **Ranks.** In each slot the strongest wins:
   1. a person's decision, or a model's that a person has accepted (`reviewed`);
   2. a model's, not yet reviewed;
@@ -300,8 +309,8 @@ Manual decisions override LLM suggestions, which override rules. `score64_core::
   - an octave shift beyond ±7, a chord root above 11, chord intervals that don't start at 0 and rise, or a chord whose top note is past G#7 even on its lowest root;
   - a lead source that isn't one of its own subtune's parts.
 
-  Each one comes back whole with its `Unapplied` reason, since an id is only unique within its subtune. Whether a note-level decision's note exists is left to the reduction that applies it. The rules only ever make decisions that pass, as a property test checks, as long as parts are clipped to the subtune before they're reduced.
-- **What's returned.** Every loser comes back with the id that beat it, so a review can show both. Rejecting a rules decision outright, rather than overriding it, and applying decisions to the song are #167.
+  Each one comes back whole with its `Unapplied` reason, since an id is only unique within its subtune. A `keep_note`'s row is checked like a drop's. Whether a note-level decision's note exists is left to the reduction that applies it. The rules only ever make decisions that pass, as a property test checks, as long as parts are clipped to the subtune before they're reduced.
+- **What's returned.** Every loser comes back with the id that beat it, so a review can show both. A rule's drop is rejected with a `keep_note`; the reductions apply decisions in force (§3.2, #167).
 
 A decision never changes the song by itself. An engine command (`writes_project`) validates the proposal and applies it, and the notes it produces record the decision's `id`; decisions do not point at notes. LLM output is structured, validated against the invariants and never written straight into song data, and LLM decisions stay unreviewed until a person accepts them (ADR-008).
 

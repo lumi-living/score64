@@ -233,5 +233,5 @@ Option A costs one override rule, plus the need to show resolved values in the a
 - [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [x] Version identity from the resolved intent (#27).
 - [ ] Run history in `tracks/<id>/history/` (#27).
-- [ ] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
+- [x] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
 - [x] TAD §4: the layout and both files (#25).
