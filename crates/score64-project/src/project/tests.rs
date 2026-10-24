@@ -19,9 +19,10 @@ v2 = { usage = "effects" }
 v3 = { usage = "effects" }
 
 [pack]
-player_page = 0x10
+window = { start = 0x1000, end = 0x1FFF }
 zero_page = 0xF8
 sound_effects = true
+max_play_cycles = 4000
 
 [tools]
 gt2reloc = { version = "2.73", reference = "ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12" }
@@ -226,11 +227,6 @@ fn values_out_of_range_are_refused() {
     for (from, to, why) in [
         ("zero_page = 0xF8", "zero_page = 0xFF", "zero_page $FF"),
         ("zero_page = 0xF8", "zero_page = 0x01", "zero_page $01"),
-        (
-            "player_page = 0x10",
-            "player_page = 0x01",
-            "player_page $01",
-        ),
     ] {
         let (_, m) = error(ProjectFile::parse(&PROJECT.replace(from, to), p("x")));
         assert!(m.contains(why), "{m}");
@@ -380,8 +376,8 @@ fn a_track_loads_with_the_projects_values_and_its_overrides() {
     assert_eq!(t.video, VideoStandard::Ntsc);
     let pack = t.pack.unwrap();
     assert_eq!(
-        (pack.player_page, pack.zero_page, pack.sound_effects),
-        (0x10, 0xFB, true)
+        (pack.window, pack.zero_page, pack.sound_effects),
+        (Window::new(0x1000, 0x1FFF).unwrap(), 0xFB, true)
     );
     assert!(t.decisions.decision.is_empty(), "no decisions.toml yet");
     // Without overrides, the project's values.
@@ -399,10 +395,11 @@ fn a_track_loads_with_the_projects_values_and_its_overrides() {
     .unwrap();
     let (at, m) = error(pr.track(&id("main")));
     assert!(m.contains("zero_page $FF"), "{m}");
+    // At the key's own line.
     let text = track_text("\n[pack]\nzero_page = 0xFF\n");
     assert_eq!(
         at.unwrap().0,
-        text.lines().position(|l| l == "[pack]").unwrap() + 1
+        text.lines().position(|l| l == "zero_page = 0xFF").unwrap() + 1
     );
     // hard_restart_adsr: the track's, the project's, or none.
     std::fs::write(
@@ -498,7 +495,7 @@ fn a_track_needs_known_profiles_and_a_complete_pack() {
     )
     .unwrap();
     let pr = Project::open(&root).unwrap();
-    assert!(error(pr.track(&id("main"))).1.contains("needs player_page"));
+    assert!(error(pr.track(&id("main"))).1.contains("needs window"));
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -767,9 +764,13 @@ usage = "effects"
 filter = false
 
 [pack]
-player_page = 16
 zero_page = 248
 sound_effects = true
+max_play_cycles = 4000
+
+[pack.window]
+start = 4096
+end = 8191
 
 [tools.gt2reloc]
 version = "2.73"
@@ -841,4 +842,297 @@ fn a_refused_hash_change_leaves_the_file_alone() {
     );
     assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
     let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The `window = …` line of [`PROJECT`].
+const WINDOW: &str = "window = { start = 0x1000, end = 0x1FFF }";
+
+/// The 1-based line of the first line of `text` that starts with `key =`.
+fn key_line(text: &str, key: &str) -> usize {
+    line_of(text, key).unwrap_or_else(|| panic!("no `{key} =` in {text}"))
+}
+
+#[test]
+fn the_window_is_page_aligned_in_order_and_clear_of_zero_page_and_the_stack() {
+    for (window, start, end) in [
+        ("{ start = 0x1000, end = 0x1FFF }", 0x1000, 0x1FFF),
+        ("{ end = 0x2FFF, start = 0x2000 }", 0x2000, 0x2FFF),
+        ("{ start = 0x0200, end = 0x0200 }", 0x0200, 0x0200),
+        ("{ start = 0xFF00, end = 0xFFFF }", 0xFF00, 0xFFFF),
+        ("{ start = 49152, end = 53247 }", 0xC000, 0xCFFF),
+    ] {
+        let text = PROJECT.replace(WINDOW, &format!("window = {window}"));
+        let pack = ProjectFile::parse(&text, p("x")).unwrap().pack.unwrap();
+        assert_eq!(
+            (pack.window.start(), pack.window.end()),
+            (start, end),
+            "{window}"
+        );
+        assert_eq!(pack.window.player_page(), (start >> 8) as u8, "{window}");
+    }
+    for (window, why) in [
+        (
+            "{ start = 0x1080, end = 0x1FFF }",
+            "start $1080 isn't on a page boundary",
+        ),
+        (
+            "{ start = 0x10FF, end = 0x1FFF }",
+            "start $10FF isn't on a page boundary",
+        ),
+        (
+            "{ start = 0x1000, end = 0x0FFF }",
+            "ends at $0FFF, before it starts at $1000",
+        ),
+        ("{ start = 0x0100, end = 0x1FFF }", "start $0100"),
+        ("{ start = 0x0000, end = 0x1FFF }", "start $0000"),
+        ("{ start = 0x1000, end = 0x10000 }", "65536"),
+        ("{ start = -1, end = 0x1FFF }", "-1"),
+        ("{ start = 0x1000 }", "missing field `end`"),
+        ("{ end = 0x1FFF }", "missing field `start`"),
+        (
+            "{ start = 0x1000, end = 0x1FFF, size = 4096 }",
+            "unknown field `size`",
+        ),
+        ("[0x1000, 0x1FFF]", "invalid type"),
+        ("\"$1000-$1FFF\"", "invalid type"),
+        ("{ start = 4096.0, end = 0x1FFF }", "invalid type"),
+    ] {
+        let text = PROJECT.replace(WINDOW, &format!("window = {window}"));
+        let parsed = ProjectFile::parse(&text, p("x"));
+        assert!(parsed.is_err(), "{window} was accepted");
+        let (at, m) = error(parsed);
+        assert!(m.contains(why), "{window}: {m}");
+        let (line, col) = at.unwrap_or_else(|| panic!("{window}: no position for {m}"));
+        assert_eq!(line, key_line(&text, "window"), "{window}: {m}");
+        assert!(col > 1, "{window}: points into the line, not at its start");
+    }
+    // A window is required: there is no default, and the old key is gone.
+    let text = PROJECT.replace(&format!("{WINDOW}\n"), "");
+    assert!(
+        error(ProjectFile::parse(&text, p("x")))
+            .1
+            .contains("missing field `window`")
+    );
+    let text = PROJECT.replace(WINDOW, "player_page = 0x10");
+    let (at, m) = error(ProjectFile::parse(&text, p("x")));
+    assert!(m.contains("unknown field `player_page`"), "{m}");
+    assert_eq!(at.unwrap().0, key_line(&text, "player_page"));
+}
+
+#[test]
+fn the_raster_budget_is_optional_and_within_one_frame() {
+    let without = PROJECT.replace("max_play_cycles = 4000\n", "");
+    assert_eq!(
+        ProjectFile::parse(&without, p("x"))
+            .unwrap()
+            .pack
+            .unwrap()
+            .max_play_cycles,
+        None
+    );
+    assert_eq!(
+        ProjectFile::parse(PROJECT, p("x"))
+            .unwrap()
+            .pack
+            .unwrap()
+            .max_play_cycles,
+        Some(4000)
+    );
+    // Up to a whole frame of the target's video standard: PAL 312 × 63, NTSC 263 × 65 cycles.
+    for (video, cycles, ok) in [
+        ("pal", 1, true),
+        ("pal", 19_656, true),
+        ("pal", 19_657, false),
+        ("ntsc", 17_095, true),
+        ("ntsc", 17_096, false),
+        ("pal", 0, false),
+    ] {
+        let text = PROJECT
+            .replace("video = \"pal\"", &format!("video = \"{video}\""))
+            .replace(
+                "max_play_cycles = 4000",
+                &format!("max_play_cycles = {cycles}"),
+            );
+        match ProjectFile::parse(&text, p("x")) {
+            Ok(f) => {
+                assert!(ok, "{video} {cycles} was accepted");
+                assert_eq!(f.pack.unwrap().max_play_cycles, Some(cycles));
+            }
+            Err(e) => {
+                assert!(!ok, "{video} {cycles}: {e}");
+                let (at, m) = error(Err::<(), _>(e));
+                assert!(m.contains(&format!("max_play_cycles {cycles}")), "{m}");
+                assert_eq!(at.unwrap().0, key_line(&text, "max_play_cycles"), "{m}");
+            }
+        }
+    }
+    for bad in ["-1", "4000.0", "\"4000\"", "4294967296"] {
+        let text = PROJECT.replace(
+            "max_play_cycles = 4000",
+            &format!("max_play_cycles = {bad}"),
+        );
+        let (at, m) = error(ProjectFile::parse(&text, p("x")));
+        assert_eq!(
+            at.unwrap().0,
+            key_line(&text, "max_play_cycles"),
+            "{bad}: {m}"
+        );
+    }
+}
+
+#[test]
+fn a_track_replaces_the_whole_window_and_may_set_its_own_raster_budget() {
+    let root = project(
+        "window-override",
+        &track_text(
+            "\n[pack]\nwindow = { start = 0x4000, end = 0x47FF }\nmax_play_cycles = 2500\n",
+        ),
+    );
+    let pr = Project::open(&root).unwrap();
+    let pack = pr.track(&id("main")).unwrap().pack.unwrap();
+    assert_eq!(pack.window, Window::new(0x4000, 0x47FF).unwrap());
+    assert_eq!(pack.max_play_cycles, Some(2500));
+    assert_eq!(
+        (pack.zero_page, pack.sound_effects),
+        (0xF8, true),
+        "the project's"
+    );
+    // Only the window: the project's raster budget stays.
+    let track = track_text("\n[pack]\nwindow = { start = 0x4000, end = 0x47FF }\n");
+    std::fs::write(root.join("tracks/main/track.toml"), &track).unwrap();
+    let pack = pr.track(&id("main")).unwrap().pack.unwrap();
+    assert_eq!(
+        (pack.window, pack.max_play_cycles),
+        (Window::new(0x4000, 0x47FF).unwrap(), Some(4000))
+    );
+    // Only the budget: the project's window stays.
+    std::fs::write(
+        root.join("tracks/main/track.toml"),
+        track_text("\n[pack]\nmax_play_cycles = 1200\n"),
+    )
+    .unwrap();
+    let pack = pr.track(&id("main")).unwrap().pack.unwrap();
+    assert_eq!(
+        (pack.window, pack.max_play_cycles),
+        (Window::new(0x1000, 0x1FFF).unwrap(), Some(1200))
+    );
+    // An overridden window is a whole window: half of one isn't merged with the project's other half.
+    for (window, why) in [
+        ("{ start = 0x4000 }", "missing field `end`"),
+        ("{ end = 0x47FF }", "missing field `start`"),
+        (
+            "{ start = 0x4080, end = 0x47FF }",
+            "isn't on a page boundary",
+        ),
+        ("{ start = 0x4000, end = 0x3FFF }", "before it starts"),
+    ] {
+        let text = track_text(&format!("\n[pack]\nwindow = {window}\n"));
+        std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
+        let (at, m) = error(pr.track(&id("main")));
+        assert!(m.contains(why), "{window}: {m}");
+        assert_eq!(at.unwrap().0, key_line(&text, "window"), "{window}: {m}");
+    }
+    // A track's budget is checked against its resolved video standard: the project's 19,000 cycles fit a PAL frame
+    // but not an NTSC one.
+    std::fs::write(
+        root.join("score64.toml"),
+        PROJECT.replace("max_play_cycles = 4000", "max_play_cycles = 19000"),
+    )
+    .unwrap();
+    let pr = Project::open(&root).unwrap();
+    let text = track_text("\n[target]\nvideo = \"ntsc\"\n");
+    std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
+    let (at, m) = error(pr.track(&id("main")));
+    assert!(
+        m.contains("max_play_cycles 19000") && m.contains("NTSC"),
+        "{m}"
+    );
+    assert_eq!(at.unwrap().0, line_of(&text, "[target]").unwrap(), "{m}");
+    // ... and the track's own budget on its own line.
+    let text = track_text("\n[target]\nvideo = \"ntsc\"\n\n[pack]\nmax_play_cycles = 17096\n");
+    std::fs::write(root.join("tracks/main/track.toml"), &text).unwrap();
+    let (at, m) = error(pr.track(&id("main")));
+    assert!(m.contains("max_play_cycles 17096"), "{m}");
+    assert_eq!(at.unwrap().0, key_line(&text, "max_play_cycles"), "{m}");
+    // The old key is unknown in a track too.
+    let text = track_text("\n[pack]\nplayer_page = 0x20\n");
+    assert!(
+        error(TrackFile::parse(&text, p("x")))
+            .1
+            .contains("unknown field `player_page`")
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_tracks_window_and_budget_are_written_and_read_back() {
+    let mut track = TrackFile::parse(&track_text(""), p("x")).unwrap();
+    track.pack = Some(PackOverride {
+        window: Some(Window::new(0x8000, 0x9FFF).unwrap()),
+        max_play_cycles: Some(3000),
+        ..PackOverride::default()
+    });
+    let text = track.to_toml().unwrap();
+    assert!(text.contains("[pack]\nmax_play_cycles = 3000\n"), "{text}");
+    assert!(
+        text.contains("[pack.window]\nstart = 32768\nend = 40959\n"),
+        "{text}"
+    );
+    assert_eq!(TrackFile::parse(&text, p("x")).unwrap(), track);
+}
+
+#[test]
+fn the_pack_is_the_budget_gates_budget() {
+    let pack = ProjectFile::parse(PROJECT, p("x")).unwrap().pack.unwrap();
+    assert_eq!(
+        pack.budget(),
+        score64_core::PackBudget {
+            first: 0x1000,
+            last: 0x1FFF,
+            zero_page: 0xF8,
+            sound_effects: true,
+            max_play_cycles: Some(4000),
+        }
+    );
+    let text = PROJECT
+        .replace(WINDOW, "window = { start = 0xC000, end = 0xC7FF }")
+        .replace("sound_effects = true", "sound_effects = false")
+        .replace("max_play_cycles = 4000\n", "");
+    let pack = ProjectFile::parse(&text, p("x")).unwrap().pack.unwrap();
+    assert_eq!(
+        pack.budget(),
+        score64_core::PackBudget {
+            first: 0xC000,
+            last: 0xC7FF,
+            zero_page: 0xF8,
+            sound_effects: false,
+            max_play_cycles: None,
+        }
+    );
+}
+
+proptest! {
+    /// A window is accepted exactly when it starts on a page at $0200 or above and doesn't end before it starts, in
+    /// code and in a file alike; an accepted one reads back from the text a new file gets.
+    #[test]
+    fn a_window_is_accepted_exactly_when_it_is_valid(start in any::<u16>(), len in any::<u16>(), aligned in any::<bool>()) {
+        let start = if aligned { start & 0xFF00 } else { start };
+        let end = start.wrapping_add(len);
+        let valid = start.is_multiple_of(0x100) && start >= 0x0200 && end >= start;
+        prop_assert_eq!(Window::new(start, end).is_ok(), valid);
+        let text = PROJECT.replace(WINDOW, &format!("window = {{ start = {start}, end = {end} }}"));
+        match ProjectFile::parse(&text, p("x")) {
+            Ok(f) => {
+                prop_assert!(valid);
+                let pack = f.pack.clone().unwrap();
+                prop_assert_eq!((pack.window.start(), pack.window.end()), (start, end));
+                prop_assert_eq!(ProjectFile::parse(&f.to_toml().unwrap(), p("x")).unwrap(), f);
+            }
+            Err(e) => {
+                prop_assert!(!valid, "{}", e);
+                let (at, _) = error(Err::<(), _>(e));
+                prop_assert_eq!(at.map(|a| a.0), Some(key_line(&text, "window")));
+            }
+        }
+    }
 }
