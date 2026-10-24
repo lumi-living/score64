@@ -62,7 +62,7 @@ LISTEN.md has:
 - what to listen for, and a timeline per subtune: when each tie, key-off, arpeggio, tempo change and loop comes;
 - measurements: helper vs sidplayfp, `.sfx` vs `.nosfx`, and the effects' level against the music.
 
-The built-in cases (all of them by default) are `sixteen-steps`, `sixteen-steps-adaptive`, `combat-filtered`, `ties-keyoffs-arp` and `loop-tempo` (`xtask/src/listen/fixture.rs`). It needs `gt2reloc` and builds the helper itself. sidplayfp is used if it's on `PATH`. `--gt2reloc-blake3` pins a specific binary; without it the installed one is pinned and its hash recorded.
+The built-in cases (all of them by default) are `sixteen-steps`, `sixteen-steps-adaptive`, `combat-filtered`, `ties-keyoffs-arp`, `loop-tempo` and `bass-arps` (`xtask/src/listen/fixture.rs`). It needs `gt2reloc` and builds the helper itself. sidplayfp is used if it's on `PATH`. `--gt2reloc-blake3` pins a specific binary; without it the installed one is pinned and its hash recorded.
 
 ## Releases
 
