@@ -5,7 +5,8 @@
 //!
 //! Tables (`PRAGMA user_version` is [`INDEX_SCHEMA`]; another value means rebuild):
 //! - `tracks(id, title)`;
-//! - `versions(track, seq, file, version, parent, time, unix, restore, by, who)`: each track's history in order,
+//! - `versions(track, seq, file, version, parent, parent_run, time, unix, restore, by, who)`: each track's history in
+//!   graph order, `parent` being the version of the run it came after (`parent_run`),
 //!   `who` being the model for `llm` and the name for `manual`;
 //! - `uses(track, seq, stage, key)`: the cache entries each recorded run's version uses;
 //! - `entries(stage, key, created, unix, stage_version, tool_version, millis, cost, currency, bytes)`: every whole
@@ -59,7 +60,7 @@ const LEFTOVER_AGE: Duration = Duration::from_secs(10 * 60);
 const TABLES: &str = "
     CREATE TABLE tracks (id TEXT PRIMARY KEY, title TEXT);
     CREATE TABLE versions (
-        track TEXT NOT NULL, seq INTEGER NOT NULL, file TEXT NOT NULL, version TEXT NOT NULL, parent TEXT,
+        track TEXT NOT NULL, seq INTEGER NOT NULL, file TEXT NOT NULL, version TEXT NOT NULL, parent TEXT, parent_run TEXT,
         time TEXT NOT NULL, unix INTEGER NOT NULL, restore INTEGER NOT NULL, by TEXT NOT NULL, who TEXT,
         PRIMARY KEY (track, seq)
     );
@@ -118,8 +119,10 @@ pub struct Summary {
 pub struct Version {
     /// Its version id.
     pub version: VersionId,
-    /// The version before it.
+    /// The version of the run it came after.
     pub parent: Option<VersionId>,
+    /// The run it came after, by its id.
+    pub parent_run: Option<String>,
     /// When it ran.
     pub time: crate::UtcTime,
     /// Whether it restored an earlier version.
@@ -403,7 +406,7 @@ impl Index {
         let mut q = self
             .conn
             .prepare(
-                "SELECT version, parent, time, unix, restore, by, who, file FROM versions WHERE track = ?1 \
+                "SELECT version, parent, time, unix, restore, by, who, file, parent_run FROM versions WHERE track = ?1 \
                  ORDER BY seq",
             )
             .map_err(self.damaged())?;
@@ -418,12 +421,13 @@ impl Index {
                     r.get::<_, String>(5)?,
                     r.get::<_, Option<String>>(6)?,
                     r.get::<_, String>(7)?,
+                    r.get::<_, Option<String>>(8)?,
                 ))
             })
             .map_err(self.damaged())?;
         let mut out = Vec::new();
         for row in rows {
-            let (version, parent, text, unix, restore, by, who, file) =
+            let (version, parent, text, unix, restore, by, who, file, parent_run) =
                 row.map_err(self.damaged())?;
             let hash = |s: &str| VersionId::from_hex(s).ok_or_else(|| self.corrupt());
             let provenance = match (by.as_str(), who) {
@@ -435,6 +439,7 @@ impl Index {
             out.push(Version {
                 version: hash(&version)?,
                 parent: parent.as_deref().map(hash).transpose()?,
+                parent_run,
                 time: self.time(unix, &text)?,
                 restore,
                 provenance,
@@ -938,14 +943,19 @@ fn fill(conn: &mut Connection, project: &Project, inputs: &[Input]) -> Result<()
                 RunProvenance::Manual { name } => ("manual", Some(name.as_str())),
             };
             tx.execute(
-                "INSERT INTO versions (track, seq, file, version, parent, time, unix, restore, by, who) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO versions (track, seq, file, version, parent, parent_run, time, unix, restore, by, who) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     id.as_str(),
                     seq,
                     file,
                     entry.version.to_string(),
-                    entry.parent.map(|p| p.to_string()),
+                    entry
+                        .parent
+                        .as_deref()
+                        .and_then(|p| history.run(p))
+                        .map(|p| p.version.to_string()),
+                    entry.parent,
                     entry.time.to_string(),
                     entry.time.unix(),
                     entry.restore,

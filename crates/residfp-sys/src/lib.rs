@@ -1,6 +1,6 @@
 //! reSIDfp (libresidfp 1.2.3, GPL-2.0-or-later) for Score64's emulator helper (ADR-011).
 //!
-//! The library is vendored in `vendor/libresidfp` with one documented patch (`vendor/SCORE64-PATCHES.md`) and built
+//! The library is vendored in `vendor/libresidfp` with two documented patches (`vendor/SCORE64-PATCHES.md`) and built
 //! by `build.rs`. `unsafe` stays in [`ffi`]; [`ResidFp`] is the safe interface. Only `score64-emu` may depend on this
 //! crate (ADR-002).
 
@@ -296,6 +296,41 @@ mod tests {
         );
         let peak = out.iter().map(|s| s.unsigned_abs()).max().unwrap();
         assert!(peak > 1000, "peak {peak}");
+    }
+
+    /// Two SIDs fed the same writes give the same samples, filter included: the filter's dither is per SID (#207,
+    /// `vendor/SCORE64-PATCHES.md` patch 2). The 6581 filter range is still one setting per process (upstream), so this
+    /// holds for SIDs with the same settings.
+    #[test]
+    fn identical_writes_give_identical_samples() {
+        for model in [ChipModel::Mos6581, ChipModel::Csg8580] {
+            let render = || {
+                let mut sid =
+                    ResidFp::new(model, 985_248.0, 48_000.0, SamplingMethod::Resample).unwrap();
+                // Voice 1 through the low-pass filter, resonance 15, cutoff $400: a pulse note, then its release.
+                for (reg, v) in [
+                    (0x18, 0x1F),
+                    (0x17, 0xF1),
+                    (0x15, 0x00),
+                    (0x16, 0x40),
+                    (0x01, 0x11),
+                    (0x03, 0x08),
+                    (0x05, 0x09),
+                    (0x06, 0xA0),
+                    (0x04, 0x41),
+                ] {
+                    sid.write(reg, v);
+                }
+                let mut out = Vec::new();
+                sid.clock(985_248 / 4, &mut out);
+                sid.write(0x04, 0x40);
+                sid.clock(985_248 / 4, &mut out);
+                out
+            };
+            let first = render();
+            assert!(first.iter().any(|&s| s != first[0]), "{model:?} is silent");
+            assert!(render() == first, "{model:?}: a second SID differs");
+        }
     }
 
     #[test]
