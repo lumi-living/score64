@@ -240,7 +240,11 @@ fn a_root_with_no_bass_before_it_and_a_tie_between_two_roots() {
         );
         a.notes
             .iter()
-            .filter(|x| x.decision.as_ref().is_some_and(|d| d.as_str().starts_with("bassarp-chord")))
+            .filter(|x| {
+                x.decision
+                    .as_ref()
+                    .is_some_and(|d| d.as_str().starts_with("bassarp-chord"))
+            })
             .map(|x| x.pitch.to_string())
             .collect::<Vec<_>>()
     };

@@ -333,3 +333,160 @@ fn arpeggios_listed_out_of_order_still_count() {
     let chroma = chroma_by_bar(&s, 1);
     assert!((chroma[0][4] - 16.0 * 0.3).abs() < 1e-4, "{:?}", chroma[0]);
 }
+
+fn loop_decision(id: &str, row: u32, provenance: crate::provenance::Provenance) -> Decision {
+    Decision {
+        id: DecisionId::new(id).unwrap(),
+        subtune: SubtuneName::new("main").unwrap(),
+        bar: row / 16,
+        proposal: Proposal::LoopRow { row },
+        provenance,
+        confidence: Confidence::CERTAIN,
+        reviewed: false,
+    }
+}
+
+#[test]
+fn a_loop_row_in_force_replaces_the_rules_choice() {
+    use crate::provenance::Provenance;
+    let s = subtune(&[E_FLAT, C, F, G, C, F, G]);
+    let plain = find_loop(&s, &LoopRules::default());
+    assert_eq!((plain.row, plain.by.as_str()), (64, "loop"));
+    // A person loops to bar 2 instead; the rule's own decision is still there for review.
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[loop_decision("mine", 32, Provenance::Manual)],
+    );
+    assert_eq!((r.row, r.by.as_str()), (32, "mine"));
+    assert_eq!(r.decision, plain.decision);
+    assert_eq!(r.candidates, plain.candidates);
+    assert_eq!(
+        r.similarity,
+        plain
+            .candidates
+            .iter()
+            .find(|c| c.bar == 2)
+            .unwrap()
+            .similarity
+    );
+    // Mid-bar is a person's call too, where no note sounds across it; no candidate scores it.
+    let mut gap = s.clone();
+    for n in gap.voices[0].notes.iter_mut().filter(|n| n.row == 16) {
+        n.length = NonZeroU32::new(4).unwrap();
+    }
+    let r = find_loop_with(
+        &gap,
+        &LoopRules::default(),
+        &[loop_decision("mid", 20, Provenance::Manual)],
+    );
+    assert_eq!((r.row, r.similarity, r.by.as_str()), (20, 0.0, "mid"));
+    assert!(r.unapplied.is_empty());
+}
+
+#[test]
+fn a_loop_row_that_cant_apply_says_why() {
+    use crate::provenance::Provenance;
+    let s = subtune(&[C, F, G, C]);
+    let plain = find_loop(&s, &LoopRules::default());
+    let reasons = |r: &LoopChoice| {
+        r.unapplied
+            .iter()
+            .map(|(id, w)| (id.as_str().to_string(), *w))
+            .collect::<Vec<_>>()
+    };
+    // Past the end, or inside a note: the rule's row stays.
+    for (row, why) in [(64, Unapplied::PastEnd), (20, Unapplied::InsideNote)] {
+        let r = find_loop_with(
+            &s,
+            &LoopRules::default(),
+            &[loop_decision("bad", row, Provenance::Manual)],
+        );
+        assert_eq!((r.row, r.by.as_str()), (plain.row, "loop"));
+        assert_eq!(reasons(&r), [("bad".to_string(), why)]);
+    }
+    // Of two people's, the lower id; another subtune's and the rules' own aren't this call's.
+    let mut elsewhere = loop_decision("elsewhere", 16, Provenance::Manual);
+    elsewhere.subtune = SubtuneName::new("combat").unwrap();
+    let rules = loop_decision(
+        "rules",
+        48,
+        Provenance::Rules {
+            rule: FIND_LOOP.into(),
+        },
+    );
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[
+            loop_decision("d-second", 32, Provenance::Manual),
+            loop_decision("c-first", 16, Provenance::Manual),
+            rules,
+            elsewhere,
+        ],
+    );
+    assert_eq!((r.row, r.by.as_str()), (16, "c-first"));
+    assert_eq!(
+        reasons(&r),
+        [("d-second".to_string(), Unapplied::Outranked)]
+    );
+    // The strongest claims the row even when it can't apply: the weaker valid one doesn't take its place.
+    let r = find_loop_with(
+        &s,
+        &LoopRules::default(),
+        &[
+            loop_decision("a-inside", 20, Provenance::Manual),
+            loop_decision("b-fine", 16, Provenance::Manual),
+        ],
+    );
+    assert_eq!(r.by.as_str(), "loop");
+    assert_eq!(
+        reasons(&r),
+        [
+            ("a-inside".to_string(), Unapplied::InsideNote),
+            ("b-fine".to_string(), Unapplied::Outranked)
+        ]
+    );
+    // A tie on the row is cut by the jump back too.
+    let mut tied = s.clone();
+    tied.voices[0].notes.push(Note {
+        attack: Attack::Legato,
+        ..note(32, 4, 60)
+    });
+    let r = find_loop_with(
+        &tied,
+        &LoopRules::default(),
+        &[loop_decision("on-tie", 32, Provenance::Manual)],
+    );
+    assert_eq!(
+        r.unapplied,
+        [(DecisionId::new("on-tie").unwrap(), Unapplied::InsideNote)]
+    );
+}
+
+#[test]
+fn of_several_loop_rows_the_strongest_wins_in_any_order() {
+    use crate::provenance::{ContentHash, Provenance};
+    let s = subtune(&[C, F, G, C]);
+    let model = Provenance::Llm {
+        model: "any".into(),
+        prompt: ContentHash([1; 32]),
+    };
+    for overrides in [
+        vec![
+            loop_decision("a-model", 32, model.clone()),
+            loop_decision("b-person", 16, Provenance::Manual),
+        ],
+        vec![
+            loop_decision("b-person", 16, Provenance::Manual),
+            loop_decision("a-model", 32, model.clone()),
+        ],
+    ] {
+        let r = find_loop_with(&s, &LoopRules::default(), &overrides);
+        assert_eq!((r.row, r.by.as_str()), (16, "b-person"));
+        assert_eq!(
+            r.unapplied,
+            [(DecisionId::new("a-model").unwrap(), Unapplied::Overruled)]
+        );
+    }
+}

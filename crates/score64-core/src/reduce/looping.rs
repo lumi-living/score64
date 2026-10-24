@@ -8,6 +8,7 @@ use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 
+use crate::decide::{Rank, Unapplied};
 use crate::provenance::{Confidence, Decision, DecisionId, Proposal, Provenance};
 use crate::score::{Note, Subtune};
 
@@ -48,14 +49,19 @@ pub struct Candidate {
 /// Where [`find_loop`] would loop, and why.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LoopChoice {
-    /// The loop row: a bar start.
+    /// The loop row: a bar start the rule chose, or any row an override in force gave.
     pub row: u32,
-    /// How alike the bars before it and the ending are, 0 to 1; 0 for a loop to the start that no bar earned.
+    /// How alike the bars before it and the ending are, 0 to 1; 0 for a loop to the start that no bar earned, and for
+    /// an override's row that isn't a candidate (mid-bar, or a bar the rule didn't score).
     pub similarity: f32,
     /// Every candidate and its similarity, in bar order, for review.
     pub candidates: Vec<Candidate>,
-    /// The `LoopRow` decision (`loop`).
+    /// The rule's `LoopRow` decision (`loop`), made whether or not an override is in force.
     pub decision: Decision,
+    /// The decision whose row this is: the rule's, or the override in force.
+    pub by: DecisionId,
+    /// Overrides that couldn't apply, and why, by id.
+    pub unapplied: Vec<(DecisionId, Unapplied)>,
 }
 
 /// Find the loop row of `subtune`.
@@ -71,6 +77,64 @@ pub struct LoopChoice {
 /// inside a bar or after silence (the jump then comes from music the comparison did not see). The subtune itself is
 /// not changed, and tempo is not compared.
 pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
+    find_loop_with(subtune, rules, &[])
+}
+
+/// [`find_loop`] with a model's or a person's resolved `loop_row` decision in force (#167): its row replaces the
+/// rule's choice, and `by` names it. The rule still scores the candidates and makes its own decision, for review.
+///
+/// An override is unapplied past the subtune's end (`past_end`), or on a row inside a note or on a tie
+/// (`inside_note`): after the jump back that note couldn't sound, and the export refuses it. The rule's row then
+/// stays. Of several for the subtune, the strongest claims it whether or not it can apply, as `resolve` would
+/// choose; the others are `overruled` or `outranked`. `unapplied` is sorted by id.
+pub fn find_loop_with(subtune: &Subtune, rules: &LoopRules, overrides: &[Decision]) -> LoopChoice {
+    let mut choice = rule_loop(subtune, rules);
+    let candidates: Vec<&Decision> = overrides
+        .iter()
+        .filter(|d| d.subtune == subtune.name && d.rank() != Rank::Rules)
+        .filter(|d| matches!(d.proposal, Proposal::LoopRow { .. }))
+        .collect();
+    // The strongest claims the loop row whether or not it can apply, as `resolve` would choose.
+    let mut winner: Option<&Decision> = None;
+    for d in crate::decide::by_strength(candidates) {
+        let Proposal::LoopRow { row } = d.proposal else {
+            continue;
+        };
+        if let Some(w) = winner {
+            choice
+                .unapplied
+                .push((d.id.clone(), crate::decide::lost_to(d, w)));
+            continue;
+        }
+        winner = Some(d);
+        if row >= subtune.length.get() {
+            choice.unapplied.push((d.id.clone(), Unapplied::PastEnd));
+        } else if splits_a_note(subtune, row) {
+            choice.unapplied.push((d.id.clone(), Unapplied::InsideNote));
+        } else {
+            choice.row = row;
+            choice.similarity = choice
+                .candidates
+                .iter()
+                .find(|c| c.bar * u32::from(subtune.rows_per_bar.get()) == row)
+                .map_or(0.0, |c| c.similarity);
+            choice.by = d.id.clone();
+        }
+    }
+    choice.unapplied.sort_by(|a, b| a.0.cmp(&b.0));
+    choice
+}
+
+/// Whether looping to `row` would cut a note: one sounds across it, or a tie starts on it.
+fn splits_a_note(subtune: &Subtune, row: u32) -> bool {
+    subtune.voices.iter().flat_map(|v| &v.notes).any(|n| {
+        (n.row < row && row < n.row.saturating_add(n.length.get()))
+            || (n.row == row && n.attack == crate::score::Attack::Legato)
+    })
+}
+
+/// What the rule itself chooses.
+fn rule_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
     let rows = u32::from(subtune.rows_per_bar.get());
     let length = subtune.length.get();
     // Whole bars only: the jump lands on a downbeat, so a part bar at the end can't be matched against one.
@@ -113,12 +177,15 @@ pub fn find_loop(subtune: &Subtune, rules: &LoopRules) -> LoopChoice {
         similarity / 2.0
     };
     let row = bar * rows;
+    let id = DecisionId::new("loop").expect("a valid id");
     LoopChoice {
         row,
         similarity,
         candidates,
+        by: id.clone(),
+        unapplied: Vec::new(),
         decision: Decision {
-            id: DecisionId::new("loop").expect("a valid id"),
+            id,
             subtune: subtune.name.clone(),
             bar,
             proposal: Proposal::LoopRow { row },

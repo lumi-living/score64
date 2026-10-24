@@ -143,6 +143,7 @@ pub fn fold_drums(hits: impl IntoIterator<Item = Note>, at: &Placement, kit: &Dr
     Reduced {
         notes,
         decisions: log.decisions,
+        unapplied: Vec::new(),
     }
 }
 
@@ -249,6 +250,7 @@ pub fn interleave_drums(
     Reduced {
         notes: notes.into_iter().map(|(_, n)| n).collect(),
         decisions: log.decisions,
+        unapplied: Vec::new(),
     }
 }
 
