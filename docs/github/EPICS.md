@@ -47,9 +47,9 @@ CLI end to end: transcribe → grid → reduce → .sng → pack → render → 
 - **E4 Project & cache** ([#24](https://github.com/lumi-living/score64/issues/24)) — Files are the source of truth (ADR-004): track and decision files, content-addressed stage cache, immutable versions, rebuildable index.
   - ✓ track.toml and decisions.toml schemas with validation [#25](https://github.com/lumi-living/score64/issues/25)
   - ✓ Content-addressed stage cache with manifests [#26](https://github.com/lumi-living/score64/issues/26)
-  - Immutable versions: identity from intent + inputs + tool version [#27](https://github.com/lumi-living/score64/issues/27)
-  - SQLite index rebuildable from manifests and git [#28](https://github.com/lumi-living/score64/issues/28)
-  - Cache garbage collection policy [#29](https://github.com/lumi-living/score64/issues/29)
+  - ✓ Immutable versions: identity from intent + inputs + tool version [#27](https://github.com/lumi-living/score64/issues/27)
+  - ✓ SQLite index rebuildable from manifests and git [#28](https://github.com/lumi-living/score64/issues/28)
+  - ✓ Cache garbage collection policy [#29](https://github.com/lumi-living/score64/issues/29)
   - Provenance and licence flags per artifact [#30](https://github.com/lumi-living/score64/issues/30)
 - **E5 Transcription & beat grid** ([#31](https://github.com/lumi-living/score64/issues/31)) — Transcriber and beat-tracker ports with adapters; decode, tempo snapping and quantisation.
   - Audio decode and resampling (symphonia) [#32](https://github.com/lumi-living/score64/issues/32)
