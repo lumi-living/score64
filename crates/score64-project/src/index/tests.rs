@@ -436,10 +436,10 @@ fn another_layout_is_rebuilt_even_when_no_file_changed() {
 }
 
 /// A reader on another thread that opens the index, starts a read transaction, counts its versions, says so, holds
-/// the transaction for `hold`, counts again and ends it. Gives both counts.
+/// the transaction while `hold` runs, counts again and ends it. Gives both counts.
 fn hold_a_read(
     path: PathBuf,
-    hold: Duration,
+    hold: impl FnOnce() + Send + 'static,
 ) -> (
     std::thread::JoinHandle<(i64, i64)>,
     std::sync::mpsc::Receiver<()>,
@@ -454,7 +454,7 @@ fn hold_a_read(
         conn.execute_batch("BEGIN").unwrap();
         let before = count();
         ready.send(()).unwrap();
-        std::thread::sleep(hold);
+        hold();
         let after = count();
         conn.execute_batch("COMMIT").unwrap();
         (before, after)
@@ -467,7 +467,9 @@ fn a_reader_in_a_transaction_delays_the_copy_and_keeps_the_old_index_meanwhile()
     let p = project("busy");
     Index::open(&p).unwrap();
     record(&p, "a", 1, 1_000, vec![]);
-    let (reader, started) = hold_a_read(Index::path(&p), Duration::from_millis(1_500));
+    let (reader, started) = hold_a_read(Index::path(&p), || {
+        std::thread::sleep(Duration::from_millis(1_500))
+    });
     started.recv().unwrap();
     let start = Instant::now();
     let index = Index::rebuild(&p).unwrap();
@@ -485,7 +487,13 @@ fn a_reader_holding_on_past_the_wait_fails_the_rebuild_cleanly() {
     let p = project("timeout");
     Index::open(&p).unwrap();
     record(&p, "a", 1, 1_000, vec![]);
-    let (reader, started) = hold_a_read(Index::path(&p), Duration::from_millis(1_500));
+    // The reader holds its transaction until told to let go, which is only after the rebuild returns: so a rebuild
+    // that fails gave up at its wait, however slow the machine. (The thirty seconds only keep a broken build from
+    // hanging the test.)
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (reader, started) = hold_a_read(Index::path(&p), move || {
+        let _ = released.recv_timeout(Duration::from_secs(30));
+    });
     started.recv().unwrap();
     TEST_WAIT.set(Some(Duration::from_millis(300)));
     let start = Instant::now();
@@ -496,15 +504,61 @@ fn a_reader_holding_on_past_the_wait_fails_the_rebuild_cleanly() {
     TEST_WAIT.set(None);
     assert!(matches!(e, Error::Sql { .. }), "{e:?}");
     assert!(e.to_string().contains("index.db"), "{e}");
+    assert!(took >= Duration::from_millis(300), "it waited: {took:?}");
+    // And it gave up near the wait, not after a busy handler's own: ten times the wait leaves room for a slow
+    // machine's `build()`, and rusqlite's default handler would take five seconds.
     assert!(
-        took < Duration::from_millis(1_400),
-        "gave up at the wait, not when the reader let go: {took:?}"
+        took < Duration::from_secs(3),
+        "gave up at the wait: {took:?}"
     );
+    release.send(()).unwrap();
     assert_eq!(reader.join().unwrap(), (0, 0));
     // The old index is whole, and nothing of the attempt is left.
     assert_eq!(versions_in(&Index::path(&p)), 0);
     assert_eq!(index_files(&p), ["index.db"]);
     assert_eq!(Index::rebuild(&p).unwrap().summary().unwrap().versions, 1);
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn a_reader_cannot_write() {
+    let p = project("query-only");
+    let index = Index::open(&p).unwrap();
+    // The reader's connection is read-write so it can roll back a hot journal, but `query_only` keeps it from
+    // changing anything.
+    let e = index
+        .conn
+        .execute("DELETE FROM tracks", [])
+        .expect_err("a reader can't write");
+    assert_eq!(e.sqlite_error_code(), Some(ErrorCode::ReadOnly), "{e}");
+    assert_eq!(index.summary().unwrap().tracks, 2);
+    let _ = std::fs::remove_dir_all(p.root());
+}
+
+#[test]
+fn a_reader_opened_during_a_copy_waits_for_it_and_then_reads() {
+    let p = project("reader-waits");
+    Index::open(&p).unwrap();
+    // A write lock held as a rebuild's copy holds it while it commits: exclusive, for half a second.
+    let path = Index::path(&p);
+    let (locked, lock_held) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        locked.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        conn.execute_batch("COMMIT").unwrap();
+    });
+    lock_held.recv().unwrap();
+    let start = Instant::now();
+    let index = Index::reader(&Index::path(&p)).unwrap();
+    assert_eq!(index.summary().unwrap().tracks, 2);
+    let took = start.elapsed();
+    writer.join().unwrap();
+    assert!(
+        took >= Duration::from_millis(300),
+        "it waited for the lock: {took:?}"
+    );
     let _ = std::fs::remove_dir_all(p.root());
 }
 
