@@ -2387,6 +2387,128 @@ fn a_weaker_drop_never_cuts_a_stronger_trim_short() {
 }
 
 #[test]
+fn a_keep_the_line_met_records_its_id_once_a_weaker_drop_makes_it_the_reason() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ghost_below: Confidence::new(0.0).unwrap(),
+        ..MonoRules::default()
+    };
+    // When the keep applies, G-4 is on the line anyway. Then the model's drop of C-4 lets E-4 stay, which would
+    // push out G-4 but for the keep: G-4 is there because of it, and records it.
+    let r = monophonise_with(
+        [
+            note(0, 2, "C-4", 0.9),
+            note(1, 2, "E-4", 0.8),
+            note(2, 2, "G-4", 0.7),
+        ],
+        &at(&n),
+        &rules,
+        &[
+            person("a-keep", keep_of(2, "G-4")),
+            as_model(person("b-drop", drop_of(0, 2, "C-4"))),
+        ],
+    );
+    assert_eq!(shape(&r.notes), [(2, 2, "G-4".into())]);
+    assert!(r.unapplied.is_empty(), "{:?}", r.unapplied);
+    assert_eq!(
+        r.notes[0].decision.as_ref().map(DecisionId::as_str),
+        Some("a-keep")
+    );
+}
+
+#[test]
+fn a_weaker_drop_never_cuts_short_a_trim_two_runs_back() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ghost_below: Confidence::new(0.2).unwrap(),
+        ..MonoRules::default()
+    };
+    // C-4's trim fits because E-4 ends it at row 6. The ghost at row 3 is a run of its own that leaves nothing on the
+    // line, so the note before D-4 and E-4's run is C-4, two runs back. Dropping E-4 would let D-4 stay and end C-4
+    // at row 5.
+    let soup = vec![
+        note(0, 10, "C-4", 0.9),
+        note(3, 2, "G-4", 0.1),
+        note(5, 4, "D-4", 0.5),
+        note(6, 4, "E-4", 0.9),
+    ];
+    let trim = person("trim", trim_of(0, "C-4", 6));
+    let alone = monophonise_with(soup.clone(), &at(&n), &rules, std::slice::from_ref(&trim));
+    assert!(alone.unapplied.is_empty(), "{:?}", alone.unapplied);
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &rules,
+        &[trim, as_model(person("drop", drop_of(6, 4, "E-4")))],
+    );
+    assert_eq!(unapplied(&r), [("drop", Unapplied::Overruled)]);
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 6, "C-4".into()), (6, 4, "E-4".into())]
+    );
+}
+
+#[test]
+fn a_drop_of_one_twin_gives_way_to_a_stronger_fresh_start_of_its_row_and_pitch() {
+    let n = name();
+    let r = monophonise_with(
+        [note(0, 4, "C-4", 0.9), note(0, 2, "C-4", 0.9)],
+        &at(&n),
+        &MonoRules::default(),
+        &[
+            person("fresh", retrigger_of(0, "C-4")),
+            as_model(person("drop", drop_of(0, 4, "C-4"))),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("drop", Unapplied::Overruled)]);
+    assert_eq!(shape(&r.notes), [(0, 4, "C-4".into())]);
+}
+
+#[test]
+fn a_drop_is_checked_on_the_line_the_stronger_drops_left() {
+    let n = name();
+    let rules = MonoRules {
+        min_rows: NonZeroU32::new(2).unwrap(),
+        ..MonoRules::default()
+    };
+    // With G-4 on row 1, dropping E-4 is harmless to the person's trim of C-4. The stronger drop takes G-4 out first,
+    // which leaves D-4 on row 1; then dropping E-4 would let D-4 push out C-4, so that drop is refused.
+    let soup = vec![
+        note(0, 2, "C-4", 0.6),
+        note(1, 2, "D-4", 0.8),
+        note(1, 2, "G-4", 0.5),
+        note(2, 2, "E-4", 0.9),
+    ];
+    let harmless = monophonise_with(
+        soup.clone(),
+        &at(&n),
+        &rules,
+        &[
+            person("trim", trim_of(0, "C-4", 1)),
+            as_model(person("e-drop", drop_of(2, 2, "E-4"))),
+        ],
+    );
+    assert!(harmless.unapplied.is_empty(), "{:?}", harmless.unapplied);
+    let r = monophonise_with(
+        soup,
+        &at(&n),
+        &rules,
+        &[
+            person("a-drop", drop_of(1, 2, "G-4")),
+            person("trim", trim_of(0, "C-4", 1)),
+            as_model(person("e-drop", drop_of(2, 2, "E-4"))),
+        ],
+    );
+    assert_eq!(unapplied(&r), [("e-drop", Unapplied::Overruled)]);
+    assert_eq!(
+        shape(&r.notes),
+        [(0, 1, "C-4".into()), (2, 2, "E-4".into())]
+    );
+}
+
+#[test]
 fn a_keep_whose_spared_note_would_push_out_a_stronger_one_gives_it_back() {
     let n = name();
     let rules = MonoRules {
@@ -3055,5 +3177,111 @@ proptest! {
         prop_assert_eq!(&r.decisions, &plain.decisions);
         // A second keep of one note is outranked; nothing else is refused.
         prop_assert!(r.unapplied.iter().all(|(_, w)| *w == Unapplied::Outranked), "{:?}", r.unapplied);
+    }
+}
+
+/// Notes across 60 rows, long enough to cross runs.
+fn wide_soup() -> impl Strategy<Value = Vec<Note>> {
+    let pitch = prop_oneof![Just("C-4"), Just("E-4"), Just("G-4"), Just("B-4")]
+        .prop_map(|p| p.parse::<Pitch>().unwrap());
+    let confidence = prop_oneof![
+        Just(0.1f32),
+        Just(0.5f32),
+        Just(0.8f32),
+        Just(1.0f32),
+        0.0f32..=1.0
+    ];
+    let note = (0u32..60, 1u32..20, pitch, any::<bool>(), confidence).prop_map(
+        |(row, length, pitch, tie, confidence)| Note {
+            row,
+            length: NonZeroU32::new(length).unwrap(),
+            pitch,
+            attack: if tie { Attack::Legato } else { Attack::Fresh },
+            instrument: None,
+            source: None,
+            confidence: Confidence::new(confidence).unwrap(),
+            decision: None,
+        },
+    );
+    proptest::collection::vec(note, 1..40)
+}
+
+/// Runs at a fixed `min_rows`: each run's notes start within `min - 1` rows, each run starts `min` to `min + 2` rows
+/// after the last start of the one before, and notes are long enough to reach a run or two on, so a change in one run
+/// can end a note of another.
+fn chain() -> impl Strategy<Value = (MonoRules, Vec<Note>)> {
+    (
+        2u32..6,
+        any::<bool>(),
+        prop_oneof![Just(0.0f32), Just(0.3f32)],
+    )
+        .prop_flat_map(|(min, low, ghost)| {
+            let run = proptest::collection::vec(
+                (
+                    0..min,
+                    1..=3 * min + 2,
+                    0usize..3,
+                    prop_oneof![
+                        Just(0.1f32),
+                        Just(0.5f32),
+                        Just(0.6f32),
+                        Just(0.8f32),
+                        Just(0.9f32),
+                        Just(1.0f32)
+                    ],
+                    any::<bool>(),
+                ),
+                1..5,
+            );
+            let rules = MonoRules {
+                skyline: if low {
+                    Skyline::Lowest
+                } else {
+                    Skyline::Highest
+                },
+                ghost_below: Confidence::new(ghost).unwrap(),
+                min_rows: NonZeroU32::new(min).unwrap(),
+            };
+            (Just(rules), proptest::collection::vec((0..3u32, run), 2..6)).prop_map(
+                move |(rules, runs)| {
+                    let mut out = Vec::new();
+                    let mut base = 0u32;
+                    for (gap, notes) in runs {
+                        let mut last = 0;
+                        for (off, len, p, c, tie) in notes {
+                            let mut x = note(base + off, len, ["C-4", "E-4", "G-4"][p], c);
+                            if tie {
+                                x.attack = Attack::Legato;
+                            }
+                            last = last.max(off);
+                            out.push(x);
+                        }
+                        base += last + min + gap;
+                    }
+                    (rules, out)
+                },
+            )
+        })
+}
+
+proptest! {
+    /// Placing only the run a drop or keep is about, and following a drop's change note by note, gives what placing
+    /// the whole line again by the rule's own steps gives, for every trial.
+    #[test]
+    fn windowed_runs_give_what_the_whole_line_gives(
+        (rules, soup) in prop_oneof![
+            (any_rules(), dense_soup()),
+            (any_rules(), wide_soup()),
+            chain(),
+        ],
+        picks in dense_picks(),
+        dups in proptest::bool::weighted(0.15),
+    ) {
+        let n = name();
+        let overrides = dense_overrides(&soup, &picks, dups);
+        prop_assert_eq!(
+            monophonise_with(soup.clone(), &at(&n), &rules, &overrides),
+            monophonise_whole(soup, &at(&n), &rules, &overrides)
+        );
     }
 }

@@ -190,14 +190,36 @@ pub fn monophonise(
 /// records the override's id in place of this rule's; an id from an earlier rule stays. The order of `overrides`
 /// doesn't matter.
 ///
-/// A drop or keep places only its own run of notes again (notes each less than `min_rows` rows after the one before):
-/// a keep always, a drop only when a stronger trim, fresh start or keep could notice. So the cost grows with those
-/// decisions times the notes in their runs, and most when notes are so dense that one run spans the subtune.
+/// The line is kept run by run (notes each less than `min_rows` rows after the one before). A keep that changes the
+/// line places its run again; a drop places again only the notes its change reaches, note by note. So the cost grows
+/// most with keeps on notes so dense that one run spans the subtune.
 pub fn monophonise_with(
     notes: impl IntoIterator<Item = Note>,
     at: &Placement,
     rules: &MonoRules,
     overrides: &[Decision],
+) -> Reduced {
+    monophonise_in(notes, at, rules, overrides, false)
+}
+
+/// [`monophonise_with`] placing the whole line again, by the rule's own steps, for every drop and keep: the reference
+/// the windowed runs must agree with.
+#[cfg(test)]
+fn monophonise_whole(
+    notes: impl IntoIterator<Item = Note>,
+    at: &Placement,
+    rules: &MonoRules,
+    overrides: &[Decision],
+) -> Reduced {
+    monophonise_in(notes, at, rules, overrides, true)
+}
+
+fn monophonise_in(
+    notes: impl IntoIterator<Item = Note>,
+    at: &Placement,
+    rules: &MonoRules,
+    overrides: &[Decision],
+    whole: bool,
 ) -> Reduced {
     let mut log = Log::new(at, MONOPHONISE, "mono");
     let mut unapplied = Vec::new();
@@ -249,7 +271,7 @@ pub fn monophonise_with(
         })
         .collect();
     order.sort_by(|a, b| strength(a, b));
-    let applied = apply_in_order(&notes, &order, &held, &mut won, rules, at);
+    let applied = apply_in_order(&notes, &order, &held, &mut won, rules, at, whole);
     unapplied.extend(applied.refused);
     let dropping = applied.dropping;
     let saved = applied.saved;
@@ -423,8 +445,8 @@ struct Applied<'d> {
 ///   unapplied as a drop may not, is refused. A stronger keep's note needs no other check: kept notes are placed
 ///   first, the strongest keep's first, and a drop only takes a note out.
 ///
-/// Only the run of notes a decision is about is placed again ([`Runs`]), and a drop only when a stronger trim, fresh
-/// start or keep could notice.
+/// A keep's trial places its run again ([`Runs`]); a drop's follows its change note by note, and checks the trims and
+/// fresh starts it could touch, and a keep only on its own row and pitch.
 fn apply_in_order<'d>(
     all: &[Note],
     order: &[&'d Decision],
@@ -432,6 +454,7 @@ fn apply_in_order<'d>(
     won: &mut Claims<'d>,
     rules: &MonoRules,
     at: &Placement,
+    whole: bool,
 ) -> Applied<'d> {
     let mut out = Applied {
         dropping: BTreeMap::new(),
@@ -464,9 +487,14 @@ fn apply_in_order<'d>(
             .last();
         note_of.push(found);
     }
-    let mut runs = Runs::new(all, rules, at);
-    // The keeps that changed the line when they applied.
-    let mut changed: BTreeSet<(u32, Pitch)> = BTreeSet::new();
+    // The trims and fresh starts by their note, strongest first.
+    let mut held_at: BTreeMap<(u32, Pitch), Vec<&'d Decision>> = BTreeMap::new();
+    for &h in held {
+        if let Some(note) = about(h) {
+            held_at.entry(note).or_default().push(h);
+        }
+    }
+    let mut runs = Runs::new(all, rules, at, whole);
     for (&d, &found) in order.iter().zip(&note_of) {
         if let Some(why) = won.claim(d) {
             out.refused.push((d.id.clone(), why));
@@ -483,25 +511,23 @@ fn apply_in_order<'d>(
                     continue;
                 };
                 let k = runs.run_of(row).expect("a note's row is in its run");
+                let next = runs.without(k, i, &out.dropping, &out.kept);
                 // A stronger keep of its row and pitch, which must still keep a note there.
-                let keep = out.kept.get(&(row, pitch)).copied();
-                if keep.is_some() || runs.noticed(held, d, k, &out.dropping, &out.kept) {
-                    let next = runs.place_run(k, &out.dropping, Some(i), &out.kept).0;
-                    let lost =
-                        keep.filter(|_| !next.iter().any(|n| (n.row, n.pitch) == (row, pitch)));
-                    let undone = runs.undoes(held, d, k, &next, &out.dropping, &out.kept);
-                    if let Some(by) = lost.into_iter().chain(undone).min_by(|a, b| strength(a, b)) {
-                        out.refused.push((d.id.clone(), lost_to(d, by)));
-                        if lost.is_some() {
-                            // The keep saved its note from the drop.
-                            out.saved.insert((row, pitch));
-                        }
-                        continue;
+                let lost = out
+                    .kept
+                    .get(&(row, pitch))
+                    .copied()
+                    .filter(|_| !runs.view(k, Some(&next)).has((row, pitch)));
+                let undone = runs.undoes(&held_at, d, k, &next, &out.dropping, &out.kept);
+                if let Some(by) = lost.into_iter().chain(undone).min_by(|a, b| strength(a, b)) {
+                    out.refused.push((d.id.clone(), lost_to(d, by)));
+                    if lost.is_some() {
+                        // The keep saved its note from the drop.
+                        out.saved.insert((row, pitch));
                     }
-                    runs.set(k, next);
-                } else {
-                    runs.stale(k);
+                    continue;
                 }
+                runs.commit(k, next);
                 out.dropping.insert(i, d);
             }
             Proposal::KeepNote { row, pitch, .. } => {
@@ -514,12 +540,7 @@ fn apply_in_order<'d>(
                     out.refused.push((d.id.clone(), Unapplied::NoSuchNote));
                     continue;
                 }
-                let left: Vec<usize> = there
-                    .iter()
-                    .copied()
-                    .filter(|i| !out.dropping.contains_key(i))
-                    .collect();
-                if left.is_empty() {
+                if there.iter().all(|i| out.dropping.contains_key(i)) {
                     let by = there
                         .iter()
                         .map(|i| out.dropping[i])
@@ -529,13 +550,12 @@ fn apply_in_order<'d>(
                     continue;
                 }
                 let k = runs.run_of(row).expect("a note's row is in its run");
-                let next = if runs.has(k, here, &out.dropping, &out.kept) {
-                    None
-                } else {
+                if !runs.has(k, here, &out.dropping, &out.kept) {
                     let mut with = out.kept.clone();
                     with.insert(here, d);
-                    let (next, why) = runs.place_run(k, &out.dropping, None, &with);
-                    if !next.iter().any(|n| (n.row, n.pitch) == here) {
+                    let (line, why) = runs.build(k, &out.dropping, None, &with);
+                    let next = Patch::Line(line);
+                    if !runs.view(k, Some(&next)).has(here) {
                         // Only it can fail: the stronger keeps' notes are placed before its own.
                         let why = why
                             .into_iter()
@@ -544,34 +564,34 @@ fn apply_in_order<'d>(
                         out.refused.push(why);
                         continue;
                     }
-                    if let Some(h) = runs.undoes(held, d, k, &next, &out.dropping, &out.kept) {
+                    if let Some(h) = runs.undoes(&held_at, d, k, &next, &out.dropping, &out.kept) {
                         out.refused.push((d.id.clone(), lost_to(d, h)));
                         continue;
                     }
-                    Some(next)
-                };
-                if let Some(next) = next {
-                    changed.insert(here);
-                    runs.set(k, next);
+                    runs.commit(k, next);
                 }
                 out.kept.insert(here, d);
             }
             _ => unreachable!("only drops and keeps"),
         }
     }
-    // A keep that changed the line saved its note from the rule when the line as it ends up, with only the stronger
-    // keeps, wouldn't have the note: weaker drops may since have made room for it.
-    for here in changed {
+    // A keep saved its note from the rule when the line as it ends up, with only the stronger keeps, wouldn't have the
+    // note. A keep the line met when it applied may be what keeps the note now: weaker drops may since have come.
+    for (&here, &d) in &out.kept {
         let k = runs.run_of(here.0).expect("a note's row is in its run");
-        let d = out.kept[&here];
         let stronger: Kept = out
             .kept
             .iter()
             .filter(|(_, o)| strength(o, d).is_lt())
             .map(|(&at, &o)| (at, o))
             .collect();
-        let line = runs.place_run(k, &out.dropping, None, &stronger).0;
-        if !line.iter().any(|n| (n.row, n.pitch) == here) {
+        let line = runs.build(k, &out.dropping, None, &stronger).0;
+        if !(View {
+            line: &line,
+            delta: None,
+        })
+        .has(all, here)
+        {
             out.saved.insert(here);
         }
     }
@@ -602,42 +622,260 @@ fn about(d: &Decision) -> Option<(u32, Pitch)> {
     }
 }
 
+type Taking<'d> = BTreeMap<usize, &'d Decision>;
+type Kept<'d> = BTreeMap<(u32, Pitch), &'d Decision>;
+
+/// One run's line as steps 1 to 3 leave it: the note each row keeps (by its index, after the ghosts, the too-short
+/// notes and the skyline), and the rows whose note is placed.
+#[derive(Clone, Debug, Default)]
+struct RunLine {
+    heads: BTreeMap<u32, usize>,
+    placed: BTreeSet<u32>,
+}
+
+/// A change to a run's line: the rows whose note changed (`None` when none is left), and the rows whose placing
+/// flipped.
+#[derive(Debug, Default)]
+struct Delta {
+    heads: BTreeMap<u32, Option<usize>>,
+    flips: BTreeSet<u32>,
+}
+
+/// A run's line as a trial would leave it: placed again, or changed by a delta.
+enum Patch {
+    Line(RunLine),
+    Delta(Delta),
+}
+
+/// A run's line, with a delta on it if any.
+#[derive(Clone, Copy)]
+struct View<'r> {
+    line: &'r RunLine,
+    delta: Option<&'r Delta>,
+}
+
+impl View<'_> {
+    fn head(&self, row: u32) -> Option<usize> {
+        match self.delta.and_then(|d| d.heads.get(&row)) {
+            Some(&h) => h,
+            None => self.line.heads.get(&row).copied(),
+        }
+    }
+
+    fn placed(&self, row: u32) -> bool {
+        self.line.placed.contains(&row) != self.delta.is_some_and(|d| d.flips.contains(&row))
+    }
+
+    fn flipped(&self, row: &u32) -> bool {
+        self.delta.is_some_and(|d| d.flips.contains(row))
+    }
+
+    /// Whether a note on `here` is placed.
+    fn has(&self, all: &[Note], here: (u32, Pitch)) -> bool {
+        self.placed(here.0) && self.head(here.0).is_some_and(|h| all[h].pitch == here.1)
+    }
+
+    /// The first placed row after `row`.
+    fn next_placed(&self, row: u32) -> Option<u32> {
+        let stays = self
+            .line
+            .placed
+            .range(row.saturating_add(1)..)
+            .find(|r| !self.flipped(r));
+        let comes = self.delta.and_then(|d| {
+            d.flips
+                .range(row.saturating_add(1)..)
+                .find(|r| !self.line.placed.contains(r))
+        });
+        stays.into_iter().chain(comes).min().copied()
+    }
+
+    /// The first placed row.
+    fn first_placed(&self) -> Option<u32> {
+        let stays = self.line.placed.iter().find(|r| !self.flipped(r));
+        let comes = self
+            .delta
+            .and_then(|d| d.flips.iter().find(|r| !self.line.placed.contains(r)));
+        stays.into_iter().chain(comes).min().copied()
+    }
+
+    /// The last placed row before `row`, or of all with `None`.
+    fn last_placed(&self, before: Option<u32>) -> Option<u32> {
+        let end = before.unwrap_or(u32::MAX);
+        let stays = self
+            .line
+            .placed
+            .range(..end)
+            .rev()
+            .find(|r| !self.flipped(r));
+        let comes = self.delta.and_then(|d| {
+            d.flips
+                .range(..end)
+                .rev()
+                .find(|r| !self.line.placed.contains(r))
+        });
+        stays.into_iter().chain(comes).max().copied()
+    }
+
+    /// The rows with a note within `reach` rows of `row`, other than `row`.
+    fn near(&self, row: u32, reach: u32) -> Vec<u32> {
+        let range = row.saturating_sub(reach)..=row.saturating_add(reach);
+        let mut rows: BTreeSet<u32> = self
+            .line
+            .heads
+            .range(range.clone())
+            .map(|(&r, _)| r)
+            .collect();
+        if let Some(d) = self.delta {
+            for (&r, h) in d.heads.range(range) {
+                match h {
+                    Some(_) => rows.insert(r),
+                    None => rows.remove(&r),
+                };
+            }
+        }
+        rows.remove(&row);
+        rows.into_iter().collect()
+    }
+}
+
+/// Where a row's note comes in step 3's order: kept notes first, the strongest keep's first; then the surer; then
+/// in canonical order.
+#[derive(Clone, Copy, Debug)]
+struct Turn<'d> {
+    keep: Option<&'d Decision>,
+    confidence: f32,
+    index: usize,
+}
+
+impl<'d> Turn<'d> {
+    fn of(all: &[Note], index: usize, keeps: &Kept<'d>) -> Self {
+        let n = &all[index];
+        Turn {
+            keep: keeps.get(&(n.row, n.pitch)).copied(),
+            confidence: n.confidence.get(),
+            index,
+        }
+    }
+}
+
+impl Ord for Turn<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match (self.keep, other.keep) {
+            (Some(a), Some(b)) => strength(a, b),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => other.confidence.total_cmp(&self.confidence),
+        }
+        .then(self.index.cmp(&other.index))
+    }
+}
+
+impl PartialOrd for Turn<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Turn<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+
+impl Eq for Turn<'_> {}
+
+/// Steps 1 and 2 on one row: the note it keeps, of `present` (its notes' indices, in canonical order), with `keeps`
+/// in force; why a keep there can't apply goes to `why`.
+fn head_of_row(
+    all: &[Note],
+    present: &[usize],
+    keeps: &Kept<'_>,
+    row: u32,
+    rules: &MonoRules,
+    why: &mut Vec<(DecisionId, Unapplied)>,
+) -> Option<usize> {
+    let passes = |n: &Note| n.confidence >= rules.ghost_below && n.length >= rules.min_rows;
+    let mut valid: Vec<(Pitch, &Decision)> = Vec::new();
+    let mut rescue: BTreeSet<Pitch> = BTreeSet::new();
+    for (&(_, pitch), &d) in keeps.range((row, Pitch::MIN)..=(row, Pitch::MAX)) {
+        let mut there = present
+            .iter()
+            .map(|&i| &all[i])
+            .filter(|n| n.pitch == pitch);
+        let Some(first) = there.clone().next() else {
+            continue;
+        };
+        if !there.any(passes) {
+            if first.length < rules.min_rows && d.rank() < Rank::Person {
+                why.push((d.id.clone(), Unapplied::OutOfRange));
+                continue;
+            }
+            rescue.insert(pitch);
+        }
+        valid.push((pitch, d));
+    }
+    let passed: Vec<usize> = present
+        .iter()
+        .copied()
+        .filter(|&i| passes(&all[i]) || rescue.contains(&all[i].pitch))
+        .collect();
+    let keep_of = |p: Pitch| valid.iter().find(|(q, _)| *q == p).map(|(_, d)| *d);
+    let pick = passed
+        .iter()
+        .filter_map(|&i| keep_of(all[i].pitch).map(|d| (i, d)))
+        .min_by(|a, b| strength(a.1, b.1));
+    match pick {
+        Some((i, winner)) => {
+            for &(p, d) in &valid {
+                if p != all[i].pitch && passed.iter().any(|&j| all[j].pitch == p) {
+                    why.push((d.id.clone(), lost_to(d, winner)));
+                }
+            }
+            Some(i)
+        }
+        None => passed.first().copied(),
+    }
+}
+
 /// The line as the decisions applied so far leave it, run by run. Notes closer than `min_rows` only ever meet within
-/// a run (notes each less than `min_rows` rows after the one before), so each run is placed on its own, and again
-/// only once a decision changes it.
+/// a run (notes each less than `min_rows` rows after the one before), so each run is placed on its own. A keep's
+/// trial places its run again; a drop's follows on from the row its note leaves, note by note, only as far as that
+/// changes which notes are placed.
 struct Runs<'a, 'p> {
     all: &'a [Note],
     /// Each run's first and last rows, and the indices of its notes.
     bounds: Vec<(u32, u32, std::ops::Range<usize>)>,
-    /// Each run's notes on the line, in row order, untrimmed; `None` until placed, or once a decision changes it.
-    placed: Vec<Option<Vec<Note>>>,
+    /// Each run's line, once placed.
+    lines: Vec<Option<RunLine>>,
     rules: &'a MonoRules,
     at: &'a Placement<'p>,
+    /// One run of every note, placed again in full by the rule's own steps for every trial: the reference the
+    /// windowed runs must agree with.
+    whole: bool,
 }
 
-type Taking<'d> = BTreeMap<usize, &'d Decision>;
-type Kept<'d> = BTreeMap<(u32, Pitch), &'d Decision>;
-
 impl<'a, 'p> Runs<'a, 'p> {
-    fn new(all: &'a [Note], rules: &'a MonoRules, at: &'a Placement<'p>) -> Self {
+    fn new(all: &'a [Note], rules: &'a MonoRules, at: &'a Placement<'p>, whole: bool) -> Self {
         let min = rules.min_rows.get();
         let mut bounds: Vec<(u32, u32, std::ops::Range<usize>)> = Vec::new();
         for (i, n) in all.iter().enumerate() {
             match bounds.last_mut() {
-                Some((_, last, range)) if n.row - *last < min => {
+                Some((_, last, range)) if whole || n.row - *last < min => {
                     *last = n.row;
                     range.end = i + 1;
                 }
                 _ => bounds.push((n.row, n.row, i..i + 1)),
             }
         }
-        let placed = vec![None; bounds.len()];
+        let lines = vec![None; bounds.len()];
         Runs {
             all,
             bounds,
-            placed,
+            lines,
             rules,
             at,
+            whole,
         }
     }
 
@@ -648,159 +886,348 @@ impl<'a, 'p> Runs<'a, 'p> {
     }
 
     /// Run `k` placed with the notes `taking` (and the note at `also`, if any) leaves and its keeps of `keeps`, and why
-    /// any of those keeps can't apply.
-    fn place_run(
+    /// any of those keeps can't apply. A keep with no note left, which a trial may leave, keeps nothing.
+    fn build(
         &self,
         k: usize,
         taking: &Taking,
         also: Option<usize>,
         keeps: &Kept<'_>,
-    ) -> (Vec<Note>, Vec<(DecisionId, Unapplied)>) {
+    ) -> (RunLine, Vec<(DecisionId, Unapplied)>) {
         let (start, end, range) = &self.bounds[k];
-        let notes: Vec<Note> = range
+        let present: Vec<usize> = range
             .clone()
             .filter(|&i| Some(i) != also && !taking.contains_key(&i))
-            .map(|i| self.all[i].clone())
             .collect();
-        // A keep with no note left, which a trial may leave, keeps nothing.
-        let mut keeps: BTreeMap<(u32, Pitch), &Decision> = keeps
+        let keeps: Kept = keeps
             .range((*start, Pitch::MIN)..=(*end, Pitch::MAX))
-            .filter(|&(&(row, pitch), _)| notes.iter().any(|n| (n.row, n.pitch) == (row, pitch)))
+            .filter(|&(&(row, pitch), _)| {
+                present
+                    .iter()
+                    .any(|&i| (self.all[i].row, self.all[i].pitch) == (row, pitch))
+            })
             .map(|(&at, &d)| (at, d))
             .collect();
-        let mut scratch = Log::new(self.at, MONOPHONISE, "mono");
         let mut why = Vec::new();
-        let line = place(notes, &mut keeps, self.rules, &mut scratch, &mut why, None);
+        let mut line = RunLine::default();
+        if self.whole {
+            // The rule's own steps.
+            let notes = present.iter().map(|&i| self.all[i].clone()).collect();
+            let mut keeps = keeps;
+            let mut scratch = Log::new(self.at, MONOPHONISE, "mono");
+            for n in place(notes, &mut keeps, self.rules, &mut scratch, &mut why, None) {
+                let i = on_row(self.all, n.row)
+                    .find(|&i| self.all[i] == n)
+                    .expect("a placed note is one of them");
+                line.heads.insert(n.row, i);
+                line.placed.insert(n.row);
+            }
+            return (line, why);
+        }
+        // Steps 1 and 2, row by row.
+        let mut from = 0;
+        while from < present.len() {
+            let row = self.all[present[from]].row;
+            let to = from + present[from..].partition_point(|&i| self.all[i].row == row);
+            if let Some(h) = head_of_row(
+                self.all,
+                &present[from..to],
+                &keeps,
+                row,
+                self.rules,
+                &mut why,
+            ) {
+                line.heads.insert(row, h);
+            }
+            from = to;
+        }
+        // Step 3: in order, a note is placed unless it is too close to one placed before it.
+        let min = self.rules.min_rows.get();
+        let mut order: Vec<(Turn, u32)> = line
+            .heads
+            .iter()
+            .map(|(&row, &h)| (Turn::of(self.all, h, &keeps), row))
+            .collect();
+        order.sort();
+        for (rank, row) in order {
+            let before = line
+                .placed
+                .range(..row)
+                .next_back()
+                .filter(|&&r| row - r < min);
+            let after = line
+                .placed
+                .range(row.saturating_add(1)..)
+                .next()
+                .filter(|&&r| r - row < min);
+            if before.is_none() && after.is_none() {
+                line.placed.insert(row);
+            } else if let Some(d) = rank.keep {
+                let by = before
+                    .into_iter()
+                    .chain(after)
+                    .filter_map(|r| {
+                        let h = self.all[line.heads[r]].pitch;
+                        keeps.get(&(*r, h)).copied()
+                    })
+                    .min_by(|a, b| strength(a, b))
+                    .expect("only kept notes are placed before a kept one");
+                why.push((d.id.clone(), lost_to(d, by)));
+            }
+        }
         (line, why)
     }
 
     fn fresh(&mut self, k: usize, taking: &Taking, keeps: &Kept<'_>) {
-        if self.placed[k].is_none() {
-            self.placed[k] = Some(self.place_run(k, taking, None, keeps).0);
+        if self.lines[k].is_none() {
+            self.lines[k] = Some(self.build(k, taking, None, keeps).0);
         }
     }
 
-    fn set(&mut self, k: usize, line: Vec<Note>) {
-        self.placed[k] = Some(line);
+    /// Run `k` as it is, or as `patch` would leave it.
+    fn view<'s>(&'s self, k: usize, patch: Option<&'s Patch>) -> RunView<'s> {
+        let view = match patch {
+            Some(Patch::Line(line)) => View { line, delta: None },
+            Some(Patch::Delta(delta)) => View {
+                line: self.lines[k].as_ref().expect("fresh"),
+                delta: Some(delta),
+            },
+            None => View {
+                line: self.lines[k].as_ref().expect("fresh"),
+                delta: None,
+            },
+        };
+        RunView {
+            all: self.all,
+            view,
+        }
     }
 
-    fn stale(&mut self, k: usize) {
-        self.placed[k] = None;
+    fn commit(&mut self, k: usize, patch: Patch) {
+        match patch {
+            Patch::Line(line) => self.lines[k] = Some(line),
+            Patch::Delta(delta) => {
+                let line = self.lines[k].as_mut().expect("fresh");
+                for (row, h) in delta.heads {
+                    match h {
+                        Some(h) => line.heads.insert(row, h),
+                        None => line.heads.remove(&row),
+                    };
+                }
+                for row in delta.flips {
+                    if !line.placed.remove(&row) {
+                        line.placed.insert(row);
+                    }
+                }
+            }
+        }
     }
 
     /// Whether the line has a note on `here`, in run `k`.
     fn has(&mut self, k: usize, here: (u32, Pitch), taking: &Taking, keeps: &Kept<'_>) -> bool {
         self.fresh(k, taking, keeps);
-        self.placed[k]
-            .as_ref()
-            .expect("fresh")
-            .iter()
-            .any(|n| (n.row, n.pitch) == here)
+        self.view(k, None).has(here)
+    }
+
+    /// Run `k` without the note at `i`. Taking a note out changes at most the note its row keeps; from there, a note
+    /// whose placing changes can change those it is too close to that come after it in step 3's order, and only
+    /// those are placed again, in that order.
+    fn without(&mut self, k: usize, i: usize, taking: &Taking, keeps: &Kept<'_>) -> Patch {
+        if self.whole {
+            return Patch::Line(self.build(k, taking, Some(i), keeps).0);
+        }
+        self.fresh(k, taking, keeps);
+        let all = self.all;
+        let line = self.lines[k].as_ref().expect("fresh");
+        let row = all[i].row;
+        let present: Vec<usize> = on_row(all, row)
+            .filter(|&j| j != i && !taking.contains_key(&j))
+            .collect();
+        let new = head_of_row(all, &present, keeps, row, self.rules, &mut Vec::new());
+        let mut delta = Delta::default();
+        if new == line.heads.get(&row).copied() {
+            return Patch::Delta(delta);
+        }
+        delta.heads.insert(row, new);
+        let reach = self.rules.min_rows.get() - 1;
+        let rank = |delta: &Delta, q: u32| {
+            View {
+                line,
+                delta: Some(delta),
+            }
+            .head(q)
+            .map(|h| Turn::of(all, h, keeps))
+        };
+        let mut queue: BTreeSet<(Turn, u32)> = BTreeSet::new();
+        if new.is_none() && line.placed.contains(&row) {
+            delta.flips.insert(row);
+        }
+        let mut first = vec![row];
+        first.extend(
+            View {
+                line,
+                delta: Some(&delta),
+            }
+            .near(row, reach),
+        );
+        for q in first {
+            if let Some(r) = rank(&delta, q) {
+                queue.insert((r, q));
+            }
+        }
+        while let Some((r, q)) = queue.pop_first() {
+            let view = View {
+                line,
+                delta: Some(&delta),
+            };
+            let near = view.near(q, reach);
+            let free = !near
+                .iter()
+                .any(|&p| view.placed(p) && rank(&delta, p).is_some_and(|rp| rp < r));
+            if free != view.placed(q) {
+                if !delta.flips.remove(&q) {
+                    delta.flips.insert(q);
+                }
+                for p in near {
+                    if let Some(rp) = rank(&delta, p).filter(|rp| *rp > r) {
+                        queue.insert((rp, p));
+                    }
+                }
+            }
+        }
+        Patch::Delta(delta)
     }
 
     /// The last note on the line before run `k`, by row and pitch.
     fn last_before(&mut self, k: usize, taking: &Taking, keeps: &Kept<'_>) -> Option<(u32, Pitch)> {
         for j in (0..k).rev() {
             self.fresh(j, taking, keeps);
-            if let Some(n) = self.placed[j].as_ref().expect("fresh").last() {
-                return Some((n.row, n.pitch));
+            let view = self.view(j, None).view;
+            if let Some(row) = view.last_placed(None) {
+                let h = view.head(row).expect("a placed row has its note");
+                return Some((row, self.all[h].pitch));
             }
         }
         None
     }
 
     /// How long the note on `row` and `pitch` sounds on the line, once the rule ends it where the next starts, with run
-    /// `k` placed as `patch` if given; `None` when it isn't there.
+    /// `k` as `patch` would leave it, if given; `None` when it isn't there.
     fn sound(
         &mut self,
         row: u32,
         pitch: Pitch,
-        patch: Option<(usize, &[Note])>,
+        patch: Option<(usize, &Patch)>,
         taking: &Taking,
         keeps: &Kept<'_>,
     ) -> Option<NonZeroU32> {
         let k = self.run_of(row)?;
-        let is_patch = |j: usize| patch.is_some_and(|(p, _)| p == j);
-        if !is_patch(k) {
-            self.fresh(k, taking, keeps);
-        }
-        let line_of = |runs: &Self, j: usize| -> Vec<(u32, Pitch, NonZeroU32)> {
-            let line = match patch {
-                Some((p, line)) if p == j => line,
-                _ => runs.placed[j].as_deref().expect("fresh"),
-            };
-            line.iter().map(|n| (n.row, n.pitch, n.length)).collect()
+        self.fresh(k, taking, keeps);
+        let of = |j: usize| patch.filter(|(p, _)| *p == j).map(|(_, patch)| patch);
+        let (length, next) = {
+            let view = self.view(k, of(k)).view;
+            let h = view.head(row)?;
+            if !view.placed(row) || self.all[h].pitch != pitch {
+                return None;
+            }
+            (self.all[h].length, view.next_placed(row))
         };
-        let line = line_of(self, k);
-        let i = line.iter().position(|&(r, p, _)| (r, p) == (row, pitch))?;
-        let length = line[i].2;
-        let next = match line.get(i + 1) {
-            Some(&(r, _, _)) => Some(r),
-            None => (k + 1..self.bounds.len()).find_map(|j| {
-                if !is_patch(j) {
-                    self.fresh(j, taking, keeps);
-                }
-                line_of(self, j).first().map(|&(r, _, _)| r)
-            }),
-        };
+        let next = next.or_else(|| {
+            (k + 1..self.bounds.len()).find_map(|j| {
+                self.fresh(j, taking, keeps);
+                self.view(j, of(j)).view.first_placed()
+            })
+        });
         let end = next.map_or(length.get(), |r| length.get().min(r - row));
         Some(NonZeroU32::new(end).expect("rows are distinct and in order"))
     }
 
-    /// Whether placing run `k` again could matter to a trim or fresh start of `held` stronger than `d`: one about a
-    /// note of the run, or about the note before it, which the run's first note ends.
-    fn noticed(
-        &mut self,
-        held: &[&Decision],
-        d: &Decision,
-        k: usize,
-        taking: &Taking,
-        keeps: &Kept<'_>,
-    ) -> bool {
-        let mut stronger = held
-            .iter()
-            .take_while(|h| strength(h, d).is_lt())
-            .peekable();
-        if stronger.peek().is_none() {
-            return false;
-        }
-        let prev = self.last_before(k, taking, keeps);
-        stronger.any(|h| {
-            about(h).is_some_and(|(r, p)| self.run_of(r) == Some(k) || prev == Some((r, p)))
-        })
-    }
-
-    /// The strongest trim or fresh start of `held` stronger than `d` that run `k` placed as `next` would make
+    /// The strongest trim or fresh start of `held_at` stronger than `d` that run `k` as `patch` would leave it makes
     /// unapplied: one whose note it takes off the line (even one that then can't apply), or a trim that fits whose
-    /// note it ends before the trim's length.
+    /// note it ends before the trim's length. Only notes the patch can touch are looked at: those on a row it changes
+    /// and the placed notes before them, which a change ends; for a run placed again, all its notes and the note
+    /// before it.
     fn undoes<'d>(
         &mut self,
-        held: &[&'d Decision],
+        held_at: &BTreeMap<(u32, Pitch), Vec<&'d Decision>>,
         d: &Decision,
         k: usize,
-        next: &[Note],
+        patch: &Patch,
         taking: &Taking,
         keeps: &Kept<'_>,
     ) -> Option<&'d Decision> {
-        let prev = self.last_before(k, taking, keeps);
-        for &h in held.iter().take_while(|h| strength(h, d).is_lt()) {
-            let Some((row, pitch)) = about(h) else {
-                continue;
-            };
-            if self.run_of(row) != Some(k) && prev != Some((row, pitch)) {
-                continue;
+        let mut rows: BTreeSet<u32> = BTreeSet::new();
+        let mut before_run = false;
+        match patch {
+            Patch::Line(_) => {
+                let (start, end, _) = self.bounds[k];
+                rows.extend(
+                    held_at
+                        .range((start, Pitch::MIN)..=(end, Pitch::MAX))
+                        .map(|(&(r, _), _)| r),
+                );
+                before_run = true;
             }
-            let before = self.sound(row, pitch, None, taking, keeps);
-            let after = self.sound(row, pitch, Some((k, next)), taking, keeps);
-            let fits = |l: Option<NonZeroU32>| match h.proposal {
-                Proposal::TrimNote { length, .. } => l.is_some_and(|l| length <= l),
-                _ => l.is_some(),
-            };
-            if (before.is_some() && after.is_none()) || (fits(before) && !fits(after)) {
-                return Some(h);
+            Patch::Delta(delta) => {
+                let changed: BTreeSet<u32> =
+                    delta.heads.keys().chain(&delta.flips).copied().collect();
+                for &f in &changed {
+                    rows.insert(f);
+                    for view in [self.view(k, None).view, self.view(k, Some(patch)).view] {
+                        match view.last_placed(Some(f)) {
+                            Some(p) => {
+                                rows.insert(p);
+                            }
+                            None => before_run = true,
+                        }
+                    }
+                }
             }
         }
-        None
+        let mut notes: Vec<(u32, Pitch)> = Vec::new();
+        for r in rows {
+            notes.extend(
+                held_at
+                    .range((r, Pitch::MIN)..=(r, Pitch::MAX))
+                    .map(|(&at, _)| at),
+            );
+        }
+        if before_run && let Some(prev) = self.last_before(k, taking, keeps) {
+            notes.push(prev);
+        }
+        let mut undone: Option<&'d Decision> = None;
+        for (row, pitch) in notes {
+            let Some(hs) = held_at.get(&(row, pitch)) else {
+                continue;
+            };
+            let before = self.sound(row, pitch, None, taking, keeps);
+            let after = self.sound(row, pitch, Some((k, patch)), taking, keeps);
+            for &h in hs.iter().take_while(|h| strength(h, d).is_lt()) {
+                let fits = |l: Option<NonZeroU32>| match h.proposal {
+                    Proposal::TrimNote { length, .. } => l.is_some_and(|l| length <= l),
+                    _ => l.is_some(),
+                };
+                if (before.is_some() && after.is_none()) || (fits(before) && !fits(after)) {
+                    if undone.is_none_or(|u| strength(h, u).is_lt()) {
+                        undone = Some(h);
+                    }
+                    break;
+                }
+            }
+        }
+        undone
+    }
+}
+
+/// A run's view with the notes it indexes.
+struct RunView<'s> {
+    all: &'s [Note],
+    view: View<'s>,
+}
+
+impl RunView<'_> {
+    fn has(&self, here: (u32, Pitch)) -> bool {
+        self.view.has(self.all, here)
     }
 }
 
