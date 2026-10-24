@@ -9,6 +9,7 @@
 //! own it on a background thread and talk to it through a channel; nothing calls it on a UI thread.
 
 mod commands;
+mod gc;
 mod helper;
 mod index;
 mod validate;
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use commands::{HelperInfo, HelperInfoOutput, NoArgs, Version, VersionOutput};
+pub use gc::{GcArgs, GcCommand, GcOutput, GcRemoved};
 pub use helper::HelperConfig;
 pub use index::{IndexArgs, IndexCommand, IndexOutput};
 pub use validate::{ContextFile, Validate, ValidateArgs, ValidateOutput};
@@ -213,6 +215,7 @@ pub static REGISTRY: &[Entry] = &[
     entry::<HelperInfo>(),
     entry::<Validate>(),
     entry::<IndexCommand>(),
+    entry::<GcCommand>(),
 ];
 
 /// The registry entry called `name`.

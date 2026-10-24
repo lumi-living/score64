@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use score64_engine::{
-    Command, CommandError, Engine, EngineConfig, IndexArgs, IndexCommand, NoArgs, REGISTRY,
-    Validate, ValidateArgs, ValidateOutput, Version,
+    Command, CommandError, Engine, EngineConfig, GcArgs, GcCommand, IndexArgs, IndexCommand,
+    NoArgs, REGISTRY, Validate, ValidateArgs, ValidateOutput, Version,
 };
 use serde_json::{Value, json};
 
@@ -58,6 +58,22 @@ enum Cmd {
         /// Rebuild from the files even if the index is current.
         #[arg(long)]
         rebuild: bool,
+        /// Print JSON instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Clear the stage cache down to a size cap, keeping what recorded versions use. Removes broken entries and old
+    /// leftovers too.
+    Gc {
+        /// The project folder (holding `score64.toml`).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// The most bytes the cache may hold once unrooted entries are removed (default 4 GiB).
+        #[arg(long)]
+        cap_bytes: Option<u64>,
+        /// Report what would go, and remove nothing.
+        #[arg(long)]
+        dry_run: bool,
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
@@ -141,6 +157,49 @@ fn main() -> ExitCode {
                     "{}: {} tracks, {} recorded runs, {} cache entries ({} artifacts, {} bytes)",
                     out.path, out.tracks, out.versions, out.entries, out.artifacts, out.bytes
                 );
+                ExitCode::SUCCESS
+            }
+            Err(e) => fail(&e),
+        },
+        Cmd::Gc {
+            project,
+            cap_bytes,
+            dry_run,
+            json,
+        } => match engine.run::<GcCommand>(GcArgs {
+            project,
+            cap_bytes,
+            dry_run,
+        }) {
+            Ok(out) if json => print_json(&serde_json::to_value(out).expect("serialisable")),
+            Ok(out) => {
+                let verb = if out.dry_run {
+                    "would remove"
+                } else {
+                    "removed"
+                };
+                for r in &out.removed {
+                    println!(
+                        "{verb} {}/{} ({}, {} bytes)",
+                        r.stage, r.name, r.why, r.bytes
+                    );
+                }
+                let gone: u64 = out.removed.iter().map(|r| r.bytes).sum();
+                println!(
+                    "{verb} {} ({gone} bytes); kept {} used by recorded versions ({} bytes) and {} others ({} bytes) under a {}-byte cap",
+                    out.removed.len(),
+                    out.rooted,
+                    out.rooted_bytes,
+                    out.unrooted_kept,
+                    out.unrooted_kept_bytes,
+                    out.cap_bytes
+                );
+                if out.roots_over_cap > 0 {
+                    println!(
+                        "the entries recorded versions use are {} bytes over the cap; they stay",
+                        out.roots_over_cap
+                    );
+                }
                 ExitCode::SUCCESS
             }
             Err(e) => fail(&e),

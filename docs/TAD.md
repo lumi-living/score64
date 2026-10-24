@@ -321,6 +321,12 @@ A decision never changes the song by itself. An engine command (`writes_project`
 - **Reading.** `get` checks the manifest and every artifact's hash. A missing, partial or damaged entry is a miss, never a wrong hit.
 - **Names.** Stage and artifact names are plain names, so nothing writes outside the cache. They are also safe on every system: no leading or trailing dot, no Windows device names, and no two artifacts whose names differ only by case.
 
+**Garbage collection** (`score64_project::Gc`, #29; engine command `gc`, `score64 gc [--project <dir>] [--cap-bytes <n>] [--dry-run]`, destructive).
+- **Roots** are the cache entries something in the files refers to (`gc::Roots`): every recorded run's `[[uses]]` on every track (`RecordedVersions`), all of each history and not only the latest version. Approvals (E10) add their own source the same way. Roots are all read before anything is removed; if one source fails, nothing is.
+- **The cap.** Whole entries no root names are removed oldest-first by `created` until the cache's whole entries fit the cap (4 GiB by default). A root is never removed: when the roots alone are over the cap, the report says by how much.
+- **Broken and left over.** A directory under a stage that isn't a whole entry of this layout is removed, since it can never be a hit. One from a newer Score64 is left alone, and `put` now checks for one before writing its copy. `.tmp-*` directories older than ten minutes, from a crashed or racing writer, are removed; younger ones may be a write in progress.
+- **Removal.** Each removal renames the directory aside (`.tmp-gc-*`) before deleting it, so nothing is ever half there under its key. A dry run reports and removes nothing. After a real run that removed something, an existing index is rebuilt.
+
 **The index** (`score64_project::Index`, #28) is an SQLite database at `.score64/index.db`, compiled in (`rusqlite` with bundled SQLite, so no system library is needed).
 - **Contents.** It holds tracks, each track's recorded runs in order, the cache entries each run's version uses, and every whole cache entry with its artifacts. Everything in it is read from files: `track.toml`, `tracks/<id>/history/` and the manifests. Nothing writes to it except a rebuild.
 - **Rebuilding.** `Index::rebuild` makes it again from the files into a temporary database beside it, then renames that over the old one. A file that can't be read fails the rebuild, naming the file, and leaves the old index as it was.

@@ -255,6 +255,11 @@ impl Cache {
         if let Some(entry) = self.get(stage, key) {
             return Ok(entry);
         }
+        // One from a newer Score64 stays, so don't write a copy only to throw it away (#29).
+        let dir = self.entry_dir(stage, key);
+        if newer_layout(&dir) {
+            return Err(Error::Newer(dir));
+        }
         let stage_dir = self.root.join(stage);
         let io = |path: &Path| {
             let path = path.to_path_buf();
@@ -305,12 +310,8 @@ impl Cache {
             && std::fs::symlink_metadata(&dir).is_ok()
         {
             // Something that isn't a whole entry is in the way. One from a newer Score64 is left alone.
-            let newer = std::fs::read(dir.join(MANIFEST))
-                .ok()
-                .and_then(|t| serde_json::from_slice::<Value>(&t).ok())
-                .and_then(|v| v.get("schema").and_then(Value::as_u64))
-                .is_some_and(|v| v > u64::from(MANIFEST_SCHEMA));
-            if newer {
+            // It may have appeared since the check above.
+            if newer_layout(&dir) {
                 let _ = std::fs::remove_dir_all(&tmp);
                 return Err(Error::Newer(dir));
             }
@@ -402,6 +403,16 @@ fn sorted_names(dir: &Path) -> Result<Vec<String>, Error> {
     }
     names.sort();
     Ok(names)
+}
+
+/// Whether the entry in `dir` says it is of a newer layout than this build's: it is left alone, never replaced or
+/// collected.
+pub(crate) fn newer_layout(dir: &Path) -> bool {
+    std::fs::read(dir.join(MANIFEST))
+        .ok()
+        .and_then(|t| serde_json::from_slice::<Value>(&t).ok())
+        .and_then(|v| v.get("schema").and_then(Value::as_u64))
+        .is_some_and(|v| v > u64::from(MANIFEST_SCHEMA))
 }
 
 /// The manifest of the entry in `dir`, if it is whole: it reads, is this layout, names `stage` and `key`, and every
