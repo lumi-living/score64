@@ -375,3 +375,20 @@ fn the_driver_plays_the_tune_and_fires_the_effect() {
     );
     assert_eq!(together, effect_alone + play_alone);
 }
+
+#[test]
+fn the_pack_report_names_the_goattracker_player_and_its_terms() {
+    let p = EmbeddedPlayer::goattracker2("2.73");
+    assert_eq!(p.name, "GoatTracker 2 playroutine");
+    assert_eq!(p.assembled_by, "gt2reloc 2.73");
+    assert_eq!(p.licence, "LicenseRef-goattracker2-playroutine");
+    assert!(
+        p.terms.contains("outside the GPL") && p.terms.contains("no distribution obligation"),
+        "{}",
+        p.terms
+    );
+    assert!(p.evidence.contains("src/player.s"), "{}", p.evidence);
+    // It is part of the report's JSON, so every front-end shows it.
+    let json = serde_json::to_value(&p).unwrap();
+    assert_eq!(json["licence"], "LicenseRef-goattracker2-playroutine");
+}

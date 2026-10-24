@@ -191,6 +191,40 @@ impl GateReport {
     }
 }
 
+/// The player routine a packed file embeds, and the terms it is under (ADR-016). Every pack report names it, so
+/// whoever ships the file knows what code is in it and what, if anything, distributing it carries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct EmbeddedPlayer {
+    /// What it is: `GoatTracker 2 playroutine`.
+    pub name: String,
+    /// The gt2reloc version that assembled it into the file.
+    pub assembled_by: String,
+    /// Its licence, in a source's form (ADR-016): `LicenseRef-goattracker2-playroutine`.
+    pub licence: String,
+    /// The terms, in a sentence a report can show as it is.
+    pub terms: String,
+    /// Where the terms are stated.
+    pub evidence: String,
+}
+
+impl EmbeddedPlayer {
+    /// The GoatTracker 2 playroutine that gt2reloc `version` assembles into every pack. Its source states that it
+    /// doesn't fall under the GPL that covers the rest of GoatTracker, and allows any use, commercial or not, of the
+    /// routine and of tunes built with it, so it carries no distribution obligation. Debian's copyright file for
+    /// GoatTracker doesn't record that exception (ADR-016).
+    pub fn goattracker2(version: &str) -> Self {
+        EmbeddedPlayer {
+            name: "GoatTracker 2 playroutine".into(),
+            assembled_by: format!("gt2reloc {version}"),
+            licence: "LicenseRef-goattracker2-playroutine".into(),
+            terms: "outside the GPL by its source's own notice: free for any use, commercial or not, with no \
+                    distribution obligation"
+                .into(),
+            evidence: "GoatTracker 2.77 src/player.s, lines 4-6 (also src/altplayer.s); see ADR-016".into(),
+        }
+    }
+}
+
 /// A packed tune and what the gate found.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PackReport {
@@ -204,6 +238,8 @@ pub struct PackReport {
     pub packer_version: String,
     /// The blake3 of the gt2reloc program that packed it.
     pub packer_blake3: String,
+    /// The player routine the file embeds, and its terms.
+    pub player: EmbeddedPlayer,
     /// The gate's facts and problems.
     #[serde(flatten)]
     pub gate: GateReport,
@@ -242,6 +278,7 @@ pub fn pack_and_gate(
         path: packed.path,
         start: packed.start,
         size: packed.size,
+        player: EmbeddedPlayer::goattracker2(&packed.version),
         packer_version: packed.version,
         packer_blake3: packed.program_blake3,
         gate,

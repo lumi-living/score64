@@ -96,6 +96,14 @@ The memory a target gives the tune (`[pack] window`, ADR-014) is RAM the player 
 - **Not the CPU's vectors, `$FFFA`–`$FFFF`** (NMI, reset, IRQ/BRK). With KERNAL banked out, the game's interrupt handler is reached through `$FFFE/$FFFF` (Integration rules, below), so the tune can't own them. A window reaching them is refused.
 - **BASIC and KERNAL ROM aren't checked.** Under the default banking, `$A000`–`$BFFF` and `$E000`–`$FFFF` read as ROM. Whether a tune there can be read depends on the target's banking (most games bank the ROMs out), which Score64 doesn't model, so a window over them is accepted.
 
+## The player's licence
+
+The packed player is GoatTracker 2's playroutine (`src/player.s`; `src/altplayer.s` for the alternative player), which gt2reloc assembles into every pack.
+- **Its terms:** GoatTracker 2 is GPL-2.0-or-later, but the playroutine's source states that it doesn't fall under the GPL. It allows free use of the routine and of tunes built with it, commercial or not. So packed tunes carry no distribution obligation from the player.
+- **Evidence:** GoatTracker 2.77 `src/player.s`, lines 4–6, and the same notice in `src/altplayer.s` and the 2.72 tree. Debian's copyright file for GoatTracker doesn't record this exception.
+- **Where Score64 states it:** every pack report names the player and these terms (`score64_engine::pack::EmbeddedPlayer`). ADR-016 has the quote.
+- **When the gt2reloc pin moves,** check the notice again.
+
 ## Integration rules
 
 - Call play from a raster interrupt that saves and restores A, X and Y and acknowledges `$D019`. With KERNAL banked out (common in games), the interrupt vector is `$FFFE/$FFFF`, not `$0314/$0315`.
