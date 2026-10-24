@@ -2,16 +2,36 @@
 //! the cache is over its size cap, along with what isn't a usable entry at all.
 //!
 //! - **Roots** are the cache entries something in the project's files refers to ([`Roots`]): every recorded run's
-//!   `[[uses]]`, on every track ([`RecordedVersions`]). Approvals (E10) add theirs the same way. A root is never
-//!   removed, even when the roots alone are over the cap; the report says by how much.
-//! - **The cap.** Whole entries no root names are removed oldest-first by `created` until the cache's whole entries
-//!   fit in the cap.
+//!   `[[uses]]`, in every `tracks/*/history/` folder ([`RecordedVersions`]). Approvals and `audio.lock` (E10) add
+//!   theirs the same way. A root is never removed, even when the roots alone are over the cap; the report says by how
+//!   much.
+//! - **The cap** counts the bytes of whole entries' artifacts (what their manifests list), not manifests, leftovers or
+//!   the file system's overhead. Whole entries no root names are removed oldest-first by `created` while the total is
+//!   over the cap. With a cap of 0 every unrooted entry goes, empty ones included.
 //! - **Broken entries:** a directory under a stage that isn't a whole entry of this layout (damaged, half-written, an
-//!   older layout) can never be a hit, so it is removed. One from a newer Score64 is left alone.
-//! - **Leftovers:** `.tmp-*` directories older than [`Gc::tmp_age`] are a crashed or racing writer's, and are
-//!   removed. Younger ones may be a write in progress.
+//!   older layout) can never be a hit, so it is removed once it is older than [`Gc::tmp_age`]. It is checked again
+//!   just before: if a writer has put a whole entry there since it was listed, it stays. One from a newer Score64 is
+//!   left alone.
+//! - **Leftovers:** `.tmp-*` directories older than [`Gc::tmp_age`] are a crashed or racing writer's (or a crashed
+//!   collector's), and are removed. Their age is the time in their name ([`crate::cache`] writes one), else their
+//!   modification time. Younger ones may be a write, or another collection, in progress.
+//! - **Links** are never followed: a stage or entry that is a symbolic link is left alone and not counted, and the
+//!   size of a directory doesn't count what links in it point to.
 //!
-//! A removed entry is first renamed aside, to a `.tmp-gc-*` name, so it is never half there under its key.
+//! **Removal.** An entry under its key is first renamed aside to a fresh, uniquely named `.tmp-gc-*` directory, then
+//! deleted, so it is either whole under its key or gone, never half there. If it can't be moved (a file open in it, on
+//! Windows), it is left as it is and reported in [`Report::in_use`]. Leftovers and broken directories that aren't
+//! named like a key are deleted where they are. An entry that vanished between listing and removal (another
+//! collector) is not reported.
+//!
+//! **Limits.**
+//! - *Concurrency.* A collection may run while other processes `put` entries: an entry put while it runs is not
+//!   removed. It must not run during a pipeline run, though. There is no project lock yet, so roots are read once at
+//!   the start, and an entry a run is making (or has just looked up) but hasn't recorded yet is unrooted and may go.
+//!   The run then makes it again.
+//! - *Scope.* Only the histories in the current checkout are roots. Runs recorded only on other git branches, or in
+//!   another clone, don't count, so their entries can go and are made again when needed. A track folder whose
+//!   `track.toml` was removed still counts while its `history/` folder remains.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -20,19 +40,26 @@ use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 
-use crate::cache::{Cache, check_name, newer_layout};
-use crate::history::CacheRef;
+use score64_core::ContentHash;
+
+use crate::cache::{Cache, check_name, made_at, newer_layout, temp_dir_named, temp_name, whole};
+use crate::history::{CacheRef, History};
 use crate::project::Project;
+
+/// Why a source of roots could not be read: its own error.
+pub type SourceError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Where roots come from: something in the project's files that refers to cache entries.
 pub trait Roots {
-    /// What these roots are, for the report (`"recorded versions"`).
+    /// What these roots are, for the report and errors (`"recorded versions"`).
     fn name(&self) -> &str;
     /// The entries they refer to.
-    fn refs(&self, project: &Project) -> Result<Vec<CacheRef>, Error>;
+    fn refs(&self, project: &Project) -> Result<Vec<CacheRef>, SourceError>;
 }
 
-/// Every cache entry a recorded run on any track uses: all of each track's history, not only its latest version.
+/// Every cache entry a recorded run uses, in every `tracks/*/history/` folder of the checkout: all of each history,
+/// not only its latest version, and also a folder whose `track.toml` is gone. Histories on other git branches are not
+/// seen (see the module's limits).
 pub struct RecordedVersions;
 
 impl Roots for RecordedVersions {
@@ -40,16 +67,21 @@ impl Roots for RecordedVersions {
         "recorded versions"
     }
 
-    fn refs(&self, project: &Project) -> Result<Vec<CacheRef>, Error> {
+    fn refs(&self, project: &Project) -> Result<Vec<CacheRef>, SourceError> {
+        let tracks = project.root().join("tracks");
+        let listing = match std::fs::read_dir(&tracks) {
+            Ok(l) => l,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+            Err(e) => return Err(format!("{}: {e}", tracks.display()).into()),
+        };
         let mut out = Vec::new();
-        for id in project
-            .track_ids()
-            .map_err(|e| Error::Roots(e.to_string()))?
-        {
-            let history = project
-                .history(&id)
-                .map_err(|e| Error::Roots(e.to_string()))?;
-            for (_, entry) in history.entries() {
+        for item in listing {
+            let item = item.map_err(|e| format!("{}: {e}", tracks.display()))?;
+            let dir = item.path().join("history");
+            if !dir.is_dir() {
+                continue;
+            }
+            for (_, entry) in History::read(&dir)?.entries() {
                 out.extend(entry.uses.iter().cloned());
             }
         }
@@ -60,9 +92,10 @@ impl Roots for RecordedVersions {
 /// A collection's settings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Gc {
-    /// The most bytes the cache's whole entries may hold once unrooted ones are removed.
+    /// The most bytes the whole entries' artifacts may hold once unrooted entries are removed. 0 removes every
+    /// unrooted entry.
     pub cap_bytes: u64,
-    /// How old a `.tmp-*` directory must be to count as a leftover.
+    /// How old a `.tmp-*` or broken directory must be before it is removed.
     pub tmp_age: Duration,
     /// Report what would go, and remove nothing.
     pub dry_run: bool,
@@ -79,7 +112,7 @@ impl Default for Gc {
     }
 }
 
-/// One removed (or, in a dry run, removable) cache directory.
+/// One removed (or, in a dry run, removable) cache directory, or one that couldn't be moved.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Removed {
     /// Its stage.
@@ -92,15 +125,29 @@ pub struct Removed {
     pub why: &'static str,
 }
 
+/// How many distinct entries one source of roots names.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RootCount {
+    /// The source ([`Roots::name`]).
+    pub source: String,
+    /// The distinct entries it names, whether the cache holds them or not.
+    pub refs: u64,
+}
+
 /// What a collection did.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Report {
+    /// Each source of roots, in the order given.
+    pub roots: Vec<RootCount>,
     /// Whole entries kept because a root names them, and their bytes.
     pub rooted: (u64, u64),
     /// Whole entries kept without a root, under the cap, and their bytes.
     pub unrooted_kept: (u64, u64),
     /// What was removed (or would be, in a dry run).
     pub removed: Vec<Removed>,
+    /// Entries that should have gone but couldn't be moved aside (a file open in them, or no permission): left whole
+    /// under their keys.
+    pub in_use: Vec<Removed>,
     /// Entries from a newer Score64, left alone.
     pub newer: u64,
     /// Bytes the roots alone hold beyond the cap; 0 when they fit.
@@ -114,173 +161,425 @@ pub struct Report {
 /// Why a collection failed.
 #[derive(Debug)]
 pub enum Error {
-    /// A directory could not be read, renamed or removed.
+    /// A directory could not be read, made, renamed or removed.
     Io {
         /// Where.
         path: PathBuf,
         /// What went wrong.
         error: std::io::Error,
     },
-    /// A source of roots could not be read: the collection stops rather than remove what it might name.
-    Roots(String),
-    /// The cache could not be listed.
-    Cache(crate::cache::Error),
+    /// A source of roots could not be read: the collection stops before removing anything it might name.
+    Roots {
+        /// The source ([`Roots::name`]).
+        source: String,
+        /// Its error.
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io { path, error } => write!(f, "{}: {error}", path.display()),
-            Error::Roots(why) => write!(f, "roots: {why}; nothing removed"),
-            Error::Cache(e) => e.fmt(f),
+            Error::Roots { source, message } => {
+                write!(
+                    f,
+                    "reading the roots from {source}: {message}; nothing removed"
+                )
+            }
         }
     }
 }
 
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Io { error, .. } => Some(error),
+            Error::Roots { .. } => None,
+        }
+    }
+}
+
+/// A collection that stopped on an error, with what it had done by then.
+#[derive(Debug)]
+pub struct Stopped {
+    /// What was done before the error. Empty when it stopped before removing anything.
+    pub report: Report,
+    /// The error.
+    pub error: Error,
+}
+
+impl Stopped {
+    /// Whether anything was removed before it stopped: an index of the cache is then out of date.
+    pub fn changed(&self) -> bool {
+        !self.report.dry_run && !self.report.removed.is_empty()
+    }
+}
+
+impl fmt::Display for Stopped {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for Stopped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.error)
+    }
+}
+
+/// A whole entry, as listed.
+struct Listed {
+    r: CacheRef,
+    created: crate::UtcTime,
+    bytes: u64,
+    dir: PathBuf,
+}
+
+/// Any other directory under a stage, as listed.
+struct Other {
+    stage: String,
+    stage_dir: PathBuf,
+    name: String,
+    dir: PathBuf,
+}
+
+/// What became of a directory GC tried to remove.
+enum Gone {
+    /// Removed (or, in a dry run, would be).
+    Removed,
+    /// Already gone: another collector, or a writer replacing it.
+    Vanished,
+    /// It couldn't be moved aside, so it stays where it is.
+    InUse,
+    /// Moved aside, it turned out whole: a writer had just put it. It went back.
+    Whole,
+    /// Moved off its key, but the copy aside couldn't be deleted: a leftover for a later collection.
+    Aside(Error),
+    /// Nothing could be done: it is as it was.
+    Failed(Error),
+}
 
 impl Gc {
     /// Collect the project's cache, keeping everything `roots` name. Roots are all read first: if any source fails,
-    /// nothing is removed.
-    pub fn collect(&self, project: &Project, roots: &[&dyn Roots]) -> Result<Report, Error> {
-        let mut rooted = BTreeSet::new();
-        for source in roots {
-            rooted.extend(source.refs(project)?);
-        }
-        let root_dir = project.root().join(".score64").join("cache");
-        let cache = Cache::new(&root_dir);
+    /// nothing is removed. An error after something was removed comes with the report so far ([`Stopped`]).
+    pub fn collect(&self, project: &Project, roots: &[&dyn Roots]) -> Result<Report, Box<Stopped>> {
+        self.collect_at(project, roots, SystemTime::now())
+    }
+
+    /// [`Gc::collect`] with `now` as the time the ages of leftovers and broken entries are measured from.
+    fn collect_at(
+        &self,
+        project: &Project,
+        roots: &[&dyn Roots],
+        now: SystemTime,
+    ) -> Result<Report, Box<Stopped>> {
         let mut report = Report {
             dry_run: self.dry_run,
             ..Report::default()
         };
-        let whole = cache.entries().map_err(Error::Cache)?;
+        let mut rooted = BTreeSet::new();
+        for source in roots {
+            let refs: BTreeSet<CacheRef> = match source.refs(project) {
+                Ok(refs) => refs.into_iter().collect(),
+                Err(e) => {
+                    let error = Error::Roots {
+                        source: source.name().to_owned(),
+                        message: e.to_string(),
+                    };
+                    return Err(Box::new(Stopped { report, error }));
+                }
+            };
+            report.roots.push(RootCount {
+                source: source.name().to_owned(),
+                refs: refs.len() as u64,
+            });
+            rooted.extend(refs);
+        }
+        let cache_dir = project.cache_dir();
+        let cache = Cache::new(&cache_dir);
+        let listed = list(&cache, &cache_dir);
+        let result = listed.and_then(|(whole, other)| {
+            self.sweep_unrooted(&cache, &rooted, whole, &mut report)?;
+            self.sweep_others(&cache, other, now, &mut report)
+        });
+        match result {
+            Ok(()) => Ok(report),
+            Err(error) => Err(Box::new(Stopped { report, error })),
+        }
+    }
+
+    /// Keep the roots, and remove unrooted entries oldest-first while the cache is over the cap.
+    fn sweep_unrooted(
+        &self,
+        cache: &Cache,
+        rooted: &BTreeSet<CacheRef>,
+        whole: Vec<Listed>,
+        report: &mut Report,
+    ) -> Result<(), Error> {
         let mut present = BTreeSet::new();
         let mut unrooted = Vec::new();
         let mut kept_bytes = 0u64;
         let mut rooted_bytes = 0u64;
-        for entry in &whole {
-            let m = &entry.manifest;
-            let r = CacheRef {
-                stage: m.stage.clone(),
-                key: m.key,
-            };
-            let bytes: u64 = m.artifacts.iter().map(|a| a.bytes).sum();
-            present.insert(r.clone());
-            if rooted.contains(&r) {
+        for entry in whole {
+            present.insert(entry.r.clone());
+            kept_bytes = kept_bytes.saturating_add(entry.bytes);
+            if rooted.contains(&entry.r) {
                 report.rooted.0 += 1;
-                report.rooted.1 += bytes;
-                rooted_bytes += bytes;
+                report.rooted.1 = report.rooted.1.saturating_add(entry.bytes);
+                rooted_bytes = rooted_bytes.saturating_add(entry.bytes);
             } else {
-                unrooted.push((m.created, r, bytes, entry.dir.clone()));
+                unrooted.push(entry);
             }
-            kept_bytes += bytes;
         }
         report.missing_roots = rooted.difference(&present).count() as u64;
         report.roots_over_cap = rooted_bytes.saturating_sub(self.cap_bytes);
         // Oldest first, then by stage and key, so the same cache always loses the same entries.
-        unrooted.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
-        for (_, r, bytes, dir) in unrooted {
-            if kept_bytes > self.cap_bytes {
-                self.remove(&dir)?;
-                kept_bytes -= bytes;
-                report.removed.push(Removed {
-                    stage: r.stage,
-                    name: r.key.to_string(),
-                    bytes,
-                    why: "unrooted",
-                });
-            } else {
+        unrooted.sort_by(|a, b| (a.created, &a.r).cmp(&(b.created, &b.r)));
+        for entry in unrooted {
+            if kept_bytes <= self.cap_bytes && self.cap_bytes != 0 {
                 report.unrooted_kept.0 += 1;
-                report.unrooted_kept.1 += bytes;
-            }
-        }
-        // Broken entries and leftovers, stage by stage.
-        let whole_dirs: BTreeSet<PathBuf> = whole.iter().map(|e| e.dir.clone()).collect();
-        for stage in names(&root_dir)? {
-            let stage_dir = root_dir.join(&stage);
-            if check_name(&stage).is_err() || !stage_dir.is_dir() {
+                report.unrooted_kept.1 = report.unrooted_kept.1.saturating_add(entry.bytes);
                 continue;
             }
-            for name in names(&stage_dir)? {
-                let dir = stage_dir.join(&name);
-                if whole_dirs.contains(&dir) || !dir.is_dir() {
-                    continue;
+            // Check again: damaged or gone since it was listed, it is no longer a whole entry to count or remove.
+            if cache.get(&entry.r.stage, entry.r.key).is_none() {
+                kept_bytes = kept_bytes.saturating_sub(entry.bytes);
+                continue;
+            }
+            let item = Removed {
+                stage: entry.r.stage.clone(),
+                name: entry.r.key.to_string(),
+                bytes: entry.bytes,
+                why: "unrooted",
+            };
+            let stage_dir = entry.dir.parent().expect("under a stage");
+            match self.remove_keyed(stage_dir, &entry.dir, None) {
+                Gone::Removed => {
+                    kept_bytes = kept_bytes.saturating_sub(entry.bytes);
+                    report.removed.push(item);
                 }
-                let why = if name.starts_with(".tmp-") {
-                    if !older_than(&dir, self.tmp_age) {
-                        continue;
-                    }
-                    "leftover"
-                } else if newer_layout(&dir) {
-                    report.newer += 1;
-                    continue;
-                } else {
-                    "broken"
-                };
-                let bytes = size(&dir);
-                self.remove(&dir)?;
-                report.removed.push(Removed {
-                    stage: stage.clone(),
-                    name,
-                    bytes,
-                    why,
-                });
+                Gone::Vanished | Gone::Whole => kept_bytes = kept_bytes.saturating_sub(entry.bytes),
+                Gone::InUse => report.in_use.push(item),
+                Gone::Aside(error) => {
+                    report.removed.push(item);
+                    return Err(error);
+                }
+                Gone::Failed(error) => return Err(error),
             }
         }
-        Ok(report)
+        Ok(())
     }
 
-    /// Remove `dir`: renamed aside first, so it is never half there under its own name, then deleted. A dry run does
-    /// nothing.
-    fn remove(&self, dir: &Path) -> Result<(), Error> {
-        if self.dry_run {
-            return Ok(());
+    /// Remove old leftovers and old broken directories; count newer entries.
+    fn sweep_others(
+        &self,
+        cache: &Cache,
+        other: Vec<Other>,
+        now: SystemTime,
+        report: &mut Report,
+    ) -> Result<(), Error> {
+        for o in other {
+            let leftover = o.name.starts_with(".tmp-");
+            if leftover {
+                // The time in the name, which a rename aside doesn't change; else when it was last changed.
+                let made = made_at(&o.name).or_else(|| modified(&o.dir));
+                if !older_than(made, now, self.tmp_age) {
+                    continue;
+                }
+            } else if newer_layout(&o.dir) {
+                report.newer += 1;
+                continue;
+            } else if !older_than(modified(&o.dir), now, self.tmp_age) {
+                // Maybe a write in progress, or a copy being made by hand.
+                continue;
+            }
+            let item = Removed {
+                stage: o.stage.clone(),
+                name: o.name.clone(),
+                bytes: size(&o.dir),
+                why: if leftover { "leftover" } else { "broken" },
+            };
+            let key = (!leftover).then(|| key_named(&o.name)).flatten();
+            let gone = match key {
+                Some(key) => {
+                    // A writer may have put a whole entry here since it was listed: whole means keep.
+                    if cache.get(&o.stage, key).is_some() {
+                        continue;
+                    }
+                    self.remove_keyed(&o.stage_dir, &o.dir, Some((&o.stage, key)))
+                }
+                None => self.remove_in_place(&o.dir),
+            };
+            match gone {
+                Gone::Removed => report.removed.push(item),
+                Gone::Vanished | Gone::Whole => {}
+                Gone::InUse => report.in_use.push(item),
+                Gone::Aside(error) => {
+                    report.removed.push(item);
+                    return Err(error);
+                }
+                Gone::Failed(error) => return Err(error),
+            }
         }
-        let parent = dir.parent().expect("under a stage");
-        let aside = parent.join(format!(
-            ".tmp-gc-{}-{}",
-            std::process::id(),
-            dir.file_name().and_then(|n| n.to_str()).unwrap_or("x")
-        ));
-        let target = match std::fs::rename(dir, &aside) {
-            Ok(()) => aside,
-            // Already moved (another collector), or a leftover we can't rename: delete it where it is.
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(_) => dir.to_path_buf(),
+        Ok(())
+    }
+
+    /// Remove `dir`, a directory under its key: renamed aside to a fresh `.tmp-gc-*` directory first, so it is never
+    /// half there under its key, then deleted. If it can't be moved it stays, whole, as it was. With `broken` (its stage
+    /// and key) a copy that turns out whole once moved was just put by a writer, and goes back. A dry run does nothing.
+    fn remove_keyed(
+        &self,
+        stage_dir: &Path,
+        dir: &Path,
+        broken: Option<(&str, ContentHash)>,
+    ) -> Gone {
+        self.remove_keyed_with(stage_dir, dir, broken, |from, to| std::fs::rename(from, to))
+    }
+
+    /// [`Gc::remove_keyed`], moving it aside with `rename`.
+    fn remove_keyed_with(
+        &self,
+        stage_dir: &Path,
+        dir: &Path,
+        broken: Option<(&str, ContentHash)>,
+        rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+    ) -> Gone {
+        if self.dry_run {
+            return Gone::Removed;
+        }
+        // A name no other writer or collector has: made, then freed for the rename (which can't replace a directory
+        // on every system).
+        let aside = match temp_dir_named(stage_dir, || temp_name(".tmp-gc-")) {
+            Ok(aside) => aside,
+            Err(crate::cache::Error::Io { path, error }) => {
+                return Gone::Failed(Error::Io { path, error });
+            }
+            Err(e) => {
+                return Gone::Failed(Error::Io {
+                    path: stage_dir.to_path_buf(),
+                    error: std::io::Error::other(e.to_string()),
+                });
+            }
         };
-        match std::fs::remove_dir_all(&target) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(Error::Io {
-                path: target,
+        let _ = std::fs::remove_dir(&aside);
+        match rename(dir, &aside) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Gone::Vanished,
+            Err(_) => return Gone::InUse,
+        }
+        if let Some((stage, key)) = broken
+            && whole(&aside, stage, key).is_some()
+        {
+            // If another entry has taken its place meanwhile, that one stays and this copy goes.
+            if std::fs::rename(&aside, dir).is_err() {
+                let _ = std::fs::remove_dir_all(&aside);
+            }
+            return Gone::Whole;
+        }
+        match std::fs::remove_dir_all(&aside) {
+            Ok(()) => Gone::Removed,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Gone::Removed,
+            Err(error) => Gone::Aside(Error::Io { path: aside, error }),
+        }
+    }
+
+    /// Delete `dir` where it is: a leftover or a broken directory not under a key. A dry run does nothing.
+    fn remove_in_place(&self, dir: &Path) -> Gone {
+        if self.dry_run {
+            return Gone::Removed;
+        }
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => Gone::Removed,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Gone::Vanished,
+            Err(error) => Gone::Failed(Error::Io {
+                path: dir.to_path_buf(),
                 error,
             }),
         }
     }
 }
 
-/// Whether `dir` was last changed more than `age` ago (a clock in the past, or an unreadable time, counts as young).
-fn older_than(dir: &Path, age: Duration) -> bool {
-    std::fs::metadata(dir)
+/// Every directory under the cache's stages, sorted: the whole entries, and the rest. Stage folders with names a
+/// stage can't have, files, and symbolic links (at the stage or the entry level) are skipped.
+fn list(cache: &Cache, root: &Path) -> Result<(Vec<Listed>, Vec<Other>), Error> {
+    let mut whole = Vec::new();
+    let mut other = Vec::new();
+    for stage in names(root)? {
+        let stage_dir = root.join(&stage);
+        if check_name(&stage).is_err() || !real_dir(&stage_dir) {
+            continue;
+        }
+        for name in names(&stage_dir)? {
+            let dir = stage_dir.join(&name);
+            if !real_dir(&dir) {
+                continue;
+            }
+            if let Some(key) = key_named(&name)
+                && let Some(entry) = cache.get(&stage, key)
+            {
+                let m = &entry.manifest;
+                whole.push(Listed {
+                    r: CacheRef {
+                        stage: stage.clone(),
+                        key,
+                    },
+                    created: m.created,
+                    bytes: m
+                        .artifacts
+                        .iter()
+                        .fold(0u64, |sum, a| sum.saturating_add(a.bytes)),
+                    dir,
+                });
+            } else {
+                other.push(Other {
+                    stage: stage.clone(),
+                    stage_dir: stage_dir.clone(),
+                    name,
+                    dir,
+                });
+            }
+        }
+    }
+    Ok((whole, other))
+}
+
+/// The key a directory named `name` would hold, if it is named like one.
+fn key_named(name: &str) -> Option<ContentHash> {
+    ContentHash::from_hex(name).filter(|k| k.to_string() == name)
+}
+
+/// Whether `path` is a directory itself, not a link to one.
+fn real_dir(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir())
+}
+
+/// When `dir` was last changed, if that can be read.
+fn modified(dir: &Path) -> Option<SystemTime> {
+    std::fs::symlink_metadata(dir)
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| SystemTime::now().duration_since(t).ok())
+}
+
+/// Whether `made` is more than `age` before `now` (a time after `now`, or none, counts as young).
+fn older_than(made: Option<SystemTime>, now: SystemTime, age: Duration) -> bool {
+    made.and_then(|t| now.duration_since(t).ok())
         .is_some_and(|d| d > age)
 }
 
-/// The bytes in the files under `dir`.
+/// The bytes in the files under `dir`, through its folders but never through a link.
 fn size(dir: &Path) -> u64 {
     let Ok(listing) = std::fs::read_dir(dir) else {
         return 0;
     };
-    listing
-        .flatten()
-        .map(|e| match e.file_type() {
+    listing.flatten().fold(0u64, |sum, e| {
+        let bytes = match e.file_type() {
             Ok(t) if t.is_dir() => size(&e.path()),
-            Ok(_) => e.metadata().map_or(0, |m| m.len()),
-            Err(_) => 0,
-        })
-        .sum()
+            Ok(t) if t.is_file() => e.metadata().map_or(0, |m| m.len()),
+            _ => 0,
+        };
+        sum.saturating_add(bytes)
+    })
 }
 
 /// The names in `dir`, sorted; none when it doesn't exist.

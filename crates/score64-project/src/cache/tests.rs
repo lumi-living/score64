@@ -320,6 +320,41 @@ fn an_entry_from_a_newer_score64_is_left_alone() {
 }
 
 #[test]
+fn a_put_over_a_newer_entry_writes_no_copy() {
+    let (c, dir) = cache("newer-nocopy");
+    let made = || TEMP_DIRS_MADE.with(std::cell::Cell::get);
+    let before = made();
+    let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
+    assert_eq!(made(), before + 1, "a put writes one temporary copy");
+    let path = entry.dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace("\"schema\": 2", "\"schema\": 3")).unwrap();
+    let before = made();
+    assert!(matches!(
+        c.put("transcribe", &[("a.bin", b"x")], run()),
+        Err(Error::Newer(_))
+    ));
+    assert_eq!(made(), before, "found before writing anything");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn temporary_directories_are_named_with_when_they_were_made() {
+    let (c, dir) = cache("tmpname");
+    let stage = dir.join("cache").join("transcribe");
+    std::fs::create_dir_all(&stage).unwrap();
+    let tmp = temp_dir(&stage).unwrap();
+    let name = tmp.file_name().unwrap().to_str().unwrap();
+    assert!(name.starts_with(".tmp-t"), "{name}");
+    let made = made_at(name).unwrap();
+    let age = std::time::SystemTime::now().duration_since(made).unwrap();
+    assert!(age < std::time::Duration::from_secs(5), "{name}");
+    assert_ne!(temp_dir(&stage).unwrap(), tmp);
+    drop(c);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn a_taken_temporary_name_is_skipped() {
     let (_, dir) = cache("taken");
     std::fs::create_dir_all(dir.join("taken")).unwrap();

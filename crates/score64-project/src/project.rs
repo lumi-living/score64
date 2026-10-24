@@ -1034,6 +1034,11 @@ impl Project {
         self.root.join("tracks").join(id.as_str())
     }
 
+    /// The project's stage cache folder, `.score64/cache/` (ADR-004): not committed, and rebuildable from the files.
+    pub fn cache_dir(&self) -> PathBuf {
+        self.root.join(".score64").join("cache")
+    }
+
     /// Track `id`'s run history, from `tracks/<id>/history/` (ADR-014 §7): empty when the track has none yet.
     pub fn history(&self, id: &Id) -> Result<crate::History, crate::history::Error> {
         crate::History::read(&self.track_dir(id).join("history"))

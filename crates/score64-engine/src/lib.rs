@@ -106,6 +106,9 @@ pub enum ErrorKind {
     InvalidArgs,
     /// A file the command was given cannot be read or is not valid (missing, unknown fields, a newer schema, …).
     InvalidInput,
+    /// Reading, writing or removing a file failed on a file that is itself fine: no permission, a full disk, a file
+    /// in use.
+    Io,
     /// The emulator helper binary was not found.
     HelperMissing,
     /// The emulator helper crashed, closed its pipe or sent something invalid. The next command starts a new one.

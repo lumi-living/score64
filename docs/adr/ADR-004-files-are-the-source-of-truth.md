@@ -18,4 +18,5 @@ Iteration is the core workflow: change a decision, re-render, compare. Paid tran
 ## Consequences
 - Easier: incremental re-runs; reproducible builds; works without the app.
 - Harder: cache garbage collection needs care (keep approved and locked versions, last N per asset).
+  *Amended 2026-10-24 (#29):* roots are what recorded versions use; approvals and `audio.lock` add theirs; the rest goes oldest-first beyond a size cap. There is no "last N per asset": every recorded version's entries stay.
 - Revisit when: multiple machines need to share a cache.

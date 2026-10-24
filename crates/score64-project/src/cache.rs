@@ -417,7 +417,7 @@ pub(crate) fn newer_layout(dir: &Path) -> bool {
 
 /// The manifest of the entry in `dir`, if it is whole: it reads, is this layout, names `stage` and `key`, and every
 /// artifact's bytes still hash to what it says.
-fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
+pub(crate) fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
     let text = std::fs::read(dir.join(MANIFEST)).ok()?;
     let manifest: Manifest = serde_json::from_slice(&text).ok()?;
     if manifest.schema != MANIFEST_SCHEMA || manifest.stage != stage || manifest.key != key {
@@ -435,27 +435,60 @@ fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
 }
 
 /// A new, empty temporary directory under `stage_dir`, named so no other writer (another process, another container
-/// with the same pid, a crashed run's leftovers) is using it.
+/// with the same pid, a crashed run's leftovers) is using it: [`temp_name`] with the prefix `.tmp-`.
 fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
+    temp_dir_named(stage_dir, || temp_name(".tmp-"))
+}
+
+/// A temporary name: `prefix`, then `t` and the whole seconds since the Unix epoch when it was made, then the pid, a
+/// counter and the clock's nanoseconds, so no two writers share one (`.tmp-t1761300000-4242-0-123456789`). The time in
+/// the name says how old the directory is, which its modification time doesn't: renaming a directory aside keeps that
+/// ([`made_at`]).
+pub(crate) fn temp_name(prefix: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    temp_dir_named(stage_dir, || {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        format!(
-            ".tmp-{}-{}-{nanos}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )
-    })
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{prefix}t{}-{}-{}-{}",
+        since.as_secs(),
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+        since.subsec_nanos()
+    )
+}
+
+/// When a temporary directory named by [`temp_name`] (`.tmp-t<secs>-...` or `.tmp-gc-t<secs>-...`) was made; `None`
+/// for any other name, such as an older build's `.tmp-<pid>-...`.
+pub(crate) fn made_at(name: &str) -> Option<std::time::SystemTime> {
+    let rest = name.strip_prefix(".tmp-")?;
+    let rest = rest.strip_prefix("gc-").unwrap_or(rest);
+    let (secs, tail) = rest.strip_prefix('t')?.split_once('-')?;
+    if secs.is_empty() || !secs.bytes().all(|b| b.is_ascii_digit()) || tail.is_empty() {
+        return None;
+    }
+    std::time::UNIX_EPOCH.checked_add(std::time::Duration::from_secs(secs.parse().ok()?))
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Temporary directories this thread has created, so a test can tell whether `put` wrote a copy.
+    pub(crate) static TEMP_DIRS_MADE: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 /// [`temp_dir`] with its names from `name`: a taken name is skipped for the next, up to 64 tries.
-fn temp_dir_named(stage_dir: &Path, mut name: impl FnMut() -> String) -> Result<PathBuf, Error> {
+pub(crate) fn temp_dir_named(
+    stage_dir: &Path,
+    mut name: impl FnMut() -> String,
+) -> Result<PathBuf, Error> {
     for _ in 0..64 {
         let path = stage_dir.join(name());
         match std::fs::create_dir(&path) {
-            Ok(()) => return Ok(path),
+            Ok(()) => {
+                #[cfg(test)]
+                TEMP_DIRS_MADE.with(|n| n.set(n.get() + 1));
+                return Ok(path);
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(Error::Io { path, error }),
         }

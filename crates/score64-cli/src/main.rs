@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use score64_engine::{
-    Command, CommandError, Engine, EngineConfig, GcArgs, GcCommand, IndexArgs, IndexCommand,
-    NoArgs, REGISTRY, Validate, ValidateArgs, ValidateOutput, Version,
+    Command, CommandError, Engine, EngineConfig, GcArgs, GcCommand, GcOutput, IndexArgs,
+    IndexCommand, NoArgs, REGISTRY, Validate, ValidateArgs, ValidateOutput, Version,
 };
 use serde_json::{Value, json};
 
@@ -63,12 +63,14 @@ enum Cmd {
         json: bool,
     },
     /// Clear the stage cache down to a size cap, keeping what recorded versions use. Removes broken entries and old
-    /// leftovers too.
+    /// leftovers too. Don't run it during a pipeline run; only this checkout's histories count. Exit 1 if an error
+    /// stopped it part-way.
     Gc {
         /// The project folder (holding `score64.toml`).
         #[arg(long, default_value = ".")]
         project: PathBuf,
-        /// The most bytes the cache may hold once unrooted entries are removed (default 4 GiB).
+        /// The most bytes the cache's artifacts may hold once unrooted entries are removed (default 4 GiB; 0 removes
+        /// every unrooted entry).
         #[arg(long)]
         cap_bytes: Option<u64>,
         /// Report what would go, and remove nothing.
@@ -171,36 +173,18 @@ fn main() -> ExitCode {
             cap_bytes,
             dry_run,
         }) {
-            Ok(out) if json => print_json(&serde_json::to_value(out).expect("serialisable")),
             Ok(out) => {
-                let verb = if out.dry_run {
-                    "would remove"
+                if json {
+                    print_json(&serde_json::to_value(&out).expect("serialisable"));
                 } else {
-                    "removed"
-                };
-                for r in &out.removed {
-                    println!(
-                        "{verb} {}/{} ({}, {} bytes)",
-                        r.stage, r.name, r.why, r.bytes
-                    );
+                    print_gc(&out);
                 }
-                let gone: u64 = out.removed.iter().map(|r| r.bytes).sum();
-                println!(
-                    "{verb} {} ({gone} bytes); kept {} used by recorded versions ({} bytes) and {} others ({} bytes) under a {}-byte cap",
-                    out.removed.len(),
-                    out.rooted,
-                    out.rooted_bytes,
-                    out.unrooted_kept,
-                    out.unrooted_kept_bytes,
-                    out.cap_bytes
-                );
-                if out.roots_over_cap > 0 {
-                    println!(
-                        "the entries recorded versions use are {} bytes over the cap; they stay",
-                        out.roots_over_cap
-                    );
+                // An error stopped the collection part-way (ADR-013): what it removed is still reported.
+                if GcCommand::fails(&out) {
+                    ExitCode::from(1)
+                } else {
+                    ExitCode::SUCCESS
                 }
-                ExitCode::SUCCESS
             }
             Err(e) => fail(&e),
         },
@@ -233,6 +217,64 @@ fn main() -> ExitCode {
 fn print_json(v: &Value) -> ExitCode {
     println!("{}", serde_json::to_string_pretty(v).expect("serialisable"));
     ExitCode::SUCCESS
+}
+
+/// What `gc` removed, one line each, then what it kept and anything worth knowing.
+fn print_gc(out: &GcOutput) {
+    let verb = if out.dry_run {
+        "would remove"
+    } else {
+        "removed"
+    };
+    for r in &out.removed {
+        println!(
+            "{verb} {}/{} ({}, {} bytes)",
+            r.stage, r.name, r.why, r.bytes
+        );
+    }
+    for r in &out.in_use {
+        println!(
+            "in use, left as it is: {}/{} ({}, {} bytes)",
+            r.stage, r.name, r.why, r.bytes
+        );
+    }
+    let gone: u64 = out.removed.iter().map(|r| r.bytes).sum();
+    let roots: Vec<String> = out
+        .roots
+        .iter()
+        .map(|r| format!("{} {}", r.refs, r.source))
+        .collect();
+    println!(
+        "{verb} {} ({gone} bytes); kept {} entries the roots name ({} bytes) and {} others ({} bytes) under a {}-byte cap; roots: {}",
+        out.removed.len(),
+        out.rooted,
+        out.rooted_bytes,
+        out.unrooted_kept,
+        out.unrooted_kept_bytes,
+        out.cap_bytes,
+        roots.join(", ")
+    );
+    if out.roots_over_cap > 0 {
+        println!(
+            "the entries the roots name are {} bytes over the cap; they stay",
+            out.roots_over_cap
+        );
+    }
+    if out.missing_roots > 0 {
+        println!(
+            "{} entries the roots name aren't in the cache; they are made again when needed",
+            out.missing_roots
+        );
+    }
+    if out.newer > 0 {
+        println!("{} entries from a newer Score64 left alone", out.newer);
+    }
+    if out.index_rebuilt {
+        println!("index rebuilt");
+    }
+    if let Some(w) = &out.warning {
+        println!("warning: {w}");
+    }
 }
 
 /// Errors go to stderr as JSON (`{"error": {"kind", "message"}}`), so scripts can match on the kind; exit code 2.

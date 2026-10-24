@@ -270,11 +270,12 @@ fn gc_typed_and_by_name_agree_and_a_dry_run_keeps_everything() {
     std::fs::create_dir_all(root.join("tracks/main")).unwrap();
     std::fs::write(root.join("score64.toml"), "schema = 1\n").unwrap();
     std::fs::write(root.join("tracks/main/track.toml"), "schema = 1\n").unwrap();
-    let leftover = root.join(".score64/cache/song/not-an-entry");
+    // A writer's leftover from long ago: its name says when it was made.
+    let leftover = root.join(".score64/cache/song/.tmp-t1000-1-0-0");
     std::fs::create_dir_all(&leftover).unwrap();
     let dir = root.display().to_string();
     let typed = stdout_json(&score64(&["gc", "--project", &dir, "--dry-run", "--json"]));
-    assert_eq!(typed["removed"][0]["why"], "broken");
+    assert_eq!(typed["removed"][0]["why"], "leftover");
     assert!(leftover.is_dir(), "a dry run removes nothing");
     let by_name = stdout_json(&score64(&[
         "run",
@@ -282,6 +283,13 @@ fn gc_typed_and_by_name_agree_and_a_dry_run_keeps_everything() {
         &json!({ "project": dir, "dry_run": true }).to_string(),
     ]));
     assert_eq!(typed, by_name);
+    let text = score64(&["gc", "--project", &dir, "--dry-run", "--cap-bytes", "0"]);
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains("would remove song/.tmp-t1000-1-0-0 (leftover, 0 bytes)")
+            && text.contains("under a 0-byte cap; roots: 0 recorded versions"),
+        "{text}"
+    );
     let done = stdout_json(&score64(&["gc", "--project", &dir, "--json"]));
     assert_eq!(done["removed"].as_array().unwrap().len(), 1);
     assert!(!leftover.exists());
