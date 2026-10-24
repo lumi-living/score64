@@ -334,7 +334,7 @@ score64.toml                 what every track of the target shares
 presets/                     the target's instrument presets (E7)
 tracks/<id>/track.toml       one track's intent
 tracks/<id>/decisions.toml   its decisions
-tracks/<id>/history/         its recorded runs (ADR-014 §7; #27, not built yet)
+tracks/<id>/history/         its recorded runs (ADR-014 §7)
 .score64/                    cache and index, not committed
 ```
 
@@ -361,7 +361,11 @@ tracks/<id>/history/         its recorded runs (ADR-014 §7; #27, not built yet)
 
 How a file is written (comments, key order, hex or decimal, quoting) doesn't change the id. Everything in the intent that can change the output does, and numbers in `[rules]` must be finite so they can. Approvals, comments and `audio.lock` aren't in it, since they don't change the output; presets join it when they land (#49), with a new scheme. The track's id isn't in it, so two tracks with the same intent share a version, and a track's history keys on the track and the version together.
 
-**Run history** (ADR-014 §7, #27, not built yet). A content-addressed id makes restoring an old intent give its old id back. So the history of runs is a separate record: which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`. It is one file per recorded run in `tracks/<id>/history/`, holding the version, its parent, the provenance and the UTC time. A run is recorded only when the version changes, or on a restore.
+**Run history** (`score64_project::History`, ADR-014 §7, #27). A content-addressed id makes restoring an old intent give its old id back. So the history of runs is a separate record: which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`.
+- **Files.** One per recorded run in `tracks/<id>/history/` (`Project::history`), named `<UTC time>-<12 hex digits of the version>.toml`. Further runs in the same second, whatever their versions, add `-2`, `-3`, …, and entries order by time and then that number.
+- **Contents.** Each holds `version`, `parent` (the version recorded before it), `time` (a TOML datetime in UTC, whole seconds), `restore` on a restore, and `[provenance]` tagged by `by`: `rules`, `llm` with `model`, or `manual` with the person's git `name`.
+- **Recording.** `History::record` writes nothing when the version is the latest recorded one, a restore of it included. Otherwise it creates the entry, never replacing a file. It refuses a time before the latest run's, a restore of a version never recorded, and a provenance that names no one.
+- **Reading.** `History::read` checks every file. Each name must match its content, each parent must be the version before it, times must not go back, a restore must name a recorded version, a repeat must be a restore, and no two entries may share a time and number. Unknown keys and newer schemas are errors with file, line and column. Writers' `.part` files are skipped; any other file is an error.
 
 ## 5. Repository layout and dependencies
 

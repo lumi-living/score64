@@ -232,6 +232,6 @@ Option A costs one override rule, plus the need to show resolved values in the a
 - [ ] `[pack] window` and `max_play_cycles` in `ProjectFile`, replacing `player_page`, and the budget gate fed from them (#198, #51).
 - [x] Source checks: a missing file and a changed hash are errors naming the source (#25).
 - [x] Version identity from the resolved intent (#27).
-- [ ] Run history in `tracks/<id>/history/` (#27).
+- [x] Run history in `tracks/<id>/history/` (#27).
 - [ ] `KeepNote` in `decisions.toml` and applied by `monophonise_with` (#167).
 - [x] TAD §4: the layout and both files (#25).

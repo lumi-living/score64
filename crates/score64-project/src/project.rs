@@ -1034,6 +1034,11 @@ impl Project {
         self.root.join("tracks").join(id.as_str())
     }
 
+    /// Track `id`'s run history, from `tracks/<id>/history/` (ADR-014 §7): empty when the track has none yet.
+    pub fn history(&self, id: &Id) -> Result<crate::History, crate::history::Error> {
+        crate::History::read(&self.track_dir(id).join("history"))
+    }
+
     /// Every source of `track` that is missing, unreadable, or whose content changed since the track recorded its
     /// hash. Each file is hashed as it is read, so a long recording isn't held in memory.
     pub fn check_sources(&self, track: &Track) -> Vec<SourceProblem> {
