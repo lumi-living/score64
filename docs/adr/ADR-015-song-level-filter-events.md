@@ -1,7 +1,7 @@
 # ADR-015: Song-level filter events in the score
 
-**Status:** Proposed
-**Date:** 2026-10-23
+**Status:** Accepted
+**Date:** 2026-10-23 (accepted 2026-10-24)
 **Deciders:** @jahaa
 
 ## Context
@@ -18,24 +18,28 @@ What GoatTracker offers (readme, §3.4.3 and commands A–C):
 
 ## Decision
 
-Recommended, pending review: **Option B.**
+**Option B.** A subtune gets `filter: Vec<FilterEvent>`, each event `{ row, program: PresetId, voices: [Voice] }`:
+- `program` names a **filter program preset**: a GoatTracker filtertable program, kept in `presets/` like instruments (ADR-014), so a target reuses its programs;
+- `voices` are the voices routed through the filter from that row on, until the next event or the end of the subtune. An empty list turns the filter off.
 
-A subtune gets `filter: Vec<FilterEvent>`, each event `{ row, program: PresetId, voices: [Voice] }`:
-- `program` names a **filter program preset**, a GoatTracker filtertable program kept in `presets/` like instruments (ADR-014), so a target reuses its programs;
-- `voices` are the voices routed through the filter from that row on. An empty list turns the filter off.
+**Routing belongs to the score.**
+- A filter program preset's "set filter parameters" rows keep their routing nybble at 0.
+- The export writes the event's voice mask into those rows of its copy.
+- A preset that already has a routing mask is a **warning**: the export replaces it with the event's mask and says so.
 
 **Validator, rule 4:**
-- routing an expendable or effects-only voice is an error, as for instruments' filters today;
-- so is an event on a row where an instrument of one of its voices also starts a filter program, because which one wins would depend on the order of writes;
-- the routing is in force until the next event, or the end of the subtune.
+- Routing an expendable or effects-only voice is an error, as it is for instruments' filters today.
+- An instrument that starts a filter program on the **same row** as an event, on one of the event's voices, is an **error**: which program wins would depend on the order of writes.
+- An instrument that starts a filter program on **another row** while an event's routing is in force is a **warning**. The last pointer written wins, so the instrument's program takes over the filter until the next event.
 
 **Export:**
-- each program is copied into the song's filtertable, relocated like instruments' tables;
-- its "set filter parameters" rows get the event's voice bitmask, so the score, not the program, decides the routing;
-- each event becomes `AXY` on its row, in a free command slot, with the same slot rules as tempo changes and timing marks;
-- an event with no voices becomes `B00`.
+- Each program is copied into the song's filtertable, relocated like instruments' tables, with its routing rows carrying the event's mask.
+- Each event becomes `AXY` on its row, in a free command slot, with the same slot rules as tempo changes and timing marks. An event with no voices becomes `B00`.
+- **The loop row restates the event in force there**, as it does the tempo, so every pass after the jump back starts with the same filter as the first. It isn't restated when the loop row already has that event.
 
-**Who wins, documented in `docs/reference/player.md` with evidence:** the last pointer written. A song event therefore holds until a note whose instrument has a filtertable position starts on a routed voice. Rule 4's check keeps that from happening silently.
+**Documented in `docs/reference/player.md`, with evidence: "last pointer wins".** A song event holds until the next event, or until a note whose instrument has a filtertable position starts on the filter's voices. Rule 4 makes that an error on an event's own row and a warning elsewhere.
+
+**The end-to-end test** runs `combat` with its filter as a score event against the original fixture's effect margin on the 6581, within 1 dB (#187). It also covers the loop row: the filter after the jump back matches the first pass.
 
 ## Options considered
 
@@ -84,15 +88,17 @@ A is the most general, but it rebuilds GoatTracker's filtertable in a new shape.
   - the score format gains a field, so song files with filter events need a Score64 that reads them.
 - **Revisit when:** a second player target arrives (Option A's description might then pay off), or presets (#49) settle a different home for table data.
 
-## Questions for review
-1. Option B as described, or A?
-2. Should the score's routing replace the program's routing nybble, as proposed, or should programs be routing-free and the export add a parameters row?
-3. Should an instrument's filtertable position on a routed voice be an error (proposed), a warning, or allowed with "last write wins" documented?
+## Review answers (2026-10-24)
+1. **Option B**, as described.
+2. **Routing.** Programs keep their routing at 0, and the export writes the event's mask. A preset that already has one is a warning, and the export replaces it.
+3. **Instrument programs.** On the same row as an event, an error. On other rows, a warning, with "last pointer wins" documented in `player.md`.
+4. **The loop row** restates the event in force, and the end-to-end test covers it.
 
 ## Action items
 - [ ] Score model: `Subtune::filter` and `FilterEvent`, with a schema update (core).
-- [ ] Rule 4: routing per profile, and the conflict with instruments' filter programs.
-- [ ] Filter program presets in `presets/` (with #49).
-- [ ] Export: program relocation, routing, `AXY` and `B00` placement; `docs/reference/player.md` on precedence, with a render as evidence.
-- [ ] End-to-end test: `combat` with the filter as a score event matches the original fixture's effect margin on the 6581 to within 1 dB (#187).
+- [ ] Rule 4: routing per profile; instrument filter programs on an event's row (error) and while an event is in force (warning).
+- [ ] Filter program presets in `presets/` (with #49), with routing nybbles at 0, and a warning where one isn't.
+- [ ] Export: program relocation, the event's mask in the routing rows, `AXY` and `B00` placement, and the event restated on the loop row.
+- [ ] `docs/reference/player.md`: "last pointer wins", with a render as evidence.
+- [ ] End-to-end test: `combat` with the filter as a score event matches the original fixture's effect margin on the 6581 to within 1 dB, and the filter after the jump back matches the first pass (#187).
 - [ ] Listening on 6581 and 8580, with effects.
