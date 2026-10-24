@@ -12,8 +12,8 @@ use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 use score64_engine::{
-    Command, CommandError, Engine, EngineConfig, NoArgs, REGISTRY, Validate, ValidateArgs,
-    ValidateOutput, Version,
+    Command, CommandError, Engine, EngineConfig, IndexArgs, IndexCommand, NoArgs, REGISTRY,
+    Validate, ValidateArgs, ValidateOutput, Version,
 };
 use serde_json::{Value, json};
 
@@ -47,6 +47,18 @@ enum Cmd {
         #[arg(long)]
         context: Option<PathBuf>,
         /// Print JSON (the problems, with the counts) instead of text.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open the project's index, rebuilding it from the files when asked, missing or outdated; show what it holds.
+    Index {
+        /// The project folder (holding `score64.toml`).
+        #[arg(long, default_value = ".")]
+        project: PathBuf,
+        /// Rebuild from the files even if the index is current.
+        #[arg(long)]
+        rebuild: bool,
+        /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
     },
@@ -115,6 +127,21 @@ fn main() -> ExitCode {
                 } else {
                     ExitCode::SUCCESS
                 }
+            }
+            Err(e) => fail(&e),
+        },
+        Cmd::Index {
+            project,
+            rebuild,
+            json,
+        } => match engine.run::<IndexCommand>(IndexArgs { project, rebuild }) {
+            Ok(out) if json => print_json(&serde_json::to_value(out).expect("serialisable")),
+            Ok(out) => {
+                println!(
+                    "{}: {} tracks, {} recorded runs, {} cache entries ({} artifacts, {} bytes)",
+                    out.path, out.tracks, out.versions, out.entries, out.artifacts, out.bytes
+                );
+                ExitCode::SUCCESS
             }
             Err(e) => fail(&e),
         },

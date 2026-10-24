@@ -8,6 +8,7 @@ Thanks for looking. The project is early; the most useful help right now is **ri
 - **Hardware truth wins.** Output must play correctly with the target player within the limits in [`docs/reference/`](docs/reference/README.md). If the validator and your ears disagree, the validator is right until proven otherwise with a VICE, sidplayfp or hardware check — then fix the reference and the validator together.
 - **Core stays pure.** `score64-core` has no `std::fs`, no network, no platform code.
 - **Licence boundary.** Everything is MIT except `crates/score64-emu` (GPL-3.0-or-later), which runs as a separate process. Do not depend on it from another crate and do not copy GPL code anywhere else ([ADR-002](docs/adr/ADR-002-mit-with-gpl-emulator-helper.md)).
+- **Dependencies.** A new crate dependency must be MIT, Apache-2.0, BSD, zlib, public domain, CC0 or the Unlicense, with every transitive one too. It should be maintained, with its version pinned in the workspace `Cargo.toml`. Anything else needs a maintainer's OK first.
 - **Decisions are recorded.** Anything that changes architecture, formats or scope gets an ADR in `docs/adr/` (copy `ADR-000-template.md`).
 
 ## Workflow

@@ -10,6 +10,7 @@
 
 mod commands;
 mod helper;
+mod index;
 mod validate;
 
 use schemars::{JsonSchema, Schema};
@@ -19,6 +20,7 @@ use serde_json::Value;
 
 pub use commands::{HelperInfo, HelperInfoOutput, NoArgs, Version, VersionOutput};
 pub use helper::HelperConfig;
+pub use index::{IndexArgs, IndexCommand, IndexOutput};
 pub use validate::{ContextFile, Validate, ValidateArgs, ValidateOutput};
 
 /// One user-visible action.
@@ -210,6 +212,7 @@ pub static REGISTRY: &[Entry] = &[
     entry::<Version>(),
     entry::<HelperInfo>(),
     entry::<Validate>(),
+    entry::<IndexCommand>(),
 ];
 
 /// The registry entry called `name`.

@@ -311,14 +311,22 @@ A decision never changes the song by itself. An engine command (`writes_project`
 |---|---|
 | Intent: `track.toml`, `decisions.toml`, presets, scenarios, approvals, comments, `audio.lock` | git (text) |
 | Artifacts: stems, MIDI, `.sng`, renders, `.prg` / `.sid`, metrics | content-addressed cache `.score64/cache/<stage>/<hash>/` |
-| Index for the app: versions, metrics, search | SQLite `.score64/index.db`, rebuildable from manifests and git |
+| Index for the app: versions, metrics, search | SQLite `.score64/index.db` (bundled), rebuildable from manifests and git (#28) |
 
 **The stage cache** (`score64_project::Cache`, #26) lives at `.score64/cache/<stage>/<key>/`.
 - **Key.** An entry's key is `Cache::key`: blake3 of canonical JSON (keys sorted at every depth) of the stage, its version, its config and its input hashes. The same work always has the same key, and any change gives another. Numbers are taken as written, so `1` and `1.0` differ; that costs a needless miss, never a wrong hit. `put` computes the key from the run itself, so an entry can't claim inputs it wasn't made from.
-- **Contents.** An entry holds the artifacts and a `manifest.json`: schema, stage, key, the run (stage version, tool version, config, inputs, timings, optional cost) and each artifact's name, blake3 and size.
+- **Contents.** An entry holds the artifacts and a `manifest.json`: schema (2), stage, key, `created` (UTC, not part of the key; #28), the run (stage version, tool version, config, inputs, timings, optional cost) and each artifact's name, blake3 and size. An entry of an older layout is a miss and is replaced when put again.
+- **Listing.** `Cache::entries` lists every whole entry by stage and key, leaving out temporary directories and anything `get` would miss.
 - **Writing.** `put` writes an entry whole into a fresh temporary directory, syncs it, and renames it into place. The directory is named by pid, counter and clock, so another process or container can't share it, and a crashed run's leftovers never block one. If two writers race, the first rename wins and the other returns that entry; stages are pure, so either copy is right. Something that isn't a whole entry in the way, damaged or from an older layout, is replaced. If what was moved aside turns out whole, another writer got there first, and it is put back and kept. An entry from a newer Score64 is left alone.
 - **Reading.** `get` checks the manifest and every artifact's hash. A missing, partial or damaged entry is a miss, never a wrong hit.
 - **Names.** Stage and artifact names are plain names, so nothing writes outside the cache. They are also safe on every system: no leading or trailing dot, no Windows device names, and no two artifacts whose names differ only by case.
+
+**The index** (`score64_project::Index`, #28) is an SQLite database at `.score64/index.db`, compiled in (`rusqlite` with bundled SQLite, so no system library is needed).
+- **Contents.** It holds tracks, each track's recorded runs in order, the cache entries each run's version uses, and every whole cache entry with its artifacts. Everything in it is read from files: `track.toml`, `tracks/<id>/history/` and the manifests. Nothing writes to it except a rebuild.
+- **Rebuilding.** `Index::rebuild` makes it again from the files into a temporary database beside it, then renames that over the old one. A file that can't be read fails the rebuild, naming the file, and leaves the old index as it was.
+- **Opening.** `Index::open` rebuilds when the index is missing, unreadable or of another layout (`PRAGMA user_version`). Otherwise it opens it as it is, so a run recorded since shows after the next rebuild.
+- **Command.** The engine command `index` (`score64 index [--project <dir>] [--rebuild]`) opens or rebuilds it and reports what it holds.
+- **Queries.** Versions by track, the entries a version uses, and the versions that use an entry.
 
 **`decisions.toml`** (`score64_project::DecisionsFile`, #25) holds a track's decisions: `schema = 1`, then one `[[decision]]` table per decision, in the shape of §3.3. Each one carries `id`, `subtune`, `bar`, `confidence` and `reviewed`, a `[decision.proposal]` table tagged by `change`, and a `[decision.provenance]` table tagged by `by`.
 - **Writing.** Decisions are sorted by subtune and then id. Each one's plain fields come in declaration order, then its tables, so the same decisions always give the same bytes. A file is written to a uniquely named temporary file beside it, synced, then renamed into place.
@@ -364,6 +372,7 @@ How a file is written (comments, key order, hex or decimal, quoting) doesn't cha
 **Run history** (`score64_project::History`, ADR-014 §7, #27). A content-addressed id makes restoring an old intent give its old id back. So the history of runs is a separate record: which version came from which, and whether by a re-run, a model or a person, including hand-edited `.sng` files imported with provenance `manual`.
 - **Files.** One per recorded run in `tracks/<id>/history/` (`Project::history`), named `<UTC time>-<12 hex digits of the version>.toml`. Further runs in the same second, whatever their versions, add `-2`, `-3`, …, and entries order by time and then that number.
 - **Contents.** Each holds `version`, `parent` (the version recorded before it), `time` (a TOML datetime in UTC, whole seconds), `restore` on a restore, and `[provenance]` tagged by `by`: `rules`, `llm` with `model`, or `manual` with the person's git `name`.
+- **Uses.** An entry may list `[[uses]]` (stage and key, sorted, no repeats): the cache entries its version was made from and into. That makes the link from a version to its artifacts part of the files, so the index can be rebuilt with it and GC (#29) can keep what a recorded version refers to.
 - **Recording.** `History::record` writes nothing when the version is the latest recorded one, a restore of it included. Otherwise it creates the entry, never replacing a file. It refuses a time before the latest run's, a restore of a version never recorded, and a provenance that names no one.
 - **Reading.** `History::read` checks every file. Each name must match its content, each parent must be the version before it, times must not go back, a restore must name a recorded version, a repeat must be a restore, and no two entries may share a time and number. Unknown keys and newer schemas are errors with file, line and column. Writers' `.part` files are skipped; any other file is an error.
 

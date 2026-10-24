@@ -15,8 +15,9 @@ use serde_json::Value;
 
 use score64_core::ContentHash;
 
-/// The manifest layout version this build reads and writes.
-pub const MANIFEST_SCHEMA: u32 = 1;
+/// The manifest layout version this build reads and writes: 2 added `created` (#28). An entry of another layout is a
+/// miss, and is replaced when its key is put again.
+pub const MANIFEST_SCHEMA: u32 = 2;
 
 /// The cache under a project's `.score64/cache/`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -75,6 +76,9 @@ pub struct Manifest {
     pub stage: String,
     /// The entry's key: [`Cache::key`] of the stage and its run.
     pub key: ContentHash,
+    /// When it was written, in UTC. Not part of the key: the same work written later is the same entry.
+    #[serde(with = "crate::history::as_string")]
+    pub created: crate::UtcTime,
     /// How it was made.
     pub run: Run,
     /// What it holds, by name.
@@ -152,7 +156,7 @@ const MANIFEST: &str = "manifest.json";
 /// Names that stay inside their directory on every system: letters, digits, `-`, `_` and `.`; not starting with `.`
 /// (which also keeps clear of the temporary directories) or ending with one; not a Windows device name (`con`,
 /// `nul.json`, `com1`, ...); not the manifest.
-fn check_name(name: &str) -> Result<(), Error> {
+pub(crate) fn check_name(name: &str) -> Result<(), Error> {
     let device = crate::textfile::is_device_name(name);
     let ok = !name.is_empty()
         && name.len() <= 128
@@ -275,6 +279,7 @@ impl Cache {
                 schema: MANIFEST_SCHEMA,
                 stage: stage.to_owned(),
                 key,
+                created: crate::UtcTime::now(),
                 run,
                 artifacts: listed,
             };
@@ -343,6 +348,60 @@ impl Cache {
             }
         }
     }
+}
+
+impl Cache {
+    /// Every whole entry, by stage and then key: what the index lists (#28). Temporary directories (`.tmp-*`) and
+    /// anything that isn't a whole entry of its stage and key (damaged, half-written, another layout) are left out, as
+    /// [`Cache::get`] would miss them. No cache yet is no entries.
+    pub fn entries(&self) -> Result<Vec<Entry>, Error> {
+        let mut out = Vec::new();
+        for stage in sorted_names(&self.root)? {
+            if check_name(&stage).is_err() {
+                continue;
+            }
+            let stage_dir = self.root.join(&stage);
+            if !stage_dir.is_dir() {
+                continue;
+            }
+            for name in sorted_names(&stage_dir)? {
+                let Some(key) = ContentHash::from_hex(&name).filter(|k| k.to_string() == name)
+                else {
+                    continue;
+                };
+                if let Some(entry) = self.get(&stage, key) {
+                    out.push(entry);
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The names in `dir`, sorted; none when it doesn't exist.
+fn sorted_names(dir: &Path) -> Result<Vec<String>, Error> {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => {
+            return Err(Error::Io {
+                path: dir.to_path_buf(),
+                error,
+            });
+        }
+    };
+    let mut names = Vec::new();
+    for item in listing {
+        let item = item.map_err(|error| Error::Io {
+            path: dir.to_path_buf(),
+            error,
+        })?;
+        if let Some(name) = item.file_name().to_str() {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    Ok(names)
 }
 
 /// The manifest of the entry in `dir`, if it is whole: it reads, is this layout, names `stage` and `key`, and every

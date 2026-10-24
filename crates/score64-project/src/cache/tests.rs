@@ -179,7 +179,7 @@ fn a_manifest_for_another_stage_or_key_is_a_miss() {
     let text = std::fs::read_to_string(entry.dir.join("manifest.json")).unwrap();
     std::fs::write(
         entry.dir.join("manifest.json"),
-        text.replace("\"schema\": 1", "\"schema\": 2"),
+        text.replace("\"schema\": 2", "\"schema\": 3"),
     )
     .unwrap();
     assert_eq!(c.get("transcribe", key()), None);
@@ -309,7 +309,7 @@ fn an_entry_from_a_newer_score64_is_left_alone() {
     let entry = c.put("transcribe", &[("a.bin", b"x")], run()).unwrap();
     let path = entry.dir.join("manifest.json");
     let text = std::fs::read_to_string(&path).unwrap();
-    let newer = text.replace("\"schema\": 1", "\"schema\": 2");
+    let newer = text.replace("\"schema\": 2", "\"schema\": 3");
     std::fs::write(&path, &newer).unwrap();
     assert!(matches!(
         c.put("transcribe", &[("a.bin", b"x")], run()),

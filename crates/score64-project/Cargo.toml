@@ -11,6 +11,7 @@ publish.workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
+rusqlite = { workspace = true }
 score64-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
