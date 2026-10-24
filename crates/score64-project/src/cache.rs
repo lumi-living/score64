@@ -351,9 +351,10 @@ impl Cache {
 }
 
 impl Cache {
-    /// Every whole entry, by stage and then key: what the index lists (#28). Temporary directories (`.tmp-*`) and
-    /// anything that isn't a whole entry of its stage and key (damaged, half-written, another layout) are left out, as
-    /// [`Cache::get`] would miss them. No cache yet is no entries.
+    /// Every whole entry, by stage and then key: what the index lists (#28). Left out, as [`Cache::get`] would miss
+    /// them: folders whose name isn't a valid stage name or a key's lowercase hex (temporary `.tmp-*` directories
+    /// among them), and anything that isn't a whole entry of its stage and key (damaged, half-written, another
+    /// layout). No cache yet is no entries.
     pub fn entries(&self) -> Result<Vec<Entry>, Error> {
         let mut out = Vec::new();
         for stage in sorted_names(&self.root)? {
@@ -365,12 +366,15 @@ impl Cache {
                 continue;
             }
             for name in sorted_names(&stage_dir)? {
+                // Only the canonical (lowercase) spelling of a key names its entry: on a case-insensitive file system
+                // `ABC…` and `abc…` are one folder, and on any other an `ABC…` copy is not one `get` would find.
                 let Some(key) = ContentHash::from_hex(&name).filter(|k| k.to_string() == name)
                 else {
                     continue;
                 };
-                if let Some(entry) = self.get(&stage, key) {
-                    out.push(entry);
+                let dir = stage_dir.join(&name);
+                if let Some(manifest) = whole(&dir, &stage, key) {
+                    out.push(Entry { dir, manifest });
                 }
             }
         }
@@ -423,20 +427,24 @@ fn whole(dir: &Path, stage: &str, key: ContentHash) -> Option<Manifest> {
     Some(manifest)
 }
 
-/// A new, empty temporary directory under `stage_dir`, named so no other writer (another process, another container
-/// with the same pid, a crashed run's leftovers) is using it.
-fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
+/// `<prefix><pid>-<counter>-<nanoseconds><suffix>`: a name no other writer (another process, another container with
+/// the same pid, a crashed run's leftovers) is likely to be using. Callers still create it exclusively and try the
+/// next name if it is taken.
+pub(crate) fn unique_name(prefix: &str, suffix: &str) -> String {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    temp_dir_named(stage_dir, || {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        format!(
-            ".tmp-{}-{}-{nanos}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        )
-    })
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!(
+        "{prefix}{}-{}-{nanos}{suffix}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+/// A new, empty temporary directory under `stage_dir`, named so no other writer is using it ([`unique_name`]).
+fn temp_dir(stage_dir: &Path) -> Result<PathBuf, Error> {
+    temp_dir_named(stage_dir, || unique_name(".tmp-", ""))
 }
 
 /// [`temp_dir`] with its names from `name`: a taken name is skipped for the next, up to 64 tries.
