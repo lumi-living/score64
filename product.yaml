@@ -1,0 +1,35 @@
+# yaml-language-server: $schema=https://office.lumiliving.com/schemas/product.yaml.json
+key: score64
+name: Score64
+stage: building
+owner: jaakko
+kind: tool
+upside: 2
+confidence: 0.2
+weeks_to_sellable: 20
+readiness:
+  definition:
+    importance: 3
+    readiness: 1
+  core:
+    importance: 3
+    readiness: 1
+  quality:
+    importance: 2
+    readiness: 2
+  operability:
+    importance: 2
+    readiness: 1
+  commercial:
+    importance: 2
+    readiness: 0
+  gtm:
+    importance: 2
+    readiness: 1
+blockers:
+  - "M1 pipeline not end to end: decode, transcription, beat grid, render, CLI run open (#32 #33 #35 #54 #61)"
+  - "No pricing; hosted transcription cost and MuScriptor's non-commercial licence unresolved for a paid tool"
+  - "GPL score64-emu helper (ADR-002): paid binaries must ship its source; licensing decision needed"
+  - "Release 0.1 is planned for M3 (#108); no release or tag yet"
+  - "No payment path or terms; VAT decision (lumi-living/backoffice#41)"
+updated: 2026-11-07
