@@ -241,14 +241,17 @@ fn score(weight: &[f32; 12], chord: Chord) -> Option<f32> {
     Some((2.0 * on - total) / total * share - EXTRA_TONE_COST * (tones.len() - 3) as f32)
 }
 
-/// An arp voice's line: root notes, the arpeggios over them, and the decisions that chose the chords.
+/// A line with arpeggios: root notes, the arpeggios over them, and the decisions that made it. From [`arpeggiate`],
+/// an arp voice's line; from [`arpeggiate_on_bass`](super::arpeggiate_on_bass), a bass line with arpeggios on its
+/// weak beats.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Arpeggio {
-    /// One root note per chord span, in row order.
+    /// The line, in row order: one root note per arpeggio, and for a bass line the bass notes it kept.
     pub notes: Vec<Note>,
-    /// One arpeggio per chord span, over its root note.
+    /// The arpeggios, in row order, each over its root note: one per chord span, or per weak beat in one.
     pub arps: Vec<ArpEvent>,
-    /// One `Chord` decision per span (`chord-v<voice>-r<row>`).
+    /// One `Chord` decision per arpeggio (`chord-v<voice>-r<row>`, or `bassarp-chord-…`), and for a bass line the
+    /// drops, trims and restarts too.
     pub decisions: Vec<Decision>,
 }
 

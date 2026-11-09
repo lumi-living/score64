@@ -9,7 +9,8 @@
 //! [`monophonise_with`], [`fold_octaves_with`] and [`find_loop_with`] apply a model's or a person's resolved
 //! decisions in force (#167), as [`choose_lead`] does its overrides, and [`apply_tempo`] applies tempo decisions,
 //! which no rule makes.
-//! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios.
+//! [`detect_chords`] and [`arpeggiate`] (#42) find the harmony and play it as arpeggios; [`arpeggiate_on_bass`] (#164)
+//! puts it on the bass's weak beats when no voice is free.
 
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
@@ -23,6 +24,8 @@ use crate::provenance::{Confidence, Decision, DecisionId, DropReason, Proposal, 
 use crate::score::{Attack, Note, Pitch, SubtuneName, Voice};
 
 pub use crate::decide::Unapplied;
+mod bass_arps;
+pub use bass_arps::{BASS_ARPS, BassArpRoot, BassArpRules, arpeggiate_on_bass};
 mod chords;
 mod lead;
 mod looping;
