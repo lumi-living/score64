@@ -59,6 +59,79 @@ pub struct Exported {
     /// Whether the song writes timing marks, so it must be packed with author info and timing marks on (`-H1`);
     /// without it gt2reloc drops them.
     pub timing_marks: bool,
+    /// Header text that had to change to fit the song file's header, in field order: one warning per field.
+    pub header_changes: Vec<HeaderChange>,
+}
+
+/// One of the song file's header fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderField {
+    /// The song name.
+    Name,
+    /// The author.
+    Author,
+    /// The copyright.
+    Copyright,
+}
+
+impl fmt::Display for HeaderField {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            HeaderField::Name => "song name",
+            HeaderField::Author => "author",
+            HeaderField::Copyright => "copyright",
+        })
+    }
+}
+
+/// A header field's text that the export changed to fit: the header holds printable ASCII only, at most 31
+/// characters, so anything else became `?` and the rest was cut. The song is still written; this is a warning.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderChange {
+    /// The field.
+    pub field: HeaderField,
+    /// The text as given.
+    pub original: String,
+    /// The text as stored.
+    pub stored: String,
+    /// Whether characters outside printable ASCII were replaced by `?`.
+    pub replaced: bool,
+    /// Whether the text was cut at 31 characters.
+    pub cut: bool,
+}
+
+impl fmt::Display for HeaderChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let why = match (self.replaced, self.cut) {
+            (true, true) => {
+                "characters outside printable ASCII became `?`, and it was cut to 31 characters"
+            }
+            (true, false) => "characters outside printable ASCII became `?`",
+            (false, _) => "it was cut to 31 characters",
+        };
+        write!(
+            f,
+            "the {} {:?} is stored as {:?}: {why}",
+            self.field, self.original, self.stored
+        )
+    }
+}
+
+/// `text` as header field `field` (`sng::header_field`), with a warning in `changes` if it didn't fit as it is.
+fn fit(field: HeaderField, text: &str, changes: &mut Vec<HeaderChange>) -> [u8; 32] {
+    let stored = sng::header_field(text);
+    let replaced = text.chars().take(31).any(|c| !(' '..='~').contains(&c));
+    let cut = text.chars().count() > 31;
+    if replaced || cut {
+        changes.push(HeaderChange {
+            field,
+            original: text.to_owned(),
+            stored: sng::header_text(&stored),
+            replaced,
+            cut,
+        });
+    }
+    stored
 }
 
 /// Why a score can't be written as a GoatTracker song.
@@ -262,9 +335,14 @@ pub fn export(
     header: &Header,
 ) -> Result<Exported, ExportError> {
     let mut sng = Sng::empty();
-    sng.name = sng::header_field(&header.name);
-    sng.author = sng::header_field(&header.author);
-    sng.copyright = sng::header_field(&header.copyright);
+    let mut header_changes = Vec::new();
+    sng.name = fit(HeaderField::Name, &header.name, &mut header_changes);
+    sng.author = fit(HeaderField::Author, &header.author, &mut header_changes);
+    sng.copyright = fit(
+        HeaderField::Copyright,
+        &header.copyright,
+        &mut header_changes,
+    );
     sng.subtunes.clear();
     sng.patterns.clear();
     let mut b = Builder {
@@ -307,6 +385,7 @@ pub fn export(
         sng: b.sng,
         instruments,
         timing_marks: b.timing_marks,
+        header_changes,
     })
 }
 
