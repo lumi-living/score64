@@ -3,20 +3,20 @@
 //! skips visibly (CI has no gt2reloc).
 
 use std::collections::BTreeSet;
-use std::io::Write as _;
 use std::path::PathBuf;
 
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
+use score64_adapters::require::{self, Tool};
 use score64_core::{PackBudget, PackFacts, check_pack};
 
 #[test]
 fn every_format_holds_the_same_player() {
     let Ok(packer) = Gt2Reloc::locate("2.73") else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED every_format_holds_the_same_player: needs gt2reloc on PATH"
+        return require::skip(
+            "every_format_holds_the_same_player",
+            &[Tool::Gt2reloc],
+            "needs gt2reloc on PATH",
         );
-        return;
     };
     let song = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/gt2-original/sixteen-steps.sng");
