@@ -3143,6 +3143,7 @@ name = "score64-cli"
 version = "0.0.0"
 dependencies = [
  "clap",
+ "score64-adapters",
  "score64-core",
  "score64-engine",
  "serde_json",
