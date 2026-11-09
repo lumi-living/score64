@@ -11,13 +11,24 @@ publish.workspace = true
 
 [dependencies]
 blake3 = { workspace = true }
-ort = { workspace = true }
+# ONNX Runtime, for Basic Pitch: opt-in (`basic-pitch-onnx`), since it downloads a prebuilt runtime at build time.
+# These are `ort`'s defaults less `ndarray` and `tracing`, which the adapter doesn't use.
+ort = { workspace = true, optional = true, features = ["std", "download-binaries", "tls-native", "copy-dylibs", "api-31"] }
 process-wrap = { workspace = true }
 serde_json = { workspace = true }
 score64-formats = { workspace = true }
 
+[features]
+# Basic Pitch through ONNX Runtime (`basic_pitch`). Off by default: a build without it needs nothing beyond
+# crates.io and carries no ONNX Runtime (#241).
+basic-pitch-onnx = ["dep:ort"]
+
 [dev-dependencies]
 score64-core = { workspace = true }
+
+[[test]]
+name = "basic_pitch_onnx"
+required-features = ["basic-pitch-onnx"]
 
 [lints]
 workspace = true

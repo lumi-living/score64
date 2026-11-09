@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 publish.workspace = true
 
+[features]
+# Basic Pitch through ONNX Runtime, passed through to `score64-adapters` (#241).
+basic-pitch-onnx = ["score64-adapters/basic-pitch-onnx"]
+
 [dependencies]
 score64-adapters = { workspace = true }
 score64-core = { workspace = true, features = ["schema"] }

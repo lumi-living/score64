@@ -47,6 +47,6 @@ errors, and kills the process if it overruns.
 
 ## Tests
 
-Sidecar tests are opt-in: `SCORE64_SIDECAR=1 cargo test -p score64-adapters --test basic_pitch_onnx`. Without the
+Sidecar tests are opt-in: `SCORE64_SIDECAR=1 cargo test -p score64-adapters --features basic-pitch-onnx --test basic_pitch_onnx`. The test needs the `basic-pitch-onnx` feature (ONNX Runtime, #241). Without the
 variable they print `SKIPPED ...` and pass. With it they fail if `uv` or the project is missing, so they can't pass by
 skipping. CI runs them in the `sidecar (ubuntu-latest)` job, and the other jobs show them as skipped.

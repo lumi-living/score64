@@ -72,7 +72,7 @@ https://zenodo.org/record/5578807#.YnRm5vPMKDU
 
 ## ONNX Runtime (linked library)
 
-- **What:** ONNX Runtime 1.31.0, linked statically into the `score64` CLI through the `ort` crate (2.0.0-rc.14, MIT or Apache-2.0), which downloads pyke's prebuilt builds of it. It runs the Basic Pitch model.
+- **What:** ONNX Runtime 1.31.0, linked statically into the `score64` CLI through the `ort` crate (2.0.0-rc.14, MIT or Apache-2.0), which downloads pyke's prebuilt builds of it. It runs the Basic Pitch model. It's in a build only with the `basic-pitch-onnx` feature, which is off by default (#241).
 - **Source:** Microsoft, <https://github.com/microsoft/onnxruntime>. Its own third-party notices: <https://github.com/microsoft/onnxruntime/blob/v1.31.0/ThirdPartyNotices.txt>.
 - **Licence:** MIT:
 

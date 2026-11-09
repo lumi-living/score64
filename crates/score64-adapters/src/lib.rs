@@ -1,6 +1,9 @@
 //! Adapters behind the core's ports: transcription providers, beat tracking, decision makers (rules, LLM, manual),
 //! the GoatTracker packer, VICE, the C64 Ultimate and the optional Python sidecar (ADR-009).
+//!
+//! `basic_pitch` needs the `basic-pitch-onnx` feature, which brings in ONNX Runtime (#241).
 
+#[cfg(feature = "basic-pitch-onnx")]
 pub mod basic_pitch;
 pub mod emu;
 pub mod gt2reloc;

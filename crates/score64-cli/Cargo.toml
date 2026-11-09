@@ -13,6 +13,10 @@ publish.workspace = true
 name = "score64"
 path = "src/main.rs"
 
+[features]
+# Basic Pitch through ONNX Runtime, passed through to `score64-adapters` (#241).
+basic-pitch-onnx = ["score64-engine/basic-pitch-onnx"]
+
 [dependencies]
 clap = { workspace = true }
 score64-engine = { workspace = true }
