@@ -2,7 +2,7 @@
 //! (#23). Opt-in, because it needs `uv`:
 //!
 //! ```sh
-//! SCORE64_SIDECAR=1 cargo test --release -p score64-adapters --test basic_pitch_onnx -- --nocapture
+//! SCORE64_SIDECAR=1 cargo test --release -p score64-adapters --features basic-pitch-onnx --test basic_pitch_onnx -- --nocapture
 //! ```
 //!
 //! For each committed stem the sidecar runs basic-pitch 0.4.0 and writes its activations, notes and the exact

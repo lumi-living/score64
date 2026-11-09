@@ -78,6 +78,8 @@ Stages and ports:
 | pack | `Packer` | gt2reloc (external program; `score64_adapters::gt2reloc`, #50) |
 | report | — | static HTML |
 
+**ONNX Runtime is opt-in** (#241). `ort` is an optional dependency of `score64-adapters` behind the `basic-pitch-onnx` feature, which `score64-engine` and `score64-cli` pass through. A default build has no `ort` in its tree (`crates/score64-cli/tests/onnx_feature.rs` checks it), so it needs nothing beyond crates.io, works offline after `cargo fetch`, and carries no ONNX Runtime or HTTP/TLS stack. Only the feature downloads the prebuilt runtime at build time. `basic_pitch` and `tests/basic_pitch_onnx.rs` compile only with the feature. Whether release builds turn it on is still open.
+
 ## 3. Score model (`score64-core`)
 
 The core model is a **tracker grid**, not MIDI ticks (ADR-006):
