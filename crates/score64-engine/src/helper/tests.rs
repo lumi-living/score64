@@ -1,6 +1,8 @@
 //! The helper lifecycle against scripted fake helpers, and against the real binary when it has been built.
 
 use std::io::{self, Read, Write};
+
+use score64_adapters::require::{self, Tool};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Instant;
 
@@ -179,11 +181,11 @@ const PLAYER: [u8; 9] = [0x60, 0xEA, 0xEA, 0xA9, 0x21, 0x8D, 0x04, 0xD4, 0x60];
 fn the_real_helper_is_killed_on_timeout_and_restarted() {
     let mut slot = HelperSlot::new(HelperConfig::default());
     if slot.binary().is_none() {
-        let _ = writeln!(
-            io::stderr(),
-            "SKIPPED the_real_helper_is_killed_on_timeout_and_restarted: build score64-emu or set SCORE64_EMU"
+        return require::skip(
+            "the_real_helper_is_killed_on_timeout_and_restarted",
+            &[Tool::Helper],
+            "build score64-emu or set SCORE64_EMU",
         );
-        return;
     }
     let info = slot.call(|h| Ok(h.info().clone())).unwrap();
     assert!(info.helper.starts_with("score64-emu "), "{info:?}");

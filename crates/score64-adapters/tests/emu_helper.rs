@@ -2,9 +2,8 @@
 //! into the same target directory (`cargo test --workspace` does that) or `SCORE64_EMU` points at it; otherwise it
 //! skips visibly.
 
-use std::io::Write as _;
-
 use score64_adapters::emu::{Chip, Helper, HelperError};
+use score64_adapters::require::{self, Tool};
 use score64_formats::emu_protocol::ErrorCode;
 
 /// $1000: RTS (init). $1003: copy the mailbox at $0340 to the volume register, start voice 1, RTS.
@@ -19,11 +18,11 @@ const PLAYER: [u8; 20] = [
 #[test]
 fn renders_through_the_real_helper() {
     let Some(binary) = Helper::locate() else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED renders_through_the_real_helper: build score64-emu (cargo test --workspace) or set SCORE64_EMU"
+        return require::skip(
+            "renders_through_the_real_helper",
+            &[Tool::Helper],
+            "build score64-emu (cargo test --workspace) or set SCORE64_EMU",
         );
-        return;
     };
     let mut h = Helper::spawn(&binary, 48_000).expect("spawn helper");
     assert_eq!(h.info().sample_rate, 48_000);

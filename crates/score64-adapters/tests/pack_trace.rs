@@ -4,11 +4,11 @@
 //! (CI has no gt2reloc).
 
 use std::collections::BTreeSet;
-use std::io::Write as _;
 use std::path::PathBuf;
 
 use score64_adapters::emu::Helper;
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
+use score64_adapters::require::{self, Tool};
 use score64_formats::psid::Psid;
 
 /// Where the effect data and the play wrapper go: outside the tune, read but never written.
@@ -39,12 +39,17 @@ fn wrapper(start: u16) -> Vec<u8> {
 
 #[test]
 fn the_packed_fixture_keeps_to_its_pair_and_its_memory() {
-    let (Ok(packer), Some(helper)) = (Gt2Reloc::locate("2.73"), Helper::locate()) else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED the_packed_fixture_keeps_to_its_pair_and_its_memory: needs gt2reloc on PATH and the score64-emu helper"
+    let (packer, helper) = (Gt2Reloc::locate("2.73"), Helper::locate());
+    let missing = require::missing([
+        (Tool::Gt2reloc, packer.is_ok()),
+        (Tool::Helper, helper.is_some()),
+    ]);
+    let (Ok(packer), Some(helper)) = (packer, helper) else {
+        return require::skip(
+            "the_packed_fixture_keeps_to_its_pair_and_its_memory",
+            &missing,
+            "needs gt2reloc on PATH and the score64-emu helper",
         );
-        return;
     };
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gt2-original");
     let dir = std::env::temp_dir().join(format!("score64-pack-trace-{}", std::process::id()));

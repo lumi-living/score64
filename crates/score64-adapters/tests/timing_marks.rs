@@ -5,11 +5,11 @@
 //! skips visibly (CI has no gt2reloc).
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::num::{NonZeroU8, NonZeroU32};
 
 use score64_adapters::emu::Helper;
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
+use score64_adapters::require::{self, Tool};
 use score64_core::profile::ProfileName;
 use score64_core::{
     AdaptiveSet, Attack, Confidence, FramesPerRow, Note, PresetId, Role, Roles, Schema, Song,
@@ -96,13 +96,17 @@ const FRESH: u8 = 0x20;
 
 #[test]
 fn a_packed_adaptive_song_marks_exactly_its_switch_points() {
-    let (Ok(packer), Some(helper)) = (Gt2Reloc::locate("2.73"), Helper::locate()) else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED a_packed_adaptive_song_marks_exactly_its_switch_points: needs gt2reloc on PATH and the \
-             score64-emu helper"
+    let (packer, helper) = (Gt2Reloc::locate("2.73"), Helper::locate());
+    let missing = require::missing([
+        (Tool::Gt2reloc, packer.is_ok()),
+        (Tool::Helper, helper.is_some()),
+    ]);
+    let (Ok(packer), Some(helper)) = (packer, helper) else {
+        return require::skip(
+            "a_packed_adaptive_song_marks_exactly_its_switch_points",
+            &missing,
+            "needs gt2reloc on PATH and the score64-emu helper",
         );
-        return;
     };
     // Every bar (bar starts, with a note on all but row 32), and explicit rows (mid-bar, with a note on 24 and
     // none on 40, the tempo change, or 52), each packed without and with sound-effect support.
