@@ -40,7 +40,7 @@ The tables are the instrument's own, so a file of an instrument with no tables i
 | Part | Bytes | Contents |
 |---|---|---|
 | Magic | 4 | `GTS5` |
-| Name, author, copyright | 32 each | Zero-padded text. Score64 writes at most 31 characters, so each ends in a zero; whether GoatTracker needs that is not checked |
+| Name, author, copyright | 32 each | Zero-padded text. Score64 writes at most 31 characters, so each ends in a zero; whether GoatTracker needs that is not checked. Anything but printable ASCII is written as `?`, and the export warns when it changed a field's text (`HeaderChange`) |
 | Subtune count | 1 | 1 to 32 |
 | Orderlists | per subtune, voices 1, 2, 3 | A length *n*, then *n* + 1 bytes: the entries, the end mark `$FF`, and the restart position. *n* counts the entries and the end mark, not the restart position |
 | Instrument count | 1 | 0 to 63. Instrument 0, the empty one, is not stored; the records are instruments 1 onwards |

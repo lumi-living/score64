@@ -159,6 +159,62 @@ fn notes_ties_and_key_offs() {
     assert_eq!(header_text(&out.sng.name), "Test");
 }
 
+#[test]
+fn header_text_changed_to_fit_is_reported_with_both_versions() {
+    let lead = line(1, "lead", vec![note(0, 4, "C-4", Attack::Fresh)]);
+    let one = || song(vec![subtune("main", vec![lead.clone()])]);
+    let with = |name: &str, author: &str| Header {
+        name: name.into(),
+        author: author.into(),
+        copyright: "2026".into(),
+    };
+
+    // A non-ASCII title: each character outside printable ASCII becomes `?`.
+    let out = export(&one(), &library(), &[], &with("Kesäyö – teema", "Someone")).unwrap();
+    assert_eq!(header_text(&out.sng.name), "Kes?y? ? teema");
+    assert_eq!(
+        out.header_changes,
+        [HeaderChange {
+            field: HeaderField::Name,
+            original: "Kesäyö – teema".into(),
+            stored: "Kes?y? ? teema".into(),
+            replaced: true,
+            cut: false,
+        }]
+    );
+    let shown = out.header_changes[0].to_string();
+    assert!(
+        shown.contains("song name")
+            && shown.contains("Kesäyö – teema")
+            && shown.contains("Kes?y? ? teema"),
+        "{shown}"
+    );
+
+    // An over-long author: cut at 31 characters.
+    let long = "An author with a rather long name, well over 31";
+    let out = export(&one(), &library(), &[], &with("Test", long)).unwrap();
+    assert_eq!(
+        out.header_changes,
+        [HeaderChange {
+            field: HeaderField::Author,
+            original: long.into(),
+            stored: long[..31].into(),
+            replaced: false,
+            cut: true,
+        }]
+    );
+    assert!(
+        out.header_changes[0].to_string().contains("31"),
+        "{}",
+        out.header_changes[0]
+    );
+
+    // Text that fits as it is: no warning.
+    let fits = "x".repeat(31);
+    let out = export(&one(), &library(), &[], &with(&fits, "Someone")).unwrap();
+    assert_eq!(out.header_changes, []);
+}
+
 fn header_text(f: &[u8; 32]) -> String {
     sng::header_text(f)
 }
