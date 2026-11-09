@@ -797,7 +797,7 @@ impl ProjectFile {
         }
         if let Err(m) = file.profiles() {
             // Point at the first profile that makes the list invalid.
-            let lines = headers(text, "[[profile]]");
+            let lines = headers(text, "profile");
             let bad = (1..=file.profile.len())
                 .find(|&n| Profiles::with(file.profile[..n].iter().cloned()).is_err())
                 .map_or(0, |n| n - 1);
@@ -827,9 +827,9 @@ impl TrackFile {
     pub fn parse(text: &str, path: &Path) -> Result<Self, Error> {
         let file: TrackFile = parse(text, path)?;
         let (sources, subtunes, sets) = (
-            headers(text, "[[source]]"),
-            headers(text, "[[subtune]]"),
-            headers(text, "[[adaptive]]"),
+            headers(text, "source"),
+            headers(text, "subtune"),
+            headers(text, "adaptive"),
         );
         let at = |lines: &[usize], i: usize| lines.get(i).copied();
         let mut ids = BTreeSet::new();
@@ -1194,7 +1194,7 @@ impl Project {
             .file
             .profiles()
             .map_err(|m| invalid(&self.root.join(PROJECT_FILE), None, m))?;
-        let subtune_lines = headers(text, "[[subtune]]");
+        let subtune_lines = headers(text, "subtune");
         let named = file
             .profile
             .iter()

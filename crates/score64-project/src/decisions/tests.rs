@@ -334,3 +334,42 @@ proptest! {
         prop_assert_eq!(back.to_toml().unwrap(), text);
     }
 }
+
+/// #193: a header written with spaces inside the brackets is still a header, so both decisions with one id are
+/// reported at their lines.
+#[test]
+fn a_repeated_id_is_reported_at_both_headers_however_written() {
+    let text = r#"[[decision]]
+id = "loop"
+subtune = "main"
+bar = 5
+confidence = 0.9
+reviewed = true
+
+[decision.proposal]
+change = "loop_row"
+row = 80
+
+[decision.provenance]
+by = "manual"
+
+[[ decision ]]
+id = "loop"
+subtune = "main"
+bar = 6
+confidence = 0.9
+reviewed = true
+
+[decision.proposal]
+change = "loop_row"
+row = 96
+
+[decision.provenance]
+by = "manual"
+"#;
+    let second = text.lines().position(|l| l == "[[ decision ]]").unwrap() + 1;
+    match DecisionsFile::parse(text).unwrap_err() {
+        Error::DuplicateId { lines, .. } => assert_eq!(lines, Some((1, second))),
+        other => panic!("{other:?}"),
+    }
+}

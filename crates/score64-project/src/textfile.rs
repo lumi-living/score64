@@ -70,13 +70,21 @@ pub(crate) fn line_col(text: &str, offset: usize) -> (usize, usize) {
     (line, col)
 }
 
-/// The lines of every `header` (such as `[[decision]]`), in order: the n-th item's header is the n-th.
-pub(crate) fn headers(text: &str, header: &str) -> Vec<usize> {
-    text.lines()
-        .enumerate()
-        .filter(|(_, l)| l.trim_start().starts_with(header))
-        .map(|(i, _)| i + 1)
-        .collect()
+/// The header line of every item of the array of tables `key` (`[[key]]`), in order: the n-th item's is the n-th.
+/// The lines come from the TOML parser's spans, not from counting lines, so a `[[key]]` inside a multi-line string
+/// isn't taken for a header and one written `[[ key ]]` is (#193). Empty if `text` doesn't parse, whose error the
+/// caller reports first.
+pub(crate) fn headers(text: &str, key: &str) -> Vec<usize> {
+    let Ok(table) = toml::de::DeTable::parse(text) else {
+        return Vec::new();
+    };
+    match table.get_ref().get(key).map(|v| v.get_ref()) {
+        Some(toml::de::DeValue::Array(items)) => items
+            .iter()
+            .map(|item| line_col(text, item.span().start).0)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// A fresh, uniquely named temporary file beside `path` (`<name>.<pid>-<n>.part`, so two writers never share one)
