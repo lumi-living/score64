@@ -4,9 +4,8 @@
 //! visibly. `cargo test -p score64-adapters` alone doesn't rebuild the helper, so after changing it, build it first
 //! (`cargo build -p score64-emu`) or run the workspace's tests.
 
-use std::io::Write as _;
-
 use score64_adapters::emu::{Chip, Helper};
+use score64_adapters::require::{self, Tool};
 
 /// $1000: RTS (init and play).
 const PLAYER: [u8; 1] = [0x60];
@@ -60,11 +59,11 @@ fn render(binary: &std::path::Path, chip: Chip) -> (u64, usize) {
 #[test]
 fn two_helpers_give_identical_samples() {
     let Some(binary) = Helper::locate() else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED two_helpers_give_identical_samples: build score64-emu (cargo test --workspace) or set SCORE64_EMU"
+        return require::skip(
+            "two_helpers_give_identical_samples",
+            &[Tool::Helper],
+            "build score64-emu (cargo test --workspace) or set SCORE64_EMU",
         );
-        return;
     };
     for chip in [Chip::Mos6581, Chip::Mos8580] {
         let first = render(&binary, chip);

@@ -3,11 +3,11 @@
 //! otherwise it skips visibly (CI has no gt2reloc).
 
 use std::collections::BTreeMap;
-use std::io::Write as _;
 use std::num::{NonZeroU8, NonZeroU32};
 
 use score64_adapters::emu::{Chip, Helper};
 use score64_adapters::gt2reloc::{Gt2Reloc, PackOptions, ZeroPage};
+use score64_adapters::require::{self, Tool};
 use score64_core::profile::ProfileName;
 use score64_core::{
     ArpEvent, Attack, Confidence, FramesPerRow, Note, PresetId, Role, Roles, Schema, Song, Subtune,
@@ -157,9 +157,14 @@ fn play(song: &Song, subtune: u8, frames: u32) -> Option<Voices> {
 }
 
 fn skipped(test: &str) {
-    let _ = writeln!(
-        std::io::stderr(),
-        "SKIPPED {test}: needs gt2reloc on PATH and the score64-emu helper"
+    let missing = require::missing([
+        (Tool::Gt2reloc, Gt2Reloc::locate("2.73").is_ok()),
+        (Tool::Helper, Helper::locate().is_some()),
+    ]);
+    require::skip(
+        test,
+        &missing,
+        "needs gt2reloc on PATH and the score64-emu helper",
     );
 }
 

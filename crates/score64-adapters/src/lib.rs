@@ -4,4 +4,6 @@
 pub mod basic_pitch;
 pub mod emu;
 pub mod gt2reloc;
+#[doc(hidden)]
+pub mod require;
 pub mod sidecar;

@@ -1,9 +1,9 @@
 //! The `score64` binary end to end: typed subcommands and `run` give the same results, and every registry command
 //! runs from the command line (ADR-005 parity).
 
-use std::io::Write as _;
 use std::process::{Command, Output};
 
+use score64_adapters::require::{self, Tool};
 use serde_json::{Value, json};
 
 fn score64(args: &[&str]) -> Output {
@@ -93,12 +93,11 @@ fn every_command_runs_from_the_cli() {
 fn helper_info_starts_the_helper() {
     let o = score64(&["run", "helper_info"]);
     if !o.status.success() && error_kind(&o) == "helper_missing" {
-        // Straight to the process's stderr: libtest captures eprintln! of passing tests, and a skip must show.
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED helper_info_starts_the_helper: score64-emu not built"
+        return require::skip(
+            "helper_info_starts_the_helper",
+            &[Tool::Helper],
+            "score64-emu not built",
         );
-        return;
     }
     let info = stdout_json(&o);
     assert!(info["helper"].as_str().unwrap().starts_with("score64-emu "));

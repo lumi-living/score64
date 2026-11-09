@@ -10,12 +10,12 @@
 //! or play call that writes over the trace's driver are each reported with what was measured (helper needed).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write as _;
 use std::num::{NonZeroU8, NonZeroU32};
 use std::path::{Path, PathBuf};
 
 use score64_adapters::emu::Helper;
 use score64_adapters::gt2reloc::{Format, Gt2Reloc, Packed};
+use score64_adapters::require::{self, Tool};
 use score64_core::profile::ProfileName;
 use score64_core::validate::Severity;
 use score64_core::{
@@ -45,13 +45,18 @@ fn fixtures() -> PathBuf {
 
 /// gt2reloc 2.73 and the helper, or `None` with a visible skip message.
 fn tools(test: &str) -> Option<Gt2Reloc> {
-    match (Gt2Reloc::locate("2.73"), Helper::locate()) {
+    let (packer, helper) = (Gt2Reloc::locate("2.73"), Helper::locate());
+    let missing = require::missing([
+        (Tool::Gt2reloc, packer.is_ok()),
+        (Tool::Helper, helper.is_some()),
+    ]);
+    match (packer, helper) {
         (Ok(packer), Some(_)) => Some(packer),
         _ => {
-            // Straight to the process's stderr: libtest captures eprintln! of passing tests, and a skip must show.
-            let _ = writeln!(
-                std::io::stderr(),
-                "SKIPPED {test}: needs gt2reloc on PATH and the score64-emu helper"
+            require::skip(
+                test,
+                &missing,
+                "needs gt2reloc on PATH and the score64-emu helper",
             );
             None
         }
@@ -620,10 +625,7 @@ fn a_plan_must_match_the_psids_subtunes() {
 /// The helper, or `None` with a visible skip message.
 fn helper(test: &str) -> Option<()> {
     Helper::locate().map(|_| ()).or_else(|| {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED {test}: needs the score64-emu helper"
-        );
+        require::skip(test, &[Tool::Helper], "needs the score64-emu helper");
         None
     })
 }
