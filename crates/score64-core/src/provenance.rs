@@ -251,8 +251,9 @@ pub enum Provenance {
         /// blake3 of the exact prompt, which is also the decision cache key.
         prompt: ContentHash,
     },
-    /// A person, in the app or in `decisions.toml`.
-    Manual,
+    /// A person, in the app or in `decisions.toml`. Braced, not a unit variant, so that serde refuses stray fields
+    /// on it as on the others; it still writes only `by = "manual"`.
+    Manual {},
 }
 
 /// A change a decision proposes. Each variant is one kind of decision.

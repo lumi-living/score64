@@ -62,7 +62,7 @@ fn case(
             _ => 0,
         };
         let provenance = if r.below(2) == 0 {
-            Provenance::Manual
+            Provenance::Manual {}
         } else {
             Provenance::Llm {
                 model: "m".into(),

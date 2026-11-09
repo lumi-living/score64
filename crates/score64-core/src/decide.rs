@@ -294,7 +294,7 @@ impl Decision {
     /// model's over the rules'.
     pub fn rank(&self) -> Rank {
         match self.provenance {
-            Provenance::Manual => Rank::Person,
+            Provenance::Manual {} => Rank::Person,
             Provenance::Llm { .. } if self.reviewed => Rank::Person,
             Provenance::Llm { .. } => Rank::Model,
             Provenance::Rules { .. } => Rank::Rules,

@@ -493,7 +493,7 @@ fn forced(id: &str, bar: u32, shift: i8) -> Decision {
             voice: Voice::new(2).unwrap(),
             shift,
         },
-        provenance: Provenance::Manual,
+        provenance: Provenance::Manual {},
         confidence: Confidence::CERTAIN,
         reviewed: false,
     }

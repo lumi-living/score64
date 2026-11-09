@@ -964,7 +964,7 @@ fn loop_rows_and_tempos_in_force_export() {
         subtune: SubtuneName::new("main").unwrap(),
         bar,
         proposal,
-        provenance: Provenance::Manual,
+        provenance: Provenance::Manual {},
         confidence: Confidence::new(1.0).unwrap(),
         reviewed: false,
     };

@@ -43,7 +43,7 @@ by = "manual"
             "loop",
             "main",
             Proposal::LoopRow { row: 80 },
-            Provenance::Manual
+            Provenance::Manual {}
         )]
     );
     // And it writes back to the same text.
@@ -57,19 +57,19 @@ fn writing_sorts_by_subtune_then_id() {
             "b",
             "title",
             Proposal::LoopRow { row: 0 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
         decision(
             "z",
             "main",
             Proposal::LoopRow { row: 0 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
         decision(
             "a",
             "title",
             Proposal::LoopRow { row: 0 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
     ]);
     let back = DecisionsFile::parse(&file.to_toml().unwrap()).unwrap();
@@ -155,7 +155,7 @@ rule = "stray"
         matches!(
             err,
             Error::Invalid {
-                at: Some((1, 1)),
+                at: Some((12, 1)),
                 ..
             }
         ),
@@ -251,13 +251,13 @@ fn two_decisions_with_one_id_in_one_subtune_are_refused() {
             "same",
             "main",
             Proposal::LoopRow { row: 0 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
         decision(
             "same",
             "main",
             Proposal::LoopRow { row: 16 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
     ]);
     assert!(matches!(twice.to_toml(), Err(Error::DuplicateId { .. })));
@@ -267,13 +267,13 @@ fn two_decisions_with_one_id_in_one_subtune_are_refused() {
             "same",
             "main",
             Proposal::LoopRow { row: 0 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
         decision(
             "same",
             "title",
             Proposal::LoopRow { row: 16 },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
     ]);
     let text = apart.to_toml().unwrap();
