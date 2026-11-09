@@ -38,13 +38,16 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --all --check
       - name: cargo clippy
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: cargo test
-        run: cargo test --workspace
+        # A helper test that can't find score64-emu fails here instead of skipping (#240).
+        env:
+          SCORE64_REQUIRE: helper
+        run: cargo test --workspace --locked
       - name: score64-core with optional features (schema, proptest)
         run: |
-          cargo clippy -p score64-core --all-targets --all-features -- -D warnings
-          cargo test -p score64-core --all-features
+          cargo clippy -p score64-core --all-targets --all-features --locked -- -D warnings
+          cargo test -p score64-core --all-features --locked
 
   # The optional Python sidecar (ADR-009): differential tests against the original Python packages. Ubuntu only; the
   # other jobs run the same tests and print SKIPPED, because SCORE64_SIDECAR is not set there.
