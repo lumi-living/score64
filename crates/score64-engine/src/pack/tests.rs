@@ -264,13 +264,18 @@ fn the_driver_goes_outside_the_window_the_tune_and_the_io_area() {
 #[test]
 fn the_driver_plays_the_tune_and_fires_the_effect() {
     use score64_adapters::emu::Helper;
-    use std::io::Write as _;
-    let (Ok(packer), Some(binary)) = (Gt2Reloc::locate("2.73"), Helper::locate()) else {
-        let _ = writeln!(
-            std::io::stderr(),
-            "SKIPPED the_driver_plays_the_tune_and_fires_the_effect: needs gt2reloc on PATH and the score64-emu helper"
+    use score64_adapters::require::{self, Tool};
+    let (packer, binary) = (Gt2Reloc::locate("2.73"), Helper::locate());
+    let missing = require::missing([
+        (Tool::Gt2reloc, packer.is_ok()),
+        (Tool::Helper, binary.is_some()),
+    ]);
+    let (Ok(packer), Some(binary)) = (packer, binary) else {
+        return require::skip(
+            "the_driver_plays_the_tune_and_fires_the_effect",
+            &missing,
+            "needs gt2reloc on PATH and the score64-emu helper",
         );
-        return;
     };
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/gt2-original");
     let dir = std::env::temp_dir().join(format!("score64-pack-driver-{}", std::process::id()));

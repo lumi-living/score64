@@ -503,6 +503,8 @@ The machine the helper emulates is deliberately minimal (measured against VICE i
 | Audio regression (slow) | Reference tracks: melody similarity, onset F1, voice-3 dropout, both chips |
 | Hardware harness (slow) | KickAssembler test programs in VICE: raster time, zero-page guard, sound-effect mailbox, subtune switching on timing marks |
 
+**Tests that need an outside tool** (the emulator helper, gt2reloc) skip visibly when it's missing: they print `SKIPPED <test>: <why>` and pass, which suits a contributor's machine. With the tool named in `SCORE64_REQUIRE` (comma-separated: `helper`, `gt2reloc`), a missing tool fails the test instead, so a CI job that sets it can't pass by skipping. An unknown name is a failure too, so a typo can't turn the requirement off (#240). Every such test goes through one helper, `score64_adapters::require::skip`, which is public and hidden from the docs so that the adapters', engine's and CLI's tests can share it. The sidecar's tests follow the same rule with `SCORE64_SIDECAR`.
+
 ## 7. Performance budgets
 
 | Item | Budget |
