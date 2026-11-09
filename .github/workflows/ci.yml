@@ -64,7 +64,7 @@ jobs:
       - name: Sidecar differential tests
         env:
           SCORE64_SIDECAR: "1"
-        run: cargo test --release -p score64-adapters --test basic_pitch_onnx -- --nocapture
+        run: cargo test --release -p score64-adapters --features basic-pitch-onnx --lib --test basic_pitch_onnx -- --nocapture
 
   # The GPL crates must stay leaves: no MIT member may depend on any GPL package, directly or not (ADR-002, ADR-011).
   licence-boundary:
