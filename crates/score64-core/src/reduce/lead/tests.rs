@@ -297,7 +297,7 @@ fn a_persons_choice_holds_over_any_later_models() {
     let parts = [bass(0..6), melody(MELODY, 0..6, 60)];
     let overrides = [
         override_("model-early", 1, BASS, model()),
-        override_("person", 2, BASS, Provenance::Manual),
+        override_("person", 2, BASS, Provenance::Manual {}),
         override_("model-same-bar", 2, MELODY, model()),
         override_("model-later", 4, MELODY, model()),
     ];
@@ -330,8 +330,8 @@ fn a_persons_choice_holds_over_any_later_models() {
     );
     // A person's later choice replaces their earlier one.
     let overrides = [
-        override_("first", 1, BASS, Provenance::Manual),
-        override_("second", 3, MELODY, Provenance::Manual),
+        override_("first", 1, BASS, Provenance::Manual {}),
+        override_("second", 3, MELODY, Provenance::Manual {}),
     ];
     let c = choose(&parts, 6, &overrides);
     assert_eq!(
@@ -349,8 +349,8 @@ fn a_persons_choice_holds_over_any_later_models() {
 #[test]
 fn on_one_bar_and_rank_the_lower_id_wins_in_any_order() {
     let parts = [bass(0..2), melody(MELODY, 0..2, 60)];
-    let a = override_("a-bass", 0, BASS, Provenance::Manual);
-    let b = override_("b-melody", 0, MELODY, Provenance::Manual);
+    let a = override_("a-bass", 0, BASS, Provenance::Manual {});
+    let b = override_("b-melody", 0, MELODY, Provenance::Manual {});
     for overrides in [[a.clone(), b.clone()], [b, a]] {
         let c = choose(&parts, 2, &overrides);
         assert_eq!(c.leads, [Some(BASS), Some(BASS)]);
@@ -362,7 +362,10 @@ fn a_reviewed_models_choice_counts_as_a_persons() {
     let parts = [bass(0..4), melody(MELODY, 0..4, 60)];
     let mut accepted = override_("accepted", 2, MELODY, model());
     accepted.reviewed = true;
-    let overrides = [override_("person", 1, BASS, Provenance::Manual), accepted];
+    let overrides = [
+        override_("person", 1, BASS, Provenance::Manual {}),
+        accepted,
+    ];
     let c = choose(&parts, 4, &overrides);
     assert_eq!(c.leads[1..], [Some(BASS), Some(MELODY), Some(MELODY)]);
     assert!(c.unapplied.is_empty());
@@ -372,8 +375,8 @@ fn a_reviewed_models_choice_counts_as_a_persons() {
 fn the_losing_override_on_one_bar_is_reported() {
     let parts = [bass(0..2), melody(MELODY, 0..2, 60)];
     let overrides = [
-        override_("b-melody", 0, MELODY, Provenance::Manual),
-        override_("a-bass", 0, BASS, Provenance::Manual),
+        override_("b-melody", 0, MELODY, Provenance::Manual {}),
+        override_("a-bass", 0, BASS, Provenance::Manual {}),
     ];
     let c = choose(&parts, 2, &overrides);
     assert_eq!(
@@ -388,7 +391,7 @@ fn the_margin_counts_the_bars_the_lead_plays_up_to_the_next_override() {
     let mut m = melody(MELODY, 0..1, 60);
     m.notes.extend(melody(MELODY, 2..3, 60).notes);
     let parts = [m, bass(0..4)];
-    let overrides = [override_("person", 3, BASS, Provenance::Manual)];
+    let overrides = [override_("person", 3, BASS, Provenance::Manual {})];
     let c = choose(&parts, 4, &overrides);
     assert_eq!(
         c.leads,
@@ -444,7 +447,7 @@ fn chords_get_no_step_credit_of_their_own() {
 #[test]
 fn overrides_not_applied_are_reported() {
     let parts = [melody(MELODY, 0..2, 60)];
-    let mut elsewhere = override_("elsewhere", 0, MELODY, Provenance::Manual);
+    let mut elsewhere = override_("elsewhere", 0, MELODY, Provenance::Manual {});
     elsewhere.subtune = SubtuneName::new("title").unwrap();
     let rules_made = override_(
         "rules",
@@ -455,8 +458,8 @@ fn overrides_not_applied_are_reported() {
         },
     );
     let overrides = [
-        override_("ghost-part", 1, SOLO, Provenance::Manual),
-        override_("too-late", 5, MELODY, Provenance::Manual),
+        override_("ghost-part", 1, SOLO, Provenance::Manual {}),
+        override_("too-late", 5, MELODY, Provenance::Manual {}),
         elsewhere,
         rules_made,
     ];
@@ -552,7 +555,7 @@ proptest! {
         let source = parts[pick.index(parts.len())].source;
         let rival = parts[other.index(parts.len())].source;
         let overrides = [
-            override_("person", at_bar, source, Provenance::Manual),
+            override_("person", at_bar, source, Provenance::Manual {}),
             override_("model", model_bar, rival, model()),
         ];
         let c = choose(&parts, 20, &overrides);

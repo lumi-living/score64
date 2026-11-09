@@ -121,7 +121,7 @@ fn example() -> (Song, Vec<Decision>) {
             subtune: theme,
             bar: 0,
             proposal: Proposal::LoopRow { row: 0 },
-            provenance: Provenance::Manual,
+            provenance: Provenance::Manual {},
             confidence: Confidence::CERTAIN,
             reviewed: true,
         },
@@ -290,6 +290,32 @@ fn unknown_fields_are_errors_at_every_level() {
             .to_string();
         assert!(e.contains("colour"), "{path}: {e}");
     }
+}
+
+#[test]
+fn a_provenance_with_no_fields_refuses_stray_ones_in_json_and_toml() {
+    // `by = "manual"` has no fields of its own, so any other key is a mistake, not something to drop (#171).
+    let json = serde_json::from_str::<Provenance>(r#"{"by": "manual", "rule": "x"}"#)
+        .unwrap_err()
+        .to_string();
+    assert!(json.contains("unknown field `rule`"), "{json}");
+    let toml = toml::from_str::<Provenance>("by = \"manual\"\nrule = \"x\"\n")
+        .unwrap_err()
+        .to_string();
+    assert!(toml.contains("unknown field `rule`"), "{toml}");
+
+    // A plain one still reads, and writes back as only its tag.
+    let manual = serde_json::from_str::<Provenance>(r#"{"by": "manual"}"#).unwrap();
+    assert_eq!(manual, Provenance::Manual {});
+    assert_eq!(
+        serde_json::to_string(&manual).unwrap(),
+        r#"{"by":"manual"}"#
+    );
+    assert_eq!(
+        toml::from_str::<Provenance>("by = \"manual\"\n").unwrap(),
+        manual
+    );
+    assert_eq!(toml::to_string(&manual).unwrap(), "by = \"manual\"\n");
 }
 
 #[test]

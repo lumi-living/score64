@@ -753,7 +753,7 @@ fn person(id: &str, proposal: Proposal) -> Decision {
         subtune: name(),
         bar: row / 16,
         proposal,
-        provenance: Provenance::Manual,
+        provenance: Provenance::Manual {},
         confidence: Confidence::CERTAIN,
         reviewed: false,
     }

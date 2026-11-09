@@ -356,7 +356,7 @@ fn a_loop_row_in_force_replaces_the_rules_choice() {
     let r = find_loop_with(
         &s,
         &LoopRules::default(),
-        &[loop_decision("mine", 32, Provenance::Manual)],
+        &[loop_decision("mine", 32, Provenance::Manual {})],
     );
     assert_eq!((r.row, r.by.as_str()), (32, "mine"));
     assert_eq!(r.decision, plain.decision);
@@ -378,7 +378,7 @@ fn a_loop_row_in_force_replaces_the_rules_choice() {
     let r = find_loop_with(
         &gap,
         &LoopRules::default(),
-        &[loop_decision("mid", 20, Provenance::Manual)],
+        &[loop_decision("mid", 20, Provenance::Manual {})],
     );
     assert_eq!((r.row, r.similarity, r.by.as_str()), (20, 0.0, "mid"));
     assert!(r.unapplied.is_empty());
@@ -400,13 +400,13 @@ fn a_loop_row_that_cant_apply_says_why() {
         let r = find_loop_with(
             &s,
             &LoopRules::default(),
-            &[loop_decision("bad", row, Provenance::Manual)],
+            &[loop_decision("bad", row, Provenance::Manual {})],
         );
         assert_eq!((r.row, r.by.as_str()), (plain.row, "loop"));
         assert_eq!(reasons(&r), [("bad".to_string(), why)]);
     }
     // Of two people's, the lower id; another subtune's and the rules' own aren't this call's.
-    let mut elsewhere = loop_decision("elsewhere", 16, Provenance::Manual);
+    let mut elsewhere = loop_decision("elsewhere", 16, Provenance::Manual {});
     elsewhere.subtune = SubtuneName::new("combat").unwrap();
     let rules = loop_decision(
         "rules",
@@ -419,8 +419,8 @@ fn a_loop_row_that_cant_apply_says_why() {
         &s,
         &LoopRules::default(),
         &[
-            loop_decision("d-second", 32, Provenance::Manual),
-            loop_decision("c-first", 16, Provenance::Manual),
+            loop_decision("d-second", 32, Provenance::Manual {}),
+            loop_decision("c-first", 16, Provenance::Manual {}),
             rules,
             elsewhere,
         ],
@@ -435,8 +435,8 @@ fn a_loop_row_that_cant_apply_says_why() {
         &s,
         &LoopRules::default(),
         &[
-            loop_decision("a-inside", 20, Provenance::Manual),
-            loop_decision("b-fine", 16, Provenance::Manual),
+            loop_decision("a-inside", 20, Provenance::Manual {}),
+            loop_decision("b-fine", 16, Provenance::Manual {}),
         ],
     );
     assert_eq!(r.by.as_str(), "loop");
@@ -456,7 +456,7 @@ fn a_loop_row_that_cant_apply_says_why() {
     let r = find_loop_with(
         &tied,
         &LoopRules::default(),
-        &[loop_decision("on-tie", 32, Provenance::Manual)],
+        &[loop_decision("on-tie", 32, Provenance::Manual {})],
     );
     assert_eq!(
         r.unapplied,
@@ -475,10 +475,10 @@ fn of_several_loop_rows_the_strongest_wins_in_any_order() {
     for overrides in [
         vec![
             loop_decision("a-model", 32, model.clone()),
-            loop_decision("b-person", 16, Provenance::Manual),
+            loop_decision("b-person", 16, Provenance::Manual {}),
         ],
         vec![
-            loop_decision("b-person", 16, Provenance::Manual),
+            loop_decision("b-person", 16, Provenance::Manual {}),
             loop_decision("a-model", 32, model.clone()),
         ],
     ] {

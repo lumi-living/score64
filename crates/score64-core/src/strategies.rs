@@ -333,7 +333,7 @@ pub fn provenance() -> impl Strategy<Value = Provenance> {
         "[a-z]{1,10}@[0-9]".prop_map(|rule| Provenance::Rules { rule }),
         ("[a-z0-9.-]{1,20}", content_hash())
             .prop_map(|(model, prompt)| Provenance::Llm { model, prompt }),
-        Just(Provenance::Manual),
+        Just(Provenance::Manual {}),
     ]
 }
 
