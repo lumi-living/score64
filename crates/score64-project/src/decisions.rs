@@ -206,7 +206,7 @@ impl DecisionsFile {
 
 /// The lines of the `[[decision]]` headers, in order: the n-th decision's header is the n-th.
 fn decision_headers(text: &str) -> Vec<usize> {
-    crate::textfile::headers(text, "[[decision]]")
+    crate::textfile::headers(text, "decision")
 }
 
 use crate::textfile::line_col;

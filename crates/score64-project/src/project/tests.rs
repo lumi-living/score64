@@ -1208,3 +1208,57 @@ proptest! {
         }
     }
 }
+
+/// The 1-based line of the `n`-th (0-based) line of `text` that reads `header`.
+fn nth_line(text: &str, header: &str, n: usize) -> usize {
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| *l == header)
+        .nth(n)
+        .map(|(i, _)| i + 1)
+        .unwrap_or_else(|| panic!("no {header} number {n}"))
+}
+
+/// #193: a `[[subtune]]` inside a multi-line string isn't a header, so it doesn't shift the subtunes' lines.
+#[test]
+fn a_header_inside_a_multi_line_string_doesnt_shift_the_items() {
+    let text = track_text("")
+        .replace(
+            "title = \"Main theme\"",
+            "title = \"\"\"\n[[subtune]]\n\"\"\"",
+        )
+        .replace("name = \"tension\"", "name = \"calm\"");
+    let (at, m) = error(TrackFile::parse(&text, p("x")));
+    assert!(m.contains("subtune `calm` is declared twice"), "{m}");
+    // The second real subtune, which is the third line reading `[[subtune]]`.
+    assert_eq!(
+        at.map(|a| a.0),
+        Some(nth_line(&text, "[[subtune]]", 2)),
+        "{m}"
+    );
+}
+
+/// #193: a header written with spaces inside the brackets is still a header.
+#[test]
+fn a_header_with_spaces_is_found() {
+    let text = track_text(&format!(
+        "\n[[ source ]]\nid = \"mix\"\npath = \"audio/other.wav\"\nblake3 = \"{HASH}\"\nkind = \"mix\"\n"
+    ));
+    let (at, m) = error(TrackFile::parse(&text, p("x")));
+    assert!(m.contains("source `mix` is declared twice"), "{m}");
+    assert_eq!(
+        at.map(|a| a.0),
+        Some(nth_line(&text, "[[ source ]]", 0)),
+        "{m}"
+    );
+
+    let text = format!(
+        "{PROJECT}\n[[ profile ]]\nname = \"calm\"\nv1 = {{ usage = \"music\" }}\nv2 = {{ usage = \"music\" }}\nv3 = {{ usage = \"music\" }}\n"
+    );
+    let (at, m) = error(ProjectFile::parse(&text, p("x")));
+    assert_eq!(
+        at.map(|a| a.0),
+        Some(nth_line(&text, "[[ profile ]]", 0)),
+        "{m}"
+    );
+}
