@@ -145,31 +145,7 @@ impl DecisionsFile {
                 e.message().to_string(),
             )
         })?;
-        // A provenance with no fields of its own (`by = "manual"`) must have no others: serde would drop them.
-        let table: toml::Table = toml::from_str(text).expect("parsed above");
         let headers = decision_headers(text);
-        if let Some(toml::Value::Array(decisions)) = table.get("decision") {
-            for (i, d) in decisions.iter().enumerate() {
-                let Some(toml::Value::Table(p)) = d.get("provenance") else {
-                    continue;
-                };
-                if p.get("by").and_then(toml::Value::as_str) == Some("manual") && p.len() > 1 {
-                    let extra: Vec<&str> = p
-                        .keys()
-                        .map(String::as_str)
-                        .filter(|k| *k != "by")
-                        .collect();
-                    let at = headers.get(i).map(|&line| (line, 1));
-                    return Err(invalid(
-                        at,
-                        format!(
-                            "unknown field `{}` in a manual provenance",
-                            extra.join("`, `")
-                        ),
-                    ));
-                }
-            }
-        }
         file.check(path, Some(&headers))?;
         Ok(file)
     }

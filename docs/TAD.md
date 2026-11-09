@@ -376,7 +376,7 @@ A decision never changes the song by itself. An engine command (`writes_project`
 - **Writing.** Decisions are sorted by subtune and then id. Each one's plain fields come in declaration order, then its tables, so the same decisions always give the same bytes. A file is written to a uniquely named temporary file beside it, synced, then renamed into place.
 - **Reading.** A missing `schema` means 1, and any other version is refused.
   - An unknown field, a bad value or a TOML error is reported with its file, line and column. One inside a `proposal` or `provenance` table points at that table's header.
-  - A manual provenance with stray fields is refused.
+  - A manual provenance with stray fields is refused, like any other unknown field: `Provenance::Manual {}` is a braced variant, so serde applies `deny_unknown_fields` to it (#171), in JSON and in TOML.
   - Two decisions with one id in one subtune are reported with both `[[decision]]` lines.
 
 **The project and track files** (`score64_project::Project`, #25, ADR-014). A project is a folder for one target:

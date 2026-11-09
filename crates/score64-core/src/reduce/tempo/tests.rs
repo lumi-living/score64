@@ -50,9 +50,9 @@ fn a_tempo_decision_sets_the_tempo_from_its_bar() {
     let done = apply_tempo(
         &mut s,
         &[
-            tempo("start", 0, 5, Provenance::Manual),
-            tempo("faster", 3, 3, Provenance::Manual),
-            tempo("replace", 2, 7, Provenance::Manual),
+            tempo("start", 0, 5, Provenance::Manual {}),
+            tempo("faster", 3, 3, Provenance::Manual {}),
+            tempo("replace", 2, 7, Provenance::Manual {}),
         ],
     );
     assert!(done.unapplied.is_empty());
@@ -71,12 +71,12 @@ fn a_tempo_decision_sets_the_tempo_from_its_bar() {
 #[test]
 fn a_tempo_decision_that_cant_apply_and_the_rules_own() {
     let mut s = subtune();
-    let mut elsewhere = tempo("other", 1, 3, Provenance::Manual);
+    let mut elsewhere = tempo("other", 1, 3, Provenance::Manual {});
     elsewhere.subtune = SubtuneName::new("combat").unwrap();
     let unapplied = apply_tempo(
         &mut s,
         &[
-            tempo("past", 4, 3, Provenance::Manual),
+            tempo("past", 4, 3, Provenance::Manual {}),
             tempo(
                 "rules",
                 1,
@@ -108,10 +108,10 @@ fn of_several_tempos_for_a_bar_the_strongest_wins_in_any_order() {
     for overrides in [
         vec![
             tempo("a-model", 1, 9, model()),
-            tempo("b-person", 1, 8, Provenance::Manual),
+            tempo("b-person", 1, 8, Provenance::Manual {}),
         ],
         vec![
-            tempo("b-person", 1, 8, Provenance::Manual),
+            tempo("b-person", 1, 8, Provenance::Manual {}),
             tempo("a-model", 1, 9, model()),
         ],
     ] {
@@ -127,8 +127,8 @@ fn of_several_tempos_for_a_bar_the_strongest_wins_in_any_order() {
     let done = apply_tempo(
         &mut s,
         &[
-            tempo("b", 1, 9, Provenance::Manual),
-            tempo("a", 1, 8, Provenance::Manual),
+            tempo("b", 1, 9, Provenance::Manual {}),
+            tempo("a", 1, 8, Provenance::Manual {}),
         ],
     );
     assert_eq!(changes(&s), [(16, 8), (32, 4)]);
@@ -146,8 +146,8 @@ fn a_tempo_already_playing_adds_no_change() {
     let done = apply_tempo(
         &mut s,
         &[
-            tempo("same", 3, 4, Provenance::Manual),
-            tempo("start-again", 1, 6, Provenance::Manual),
+            tempo("same", 3, 4, Provenance::Manual {}),
+            tempo("start-again", 1, 6, Provenance::Manual {}),
         ],
     );
     assert_eq!(changes(&s), [(32, 4)]);
@@ -161,7 +161,7 @@ fn a_tempo_already_playing_adds_no_change() {
             frames_per_row: FramesPerRow::new(9).unwrap(),
         },
     );
-    apply_tempo(&mut s, &[tempo("start", 0, 5, Provenance::Manual)]);
+    apply_tempo(&mut s, &[tempo("start", 0, 5, Provenance::Manual {})]);
     assert_eq!((s.frames_per_row.get(), changes(&s)), (5, vec![(32, 4)]));
     assert_eq!(s.frames_per_row_at(0).get(), 5);
 }
@@ -219,7 +219,7 @@ fn a_tempo_in_force_is_checked_like_any_tempo() {
             .map(|p| p.rule)
             .collect::<Vec<_>>()
     };
-    apply_tempo(&mut s, &[tempo("fast", 1, 3, Provenance::Manual)]);
+    apply_tempo(&mut s, &[tempo("fast", 1, 3, Provenance::Manual {})]);
     assert_eq!(changes(&s), [(16, 3), (32, 4)]);
     assert_eq!(errors(&s, 2), [], "a gate timer of 2 is below 3");
     assert!(
@@ -232,6 +232,6 @@ fn a_tempo_in_force_is_checked_like_any_tempo() {
 fn changes_already_there_are_left_alone() {
     // 4 from row 32 already; a decision for 4 from bar 1 makes row 32's change repeat it, and it stays.
     let mut s = subtune();
-    apply_tempo(&mut s, &[tempo("four", 1, 4, Provenance::Manual)]);
+    apply_tempo(&mut s, &[tempo("four", 1, 4, Provenance::Manual {})]);
     assert_eq!(changes(&s), [(16, 4), (32, 4)]);
 }

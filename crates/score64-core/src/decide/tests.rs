@@ -58,7 +58,7 @@ fn a_person_beats_a_model_beats_the_rules() {
     let r = resolve([
         decision("by-rules", 0, octave(-1), rules()),
         decision("by-model", 0, octave(1), model()),
-        decision("by-person", 0, octave(2), Provenance::Manual),
+        decision("by-person", 0, octave(2), Provenance::Manual {}),
     ]);
     assert_eq!(ids(&r), ["by-person"]);
     let lost: Vec<_> = r
@@ -82,7 +82,7 @@ fn a_reviewed_models_decision_counts_as_a_persons() {
     assert_eq!(accepted.rank(), Rank::Person);
     // Of two of one rank, the lower id.
     let r = resolve([
-        decision("z-person", 0, octave(2), Provenance::Manual),
+        decision("z-person", 0, octave(2), Provenance::Manual {}),
         accepted,
     ]);
     assert_eq!(ids(&r), ["accepted"]);
@@ -212,10 +212,10 @@ fn a_persons_choice_holds_over_later_weaker_ones() {
     };
     let r = resolve([
         lead("rules-early", 0, rules()),
-        lead("person", 2, Provenance::Manual),
+        lead("person", 2, Provenance::Manual {}),
         lead("model-later", 8, model()),
         lead("rules-later", 12, rules()),
-        lead("person-again", 16, Provenance::Manual),
+        lead("person-again", 16, Provenance::Manual {}),
     ]);
     // The rules hold until the person; the person holds over the later model and rules, until the person again.
     assert_eq!(ids(&r), ["rules-early", "person", "person-again"]);
@@ -252,7 +252,7 @@ fn tempos_hold_over_time_apart_from_leads() {
     );
     // A person's tempo at bar 0 holds over the rules' at bar 4; the rules' lead at bar 4 is another kind.
     let r = resolve([
-        tempo("tempo-person", 0, 6, Provenance::Manual),
+        tempo("tempo-person", 0, 6, Provenance::Manual {}),
         tempo("tempo-rules", 4, 5, rules()),
         lead,
     ]);
@@ -260,8 +260,8 @@ fn tempos_hold_over_time_apart_from_leads() {
     assert_eq!(r.overruled[0].0.id.as_str(), "tempo-rules");
     // Two people, then a model: the model loses to the later person, which is in force.
     let r = resolve([
-        tempo("p1", 0, 6, Provenance::Manual),
-        tempo("p2", 2, 5, Provenance::Manual),
+        tempo("p1", 0, 6, Provenance::Manual {}),
+        tempo("p2", 2, 5, Provenance::Manual {}),
         tempo("m", 4, 4, model()),
     ]);
     assert_eq!(r.overruled[0].1.as_str(), "p2");
@@ -282,7 +282,7 @@ fn roles_hold_per_voice() {
     };
     // A person's role for voice 1 doesn't overrule the rules' role for voice 2 later.
     let r = resolve([
-        role("v1-person", 0, 1, Provenance::Manual),
+        role("v1-person", 0, 1, Provenance::Manual {}),
         role("v2-rules", 4, 2, rules()),
         role("v1-rules", 4, 1, rules()),
     ]);
@@ -424,7 +424,7 @@ fn a_keep_and_the_drops_of_its_note_are_separate_slots() {
             drop_of("C-4", 2, DropReason::Ghost),
             rules(),
         ),
-        decision("keep", 0, keep_of("C-4"), Provenance::Manual),
+        decision("keep", 0, keep_of("C-4"), Provenance::Manual {}),
     ]);
     assert_eq!(ids(&r), ["rules-drop", "keep"]);
     assert!(r.overruled.is_empty());
@@ -434,7 +434,7 @@ fn a_keep_and_the_drops_of_its_note_are_separate_slots() {
             "drop",
             0,
             drop_of("C-4", 2, DropReason::Overlap),
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
     ]);
     assert_eq!(ids(&r), ["drop", "model-keep"]);
@@ -448,9 +448,9 @@ fn a_keep_and_the_drops_of_its_note_are_separate_slots() {
             "p-long",
             0,
             drop_of("C-4", 4, DropReason::Overlap),
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
-        decision("keep", 0, keep_of("C-4"), Provenance::Manual),
+        decision("keep", 0, keep_of("C-4"), Provenance::Manual {}),
         decision("model-keep", 0, keep_of("C-4"), model()),
     ]);
     assert_eq!(ids(&r), ["short", "p-long", "keep"]);
@@ -460,13 +460,13 @@ fn a_keep_and_the_drops_of_its_note_are_separate_slots() {
     );
     // Of one rank, the lower id.
     let r = resolve([
-        decision("b-keep", 0, keep_of("C-4"), Provenance::Manual),
-        decision("a-keep", 0, keep_of("C-4"), Provenance::Manual),
+        decision("b-keep", 0, keep_of("C-4"), Provenance::Manual {}),
+        decision("a-keep", 0, keep_of("C-4"), Provenance::Manual {}),
     ]);
     assert_eq!(lost(&r), [("b-keep", "a-keep")]);
     // A keep of another pitch, row, voice or subtune is another slot.
     let elsewhere = |id: &str, f: &dyn Fn(&mut Decision)| {
-        let mut d = decision(id, 0, keep_of("C-4"), Provenance::Manual);
+        let mut d = decision(id, 0, keep_of("C-4"), Provenance::Manual {});
         f(&mut d);
         d
     };
@@ -557,7 +557,7 @@ fn competing() -> impl Strategy<Value = Decision> {
             pitch
         }),
     ];
-    let provenance = prop_oneof![Just(rules()), Just(model()), Just(Provenance::Manual)];
+    let provenance = prop_oneof![Just(rules()), Just(model()), Just(Provenance::Manual {})];
     (
         prop_oneof![Just("a"), Just("b"), Just("c")],
         prop_oneof![Just("main"), Just("title")],
@@ -778,7 +778,7 @@ fn check_keeps_what_can_apply() {
             },
         ),
     ] {
-        let d = decision("d", bar, proposal.clone(), Provenance::Manual);
+        let d = decision("d", bar, proposal.clone(), Provenance::Manual {});
         assert_eq!(why(d), None, "{proposal:?} at bar {bar}");
     }
 }
@@ -787,7 +787,7 @@ fn check_keeps_what_can_apply() {
 fn check_says_why_a_decision_cant_apply() {
     let other = |s: &str| Decision {
         subtune: SubtuneName::new(s).unwrap(),
-        ..decision("d", 0, octave(1), Provenance::Manual)
+        ..decision("d", 0, octave(1), Provenance::Manual {})
     };
     assert_eq!(why(other("ending")), Some(Unapplied::UnknownSubtune));
     for (bar, proposal, want) in [
@@ -821,7 +821,7 @@ fn check_says_why_a_decision_cant_apply() {
             Unapplied::UnknownSource,
         ),
     ] {
-        let d = decision("d", bar, proposal.clone(), Provenance::Manual);
+        let d = decision("d", bar, proposal.clone(), Provenance::Manual {});
         assert_eq!(why(d), Some(want), "{proposal:?} at bar {bar}");
     }
 }
@@ -835,7 +835,7 @@ fn a_lead_source_must_be_one_of_its_own_subtunes_parts() {
             "lead-b0",
             0,
             Proposal::LeadSource { source: LEAD },
-            Provenance::Manual,
+            Provenance::Manual {},
         )
     };
     let checked = check([lead_in("main"), lead_in("combat")], &song(), &parts(LEAD));
@@ -857,7 +857,7 @@ fn an_invalid_stronger_decision_no_longer_blocks_a_valid_weaker_one() {
             Proposal::LeadSource {
                 source: ContentHash([9; 32]),
             },
-            Provenance::Manual,
+            Provenance::Manual {},
         ),
         decision(
             "by-model",
