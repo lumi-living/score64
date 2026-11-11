@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
       # Installs exactly what rust-toolchain.toml pins (channel, components, targets).
       - name: Install pinned toolchain
         run: rustup toolchain install
@@ -52,7 +52,7 @@ jobs:
     name: sidecar (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@v2.9.2
@@ -71,7 +71,7 @@ jobs:
     name: licence-boundary
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7.0.1
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         run: rustup toolchain install
       - name: No MIT crate depends on GPL code
